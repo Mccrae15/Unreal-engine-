@@ -304,6 +304,9 @@ public:
 	virtual void RHISetViewport(uint32 MinX, uint32 MinY, float MinZ, uint32 MaxX, uint32 MaxY, float MaxZ) final override;
 	virtual void RHISetStereoViewport(uint32 LeftMinX, uint32 RightMinX, uint32 MinY, float MinZ, uint32 LeftMaxX, uint32 RightMaxX, uint32 MaxY, float MaxZ) final override;
 	virtual void RHISetScissorRect(bool bEnable, uint32 MinX, uint32 MinY, uint32 MaxX, uint32 MaxY) final override;
+	virtual void RHISetMultipleScissorRects(bool bEnable, uint32 Num, const FIntRect* Rects) final override;
+	virtual void RHISetModifiedWMode(const FLensMatchedShading::Configuration& Conf, const bool bWarpForward, const bool bEnable) final override;
+	virtual void RHISetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& Conf, const bool bWarpForward, const bool bEnable) final override;
 	virtual void RHISetBoundShaderState(FBoundShaderStateRHIParamRef BoundShaderState) final override;
 	virtual void RHISetGraphicsPipelineState(FGraphicsPipelineStateRHIParamRef GraphicsPipelineState) final override;
 	virtual void RHISetShaderTexture(FVertexShaderRHIParamRef VertexShader, uint32 TextureIndex, FTextureRHIParamRef NewTexture) final override;
@@ -359,7 +362,11 @@ public:
 	{
 		RHIClearMRT(true, NumTextures, ColorArray, false, 0, false, 0, ExcludeRect);
 	}
-	virtual void RHIEnableDepthBoundsTest(bool bEnable, float MinDepth, float MaxDepth) override;
+	virtual void RHIEnableDepthBoundsTest(bool bEnable, float MinDepth, float MaxDepth) final override;
+	
+	virtual void RHISetSinglePassStereoParameters(bool bEnable, uint32 RenderTargetIndexOffset, uint8 IndependentViewportMaskEnable) final override;
+	virtual void RHISetGPUMask(uint32 Mask) final override;
+	virtual void RHICopyResourceToGPU(FTextureRHIParamRef SourceTextureRHI, FTextureRHIParamRef DestTextureRHI, uint32 DestGPUIndex, uint32 SrcGPUIndex, const FResolveParams& ResolveParams) final override;
 	virtual void RHIUpdateTextureReference(FTextureReferenceRHIParamRef TextureRef, FTextureRHIParamRef NewTexture) final override;
 
 	virtual void RHIClearMRTImpl(bool bClearColor, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil, FIntRect ExcludeRect);
@@ -608,6 +615,23 @@ public:
 	{
 		ContextRedirect(RHISetScissorRect(bEnable, MinX, MinY, MaxX, MaxY));
 	}
+
+
+	FORCEINLINE virtual void RHISetMultipleScissorRects(bool bEnable, uint32 Num, const FIntRect* Rects) final override
+	{
+		ContextRedirect(RHISetMultipleScissorRects(bEnable, Num, Rects));
+	}
+
+	FORCEINLINE virtual void RHISetModifiedWMode(const FLensMatchedShading::Configuration& Conf, const bool bWarpForward, const bool bEnable) final override
+	{
+		ContextRedirect(RHISetModifiedWMode(Conf, bWarpForward, bEnable));
+	}
+
+	FORCEINLINE virtual void RHISetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& Conf, const bool bWarpForward, const bool bEnable) final override
+	{
+		ContextRedirect(RHISetModifiedWModeStereo(Conf, bWarpForward, bEnable));
+	}
+
 	FORCEINLINE virtual void RHISetBoundShaderState(FBoundShaderStateRHIParamRef BoundShaderState) final override
 	{
 		ContextRedirect(RHISetBoundShaderState(BoundShaderState));
@@ -784,6 +808,21 @@ public:
 	{
 		ContextRedirect(RHIEnableDepthBoundsTest(bEnable, MinDepth, MaxDepth));
 	}
+
+		FORCEINLINE virtual void RHISetSinglePassStereoParameters(bool bEnable, uint32 RenderTargetIndexOffset, uint8 IndependentViewportMaskEnable) final override
+	{
+		ContextRedirect(RHISetSinglePassStereoParameters(bEnable, RenderTargetIndexOffset, IndependentViewportMaskEnable));
+	}
+
+	FORCEINLINE virtual void RHISetGPUMask(uint32 Mask) final override
+	{
+		ContextRedirect(RHISetGPUMask(Mask));
+	}
+	FORCEINLINE virtual void RHICopyResourceToGPU(FTextureRHIParamRef SourceTextureRHI, FTextureRHIParamRef DestTextureRHI, uint32 DestGPUIndex, uint32 SrcGPUIndex, const FResolveParams& ResolveParams) final override
+	{
+		ContextRedirect(RHICopyResourceToGPU(SourceTextureRHI, DestTextureRHI, DestGPUIndex, SrcGPUIndex, ResolveParams));
+	}
+	
 	FORCEINLINE virtual void RHIUpdateTextureReference(FTextureReferenceRHIParamRef TextureRef, FTextureRHIParamRef NewTexture) final override
 	{
 		ContextRedirect(RHIUpdateTextureReference(TextureRef, NewTexture));

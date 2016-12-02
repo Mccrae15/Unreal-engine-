@@ -1890,3 +1890,32 @@ struct FCompareFProjectedShadowInfoBySplitIndex
 	}
 };
 
+/** Fast geometry shader for depth-only rendering to multi-res view.
+*/
+class FShadowProjectionMultiResGS : public FGlobalShader
+{
+	DECLARE_SHADER_TYPE(FShadowProjectionMultiResGS, Global);
+public:
+	static bool ShouldCache(EShaderPlatform Platform)
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
+		static const bool bMultiResShaders = CVar->GetValueOnAnyThread() != 0;
+
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && bMultiResShaders;
+	}
+
+	FShadowProjectionMultiResGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
+		FGlobalShader(Initializer)
+	{
+	}
+
+	FShadowProjectionMultiResGS() {}
+
+	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+	{
+		FGlobalShader::SetParameters(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View);
+	}
+
+	static const bool IsFastGeometryShader = true;
+};
+

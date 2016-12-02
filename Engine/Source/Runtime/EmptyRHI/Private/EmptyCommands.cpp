@@ -60,6 +60,26 @@ void FEmptyDynamicRHI::RHISetScissorRect(bool bEnable,uint32 MinX,uint32 MinY,ui
 
 }
 
+void FEmptyDynamicRHI::RHISetMultipleScissorRects(bool bEnable, uint32 Num, const FIntRect* Rects)
+{
+
+}
+
+void FEmptyDynamicRHI::RHISetModifiedWMode(const FLensMatchedShading::Configuration& Conf, const bool bWarpForward, const bool bEnable)
+{
+
+}
+
+void FEmptyDynamicRHI::RHISetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& Conf, const bool bWarpForward, const bool bEnable)
+{
+
+}
+
+void FEmptyDynamicRHI::SetGPUMask(uint32 Mask)
+{
+
+}
+
 void FEmptyDynamicRHI::RHISetBoundShaderState( FBoundShaderStateRHIParamRef BoundShaderStateRHI)
 {
 	FEmptyBoundShaderState* BoundShaderState = ResourceCast(BoundShaderStateRHI);
@@ -435,5 +455,9 @@ void FEmptyDynamicRHI::RHIClearDepthStencilTexture(FTextureRHIParamRef Texture, 
 }
 
 void FEmptyDynamicRHI::RHIClearColor(int32 NumClearColors, const FLinearColor* ColorArray, FIntRect ExcludeRect)
+{
+}
+
+void FEmptyDynamicRHI::RHISetSinglePassStereoParameters(bool bEnable, uint32 RenderTargetIndexOffset, uint8 IndependentViewportMaskEnable)
 {
 }

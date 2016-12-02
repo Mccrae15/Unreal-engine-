@@ -1010,10 +1010,12 @@ void ComputeDistanceFieldNormal(FRHICommandListImmediate& RHICmdList, const TArr
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
 			const FViewInfo& View = Views[ViewIndex];
+			RHICmdList.SetGPUMask(View.StereoPass);
 
 			uint32 GroupSizeX = FMath::DivideAndRoundUp(View.ViewRect.Size().X / GAODownsampleFactor, GDistanceFieldAOTileSizeX);
 			uint32 GroupSizeY = FMath::DivideAndRoundUp(View.ViewRect.Size().Y / GAODownsampleFactor, GDistanceFieldAOTileSizeY);
 
+			RHICmdList.SetGPUMask(View.StereoPass);
 			{
 				SCOPED_DRAW_EVENT(RHICmdList, ComputeNormalCS);
 				TShaderMapRef<FComputeDistanceFieldNormalCS> ComputeShader(View.ShaderMap);
@@ -1025,6 +1027,7 @@ void ComputeDistanceFieldNormal(FRHICommandListImmediate& RHICmdList, const TArr
 				ComputeShader->UnsetParameters(RHICmdList, DistanceFieldNormal);
 			}
 		}
+		RHICmdList.SetGPUMask(0);
 	}
 	else
 	{
@@ -1036,6 +1039,7 @@ void ComputeDistanceFieldNormal(FRHICommandListImmediate& RHICmdList, const TArr
 
 			SCOPED_DRAW_EVENT(RHICmdList, ComputeNormal);
 
+			RHICmdList.SetGPUMask(View.StereoPass);
 			RHICmdList.SetViewport(0, 0, 0.0f, View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor, 1.0f);
 			RHICmdList.SetRasterizerState(TStaticRasterizerState<FM_Solid, CM_None>::GetRHI());
 			RHICmdList.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
@@ -1061,6 +1065,7 @@ void ComputeDistanceFieldNormal(FRHICommandListImmediate& RHICmdList, const TArr
 				*VertexShader);
 		}
 
+		RHICmdList.SetGPUMask(0);
 		RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, DistanceFieldNormal.TargetableTexture);
 	}
 }
@@ -2282,6 +2287,8 @@ FIntPoint BuildTileObjectLists(FRHICommandListImmediate& RHICmdList, FScene* Sce
 		{
 			const FViewInfo& View = Views[ViewIndex];
 
+			RHICmdList.SetGPUMask(View.StereoPass);
+
 			uint32 GroupSizeX = FMath::DivideAndRoundUp(View.ViewRect.Size().X / GAODownsampleFactor, GDistanceFieldAOTileSizeX);
 			uint32 GroupSizeY = FMath::DivideAndRoundUp(View.ViewRect.Size().Y / GAODownsampleFactor, GDistanceFieldAOTileSizeY);
 			TileListGroupSize = FIntPoint(GroupSizeX, GroupSizeY);
@@ -2350,12 +2357,15 @@ FIntPoint BuildTileObjectLists(FRHICommandListImmediate& RHICmdList, FScene* Sce
 				RHICmdList.TransitionResources(EResourceTransitionAccess::ERWBarrier, EResourceTransitionPipeline::EComputeToCompute, UAVs.GetData(), UAVs.Num());
 			}
 		}
+		RHICmdList.SetGPUMask(0);
 	}
 	else
 	{
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
 			const FViewInfo& View = Views[ViewIndex];
+
+			RHICmdList.SetGPUMask(View.StereoPass);
 
 			uint32 GroupSizeX = (View.ViewRect.Size().X / GAODownsampleFactor + GDistanceFieldAOTileSizeX - 1) / GDistanceFieldAOTileSizeX;
 			uint32 GroupSizeY = (View.ViewRect.Size().Y / GAODownsampleFactor + GDistanceFieldAOTileSizeY - 1) / GDistanceFieldAOTileSizeY;
@@ -2392,6 +2402,7 @@ FIntPoint BuildTileObjectLists(FRHICommandListImmediate& RHICmdList, FScene* Sce
 
 			ComputeShader->UnsetParameters(RHICmdList, View);
 		}
+		RHICmdList.SetGPUMask(0);
 	}
 
 	return TileListGroupSize;
@@ -3360,6 +3371,7 @@ void FDeferredShadingSceneRenderer::RenderDynamicSkyLighting(FRHICommandListImme
 		{
 			const FViewInfo& View = Views[ViewIndex];
 
+			RHICmdList.SetGPUMask(View.StereoPass);
 			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
 			RHICmdList.SetRasterizerState(TStaticRasterizerState<FM_Solid, CM_None>::GetRHI());
 			RHICmdList.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
@@ -3433,6 +3445,7 @@ void FDeferredShadingSceneRenderer::RenderDynamicSkyLighting(FRHICommandListImme
 				SceneContext.GetBufferSizeXY(),
 				*VertexShader);
 		}
+		RHICmdList.SetGPUMask(0);
 	}
 }
 
@@ -3642,6 +3655,8 @@ void FDeferredShadingSceneRenderer::RenderMeshDistanceFieldVisualization(FRHICom
 				{
 					const FViewInfo& ViewInfo = Views[ViewIndex];
 
+					RHICmdList.SetGPUMask(View.StereoPass);
+
 					uint32 GroupSizeX = FMath::DivideAndRoundUp(ViewInfo.ViewRect.Size().X / GAODownsampleFactor, GDistanceFieldAOTileSizeX);
 					uint32 GroupSizeY = FMath::DivideAndRoundUp(ViewInfo.ViewRect.Size().Y / GAODownsampleFactor, GDistanceFieldAOTileSizeY);
 
@@ -3671,6 +3686,7 @@ void FDeferredShadingSceneRenderer::RenderMeshDistanceFieldVisualization(FRHICom
 						ComputeShader->UnsetParameters(RHICmdList, VisualizeResultRTI);
 					}
 				}
+				RHICmdList.SetGPUMask(0);
 			}
 
 			{
@@ -3679,6 +3695,8 @@ void FDeferredShadingSceneRenderer::RenderMeshDistanceFieldVisualization(FRHICom
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 				{
 					const FViewInfo& ViewInfo = Views[ViewIndex];
+
+					RHICmdList.SetGPUMask(View.StereoPass);
 
 					SCOPED_DRAW_EVENT(RHICmdList, UpsampleAO);
 
@@ -3706,6 +3724,7 @@ void FDeferredShadingSceneRenderer::RenderMeshDistanceFieldVisualization(FRHICom
 						GetBufferSizeForAO(),
 						*VertexShader);
 				}
+				RHICmdList.SetGPUMask(0);
 			}
 		}
 	}

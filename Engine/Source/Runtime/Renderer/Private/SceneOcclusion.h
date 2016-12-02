@@ -58,3 +58,31 @@ private:
 	FStencilingGeometryShaderParameters StencilingGeometryParameters;
 };
 
+/** Fast geometry shader for rendering occlusion queries.
+*/
+class FOcclusionQueryMultiResGS : public FGlobalShader
+{
+	DECLARE_SHADER_TYPE(FOcclusionQueryMultiResGS, Global);
+public:
+	static bool ShouldCache(EShaderPlatform Platform)
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
+		static const bool bMultiResShaders = CVar->GetValueOnAnyThread() != 0;
+
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && bMultiResShaders;
+	}
+
+	FOcclusionQueryMultiResGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
+		FGlobalShader(Initializer)
+	{
+	}
+
+	FOcclusionQueryMultiResGS() {}
+
+	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+	{
+		FGlobalShader::SetParameters(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View);
+	}
+
+	static const bool IsFastGeometryShader = true;
+};

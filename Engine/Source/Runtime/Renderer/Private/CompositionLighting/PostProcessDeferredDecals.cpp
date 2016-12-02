@@ -682,7 +682,7 @@ void FRCPassPostProcessDeferredDecals::Process(FRenderingCompositePassContext& C
 
 		// we assume views are non overlapping, then we need to clear only once in the beginning, otherwise we would need to set scissor rects
 		// and don't get FastClear any more.
-		bool bFirstView = Context.View.Family->Views[0] == &Context.View;
+		bool bFirstView = (Context.View.Family->Views[0] == &Context.View) || GRHISupportsMultipleGPUStereo;
 
 		if (bFirstView)
 		{
@@ -775,6 +775,11 @@ void FRCPassPostProcessDeferredDecals::Process(FRenderingCompositePassContext& C
 
 						RenderTargetManager.SetRenderTargetMode(CurrentRenderTargetMode, DecalData.bHasNormal);
 						Context.SetViewportAndCallRHI(Context.View.ViewRect);
+						if (View.bVRProjectEnabled)
+						{
+							View.BeginVRProjectionStates(RHICmdList);
+						}
+
 					}
 
 					bool bThisDecalUsesStencil = false;
@@ -858,6 +863,13 @@ void FRCPassPostProcessDeferredDecals::Process(FRenderingCompositePassContext& C
 					DecodeRTWriteMask(Context);
 					bHasValidDBufferMask = true;
 				}
+			}
+
+			if (View.bVRProjectEnabled)
+			{
+				// Reset viewport and scissor after rendering to vr projection view
+				Context.SetViewportAndCallRHI(Context.View.ViewRect);
+				View.EndVRProjectionStates(RHICmdList);
 			}
 
 			RenderTargetManager.ResolveTargets();

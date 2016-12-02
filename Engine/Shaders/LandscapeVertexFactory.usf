@@ -832,6 +832,10 @@ FVertexFactoryInterpolantsVSToDS VertexFactoryInterpolate(FVertexFactoryInterpol
 	TESSELLATION_INTERPOLATE_MEMBER(CalculatedLOD);
 #endif
 
+#if INSTANCED_STEREO
+	O.InterpolantsVSToPS.PackedEyeIndex = a.InterpolantsVSToPS.PackedEyeIndex;
+#endif
+
 	return O;
 }
 

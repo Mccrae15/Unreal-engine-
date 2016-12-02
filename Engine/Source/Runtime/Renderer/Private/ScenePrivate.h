@@ -693,6 +693,11 @@ public:
 		return TemporalAASampleIndex;
 	}
 
+	virtual void SetCurrentTemporalAASampleIndex(uint8 SampleIndex)
+	{
+		TemporalAASampleIndex = SampleIndex;
+	}
+
 	// call after OnFrameRenderingSetup()
 	uint32 GetCurrentTemporalAASampleCount() const
 	{

@@ -790,6 +790,8 @@ void FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(FRHICommandListImm
 					        {
 						        INC_DWORD_STAT(STAT_LightShaftsLights);
         
+								RHICmdList.SetGPUMask(View.StereoPass);
+
 						        // Create a downsampled occlusion mask from scene depth, result will be in LightShafts0
 						        DownsamplePass<true>(RHICmdList, View, LightSceneInfo, LightShafts0, LightShafts1);
         
@@ -813,6 +815,7 @@ void FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(FRHICommandListImm
 						        Output.LightShaftOcclusion = LightShafts1;
 					        }
 				        }
+						RHICmdList.SetGPUMask(0);
 					}				
 				}
 			}
@@ -997,6 +1000,8 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(FRHICommandListImmedia
 					{
 						INC_DWORD_STAT(STAT_LightShaftsLights);
 
+						RHICmdList.SetGPUMask(View.StereoPass);
+
 						// Generate the bloom source from scene color, masked by depth and downsampled
 						DownsamplePass<false>(RHICmdList, View, LightSceneInfo, LightShafts0, LightShafts1);
 
@@ -1023,6 +1028,7 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(FRHICommandListImmedia
 						ApplyLightShaftBloom(RHICmdList, View, LightSceneInfo, LightShafts0);
 					}
 				}
+					RHICmdList.SetGPUMask(0);
 			}
 		}
 	}

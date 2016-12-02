@@ -282,6 +282,7 @@ FIntPoint FSceneRenderTargets::ComputeDesiredSize(const FSceneViewFamily& ViewFa
 
 	bool bIsSceneCapture = false;
 	bool bIsReflectionCapture = false;
+	bool bIsVRProjectEnabled = false;
 
 	for (int32 ViewIndex = 0, ViewCount = ViewFamily.Views.Num(); ViewIndex < ViewCount; ++ViewIndex)
 	{
@@ -289,6 +290,7 @@ FIntPoint FSceneRenderTargets::ComputeDesiredSize(const FSceneViewFamily& ViewFa
 
 		bIsSceneCapture |= View->bIsSceneCapture;
 		bIsReflectionCapture |= View->bIsReflectionCapture;
+		bIsVRProjectEnabled |= View->bVRProjectEnabled;
 	}
 
 	if(!FPlatformProperties::SupportsWindowedMode())
@@ -305,6 +307,11 @@ FIntPoint FSceneRenderTargets::ComputeDesiredSize(const FSceneViewFamily& ViewFa
 	{
 		// Otherwise use the setting specified by the console variable.
 		SceneTargetsSizingMethod = (ESizingMethods) FMath::Clamp(CVarSceneTargetsResizingMethod.GetValueOnRenderThread(), 0, (int32)VisibleSizingMethodsCount);
+	}
+
+	if (bIsVRProjectEnabled)
+	{
+		SceneTargetsSizingMethod = RequestedSize;
 	}
 
 	FIntPoint DesiredBufferSize = FIntPoint::ZeroValue;
@@ -492,6 +499,7 @@ void FSceneRenderTargets::Allocate(FRHICommandList& RHICmdList, const FSceneView
 
 		// Reinitialize the render targets for the given size.
 		SetBufferSize(DesiredBufferSize.X, DesiredBufferSize.Y);
+		SetLinearBufferSize(ViewFamily.FamilyLinearSizeX, ViewFamily.FamilyLinearSizeY);
 
 		UE_LOG(LogRenderer, Log, TEXT("Reallocating scene render targets to support %ux%u NumSamples %u (Frame:%u)."), BufferSize.X, BufferSize.Y, CurrentMSAACount, ViewFamily.FrameNumber);
 
@@ -1260,19 +1268,32 @@ void FSceneRenderTargets::BeginRenderingTranslucency(FRHICommandList& RHICmdList
 {
 	// Use the scene color buffer.
 	BeginRenderingSceneColor(RHICmdList, ESimpleRenderTargetMode::EExistingColorAndDepth, FExclusiveDepthStencil::DepthRead_StencilWrite);
-
+	
 	if (bFirstTimeThisFrame)
 	{
 		// Clear the stencil buffer for ResponsiveAA
 		RHICmdList.ClearDepthStencilTexture(GetSceneDepthSurface(), EClearDepthStencil::Stencil, (float)ERHIZBuffer::FarPlane, 0, View.ViewRect);
 	}
 		
-	// viewport to match view size
-	RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+	if (View.bVRProjectEnabled)
+	{
+		View.BeginVRProjectionStates(RHICmdList);
+	}
+	else
+	{
+		// viewport to match view size
+		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+	}
 }
 
 void FSceneRenderTargets::FinishRenderingTranslucency(FRHICommandListImmediate& RHICmdList, const class FViewInfo& View)
 {
+	if (View.bVRProjectEnabled)
+	{
+		// Reset viewport and scissor after rendering to vr projection view
+		View.EndVRProjectionStates(RHICmdList);
+	}
+
 	FinishRenderingSceneColor(RHICmdList);
 }
 
@@ -1312,7 +1333,15 @@ bool FSceneRenderTargets::BeginRenderingSeparateTranslucency(FRHICommandList& RH
 			RHICmdList.BindClearMRTValues(true, false, true);
 		}
 
-		RHICmdList.SetViewport(View.ViewRect.Min.X * Scale, View.ViewRect.Min.Y * Scale, 0.0f, View.ViewRect.Max.X * Scale, View.ViewRect.Max.Y * Scale, 1.0f);
+		// EHartNV : ToDo - confirm correctness, original code was not dependent on view
+		if (View.bVRProjectEnabled)
+		{
+			View.BeginVRProjectionStates(RHICmdList);
+		}
+		else
+		{
+			RHICmdList.SetViewport(View.ViewRect.Min.X * Scale, View.ViewRect.Min.Y * Scale, 0.0f, View.ViewRect.Max.X * Scale, View.ViewRect.Max.Y * Scale, 1.0f);
+		}
 		return true;
 	}
 
@@ -1324,6 +1353,12 @@ void FSceneRenderTargets::FinishRenderingSeparateTranslucency(FRHICommandList& R
 	if(IsSeparateTranslucencyActive(View))
 	{
 		SCOPED_DRAW_EVENT(RHICmdList, FinishSeparateTranslucency);
+
+		// EHartNV : ToDo - confirm correctness, previously, this was unconditional
+		if (View.bVRProjectEnabled)
+		{
+			View.EndVRProjectionStates(RHICmdList);
+		}
 
 		TRefCountPtr<IPooledRenderTarget>* SeparateTranslucency;
 		TRefCountPtr<IPooledRenderTarget>* SeparateTranslucencyDepth;
@@ -1347,6 +1382,42 @@ void FSceneRenderTargets::FinishRenderingSeparateTranslucency(FRHICommandList& R
 	}
 
 	bSeparateTranslucencyPass = false;
+}
+
+void FSceneRenderTargets::BeginRenderingStencilOnly(FRHICommandList& RHICmdList, bool bPerformClear)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, BeginRenderingStencilOnly);
+
+	FTextureRHIRef ColorTarget;
+	FTexture2DRHIRef DepthTarget = GetSceneDepthSurface();
+
+	if (bPerformClear)
+	{
+		FRHIRenderTargetView ColorView(ColorTarget, 0, -1, ERenderTargetLoadAction::ENoAction, ERenderTargetStoreAction::ENoAction);
+		FRHIDepthRenderTargetView DepthView(DepthTarget, ERenderTargetLoadAction::ENoAction, ERenderTargetStoreAction::ENoAction, ERenderTargetLoadAction::EClear, ERenderTargetStoreAction::EStore);
+
+		// Clear the depth buffer.
+		// Note, this is a reversed Z depth surface, so 0.0f is the far plane.
+		FRHISetRenderTargetsInfo Info(1, &ColorView, DepthView);
+
+		RHICmdList.SetRenderTargetsAndClear(Info);
+	}
+	else
+	{
+		// Set the scene depth surface and a DUMMY buffer as color buffer
+		// (as long as it's the same dimension as the depth buffer),	
+		FRHIRenderTargetView ColorView(ColorTarget, 0, -1, ERenderTargetLoadAction::ENoAction, ERenderTargetStoreAction::ENoAction);
+		FRHIDepthRenderTargetView DepthView(DepthTarget, ERenderTargetLoadAction::ENoAction, ERenderTargetStoreAction::ENoAction, ERenderTargetLoadAction::ELoad, ERenderTargetStoreAction::EStore);
+
+		RHICmdList.SetRenderTargets(1, &ColorView, &DepthView, 0, NULL);
+
+		RHICmdList.BindClearMRTValues(false, false, true);
+	}
+}
+
+void FSceneRenderTargets::FinishRenderingStencilOnly(FRHICommandList& RHICmdList)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, FinishRenderingStencilOnly);
 }
 
 void FSceneRenderTargets::ResolveSceneDepthTexture(FRHICommandList& RHICmdList, const FResolveRect& ResolveRect)
@@ -1504,6 +1575,14 @@ void FSceneRenderTargets::SetBufferSize(int32 InBufferSizeX, int32 InBufferSizeY
 	QuantizeBufferSize(InBufferSizeX, InBufferSizeY);
 	BufferSize.X = InBufferSizeX;
 	BufferSize.Y = InBufferSizeY;
+}
+
+void FSceneRenderTargets::SetLinearBufferSize(int32 InLinearBufferSizeX, int32 InLinearBufferSizeY)
+{
+	// does this need to be quantized?
+	QuantizeBufferSize(InLinearBufferSizeX, InLinearBufferSizeY);
+	LinearBufferSize.X = InLinearBufferSizeX;
+	LinearBufferSize.Y = InLinearBufferSizeY;
 }
 
 void FSceneRenderTargets::SetSeparateTranslucencyBufferSize(bool bAnyViewWantsDownsampledSeparateTranslucency)

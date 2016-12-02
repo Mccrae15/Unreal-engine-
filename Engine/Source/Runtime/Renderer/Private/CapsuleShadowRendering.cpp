@@ -1047,7 +1047,8 @@ void FDeferredShadingSceneRenderer::RenderIndirectCapsuleShadows(
 			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 			{
 				const FViewInfo& View = Views[ViewIndex];
-
+				RHICmdList.SetGPUMask(View.StereoPass);
+				
 				if (View.IndirectShadowPrimitives.Num() > 0 && View.ViewState)
 				{
 					SCOPED_DRAW_EVENT(RHICmdList, IndirectCapsuleShadows);
@@ -1177,6 +1178,7 @@ void FDeferredShadingSceneRenderer::RenderIndirectCapsuleShadows(
 					}
 				}
 			}
+			RHICmdList.SetGPUMask(0);
 		}
 	}
 }
@@ -1207,6 +1209,8 @@ void FDeferredShadingSceneRenderer::RenderCapsuleShadowsForMovableSkylight(FRHIC
 			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 			{
 				const FViewInfo& View = Views[ViewIndex];
+
+				RHICmdList.SetGPUMask(View.StereoPass);
 
 				if (View.IndirectShadowPrimitives.Num() > 0 && View.ViewState)
 				{
@@ -1261,6 +1265,7 @@ void FDeferredShadingSceneRenderer::RenderCapsuleShadowsForMovableSkylight(FRHIC
 					}
 				}
 			}
+			RHICmdList.SetGPUMask(0);
 		}
 	}
 }

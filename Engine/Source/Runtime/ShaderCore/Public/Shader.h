@@ -758,6 +758,9 @@ public:
 	static const uint32 ShaderMagic_CleaningUp = 0xdc67f93b;
 	/** Canary is set to this if the FShader is a valid pointer and initialized. */
 	static const uint32 ShaderMagic_Initialized = 0x335b43ab;
+
+	/** FastGS is off by default; this is overridden in derived classes to enable it */
+	static const bool IsFastGeometryShader = false;
 };
 
 /** An object which is used to serialize/deserialize, compile, and cache a particular shader class. */
@@ -803,7 +806,8 @@ public:
 		const TCHAR* InFunctionName,
 		uint32 InFrequency,
 		ConstructSerializedType InConstructSerializedRef,
-		GetStreamOutElementsType InGetStreamOutElementsRef);
+		GetStreamOutElementsType InGetStreamOutElementsRef,
+		bool InIsFastGeometryShader = false);
 
 	virtual ~FShaderType();
 
@@ -859,6 +863,12 @@ public:
 	{ 
 		return (EShaderFrequency)Frequency; 
 	}
+
+	inline bool GetIsFastGeometryShader() const
+	{
+		return IsFastGeometryShader;
+	}
+
 	inline const TCHAR* GetName() const
 	{ 
 		return Name; 
@@ -933,6 +943,7 @@ private:
 	const TCHAR* SourceFilename;
 	const TCHAR* FunctionName;
 	uint32 Frequency;
+	bool IsFastGeometryShader;
 
 	ConstructSerializedType ConstructSerializedRef;
 	GetStreamOutElementsType GetStreamOutElementsRef;
@@ -995,7 +1006,8 @@ private:
 		ShaderClass::ConstructCompiledInstance, \
 		ShaderClass::ModifyCompilationEnvironment, \
 		ShaderClass::ShouldCache, \
-		ShaderClass::GetStreamOutElements \
+		ShaderClass::GetStreamOutElements, \
+		ShaderClass::IsFastGeometryShader \
 		);
 
 /** A macro to implement a templated shader type, the function name and the source filename comes from the class. */
@@ -1010,7 +1022,8 @@ private:
 	ShaderClass::ConstructCompiledInstance, \
 	ShaderClass::ModifyCompilationEnvironment, \
 	ShaderClass::ShouldCache, \
-	ShaderClass::GetStreamOutElements \
+	ShaderClass::GetStreamOutElements, \
+	ShaderClass::IsFastGeometryShader \
 	);
 
 
@@ -1025,7 +1038,8 @@ private:
 	ShaderClass::ConstructCompiledInstance, \
 	ShaderClass::ModifyCompilationEnvironment, \
 	ShaderClass::ShouldCache, \
-	ShaderClass::GetStreamOutElements \
+	ShaderClass::GetStreamOutElements, \
+	ShaderClass::IsFastGeometryShader \
 	);
 #endif
 
