@@ -46,10 +46,7 @@ class FDeferredLightFastGS : public FGlobalShader
 public:
 	static bool ShouldCache(EShaderPlatform Platform)
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
-		static const bool bMultiResShaders = CVar->GetValueOnAnyThread() != 0;
-
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && bMultiResShaders;
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
 	}
 
 	FDeferredLightFastGS() {}

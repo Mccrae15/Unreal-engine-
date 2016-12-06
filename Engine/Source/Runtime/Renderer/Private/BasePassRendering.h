@@ -496,11 +496,8 @@ protected:
 public:
 	static bool ShouldCache(EShaderPlatform Platform, const FMaterial* Material, const FVertexFactoryType* VertexFactoryType)
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
-		static const bool bMultiResShaders = CVar->GetValueOnAnyThread() != 0;
-
 		// Re-use vertex shader gating
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && TBasePassVS<LightMapPolicyType, false>::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && bMultiResShaders;
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && TBasePassVS<LightMapPolicyType, false>::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
 	}
 
 	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
@@ -919,9 +916,7 @@ void GetBasePassShaders(
 		DomainShader = Material.GetShader<TBasePassDS<LightMapPolicyType> >(VertexFactoryType);
 	}
 
-	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
-	static const bool bMultiResShaders = CVar->GetValueOnAnyThread() != 0;
-	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[Material.GetFeatureLevel()]) && bMultiResShaders;
+	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[Material.GetFeatureLevel()]) && IsFastGSNeeded();
 
 	FastGeometryShader = bMultiRes ? Material.GetShader<TBasePassFastGS<LightMapPolicyType> >(VertexFactoryType) : nullptr;
 

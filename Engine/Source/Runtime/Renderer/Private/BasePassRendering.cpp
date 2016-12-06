@@ -644,12 +644,10 @@ void GetUniformBasePassShaders(
 	}
 
 	const FMeshMaterialShaderMap* MaterialMeshShaderMap = Material.GetRenderingThreadShaderMap()->GetMeshShaderMap(VertexFactoryType);
-	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
-	static const bool bMultiResShaders = CVar->GetValueOnAnyThread() != 0;
-	const bool bNeedsMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[Material.GetFeatureLevel()]) &&
-								bMultiResShaders &&
+	const bool bNeedsFastGS = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[Material.GetFeatureLevel()]) &&
+								IsFastGSNeeded() &&
 								MaterialMeshShaderMap->HasShader(&TBasePassFastGS<TUniformLightMapPolicy<Policy> >::StaticType);
-	if (bNeedsMultiRes)
+	if (bNeedsFastGS)
 	{
 		FastGeometryShader = Material.GetShader<TBasePassFastGS<TUniformLightMapPolicy<Policy> > >(VertexFactoryType);
 	}

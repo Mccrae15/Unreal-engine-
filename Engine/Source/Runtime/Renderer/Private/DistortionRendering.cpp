@@ -259,11 +259,8 @@ protected:
 
 	static bool ShouldCache(EShaderPlatform Platform, const FMaterial* Material, const FVertexFactoryType* VertexFactoryType)
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
-		static const bool bMultiResShaders = CVar->GetValueOnAnyThread() != 0;
-
 		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5)
-			&& DistortMeshPolicy::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && bMultiResShaders;
+			&& DistortMeshPolicy::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
 	}
 
 	static const bool IsFastGeometryShader = true;
@@ -475,10 +472,7 @@ TDistortionMeshDrawingPolicy<DistortMeshPolicy>::TDistortionMeshDrawingPolicy(
 
 	VertexShader = InMaterialResource.GetShader<TDistortionMeshVS<DistortMeshPolicy> >(InVertexFactory->GetType());
 
-	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
-	static const bool bMultiResShaders = CVar->GetValueOnAnyThread() != 0;
-
-	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && bMultiResShaders;
+	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && IsFastGSNeeded();
 	FastGeometryShader = bMultiRes ? InMaterialResource.GetShader<TDistortionMeshFastGS<DistortMeshPolicy> >(InVertexFactory->GetType()) : nullptr;
 
 	if (bInitializeOffsets)
