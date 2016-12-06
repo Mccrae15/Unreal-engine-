@@ -54,7 +54,7 @@ bool bIsSinglePassStereo;
 bool bIsInstancedStereo;
 #endif
 
-#if INSTANCED_STEREO || MOBILE_MULTI_VIEW
+#if INSTANCED_STEREO || SINGLE_PASS_STEREO || MOBILE_MULTI_VIEW
 ViewState ResolveView(uint ViewIndex)
 {
 	if (ViewIndex == 0)
