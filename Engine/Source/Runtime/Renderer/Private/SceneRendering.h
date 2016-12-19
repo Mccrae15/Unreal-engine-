@@ -887,7 +887,8 @@ public:
 			PrevViewMatrices,
 			OutTranslucentCascadeBoundsArray,
 			NumTranslucentCascades,
-			ViewUniformShaderParameters);
+			ViewUniformShaderParameters,
+			SupportMultiRes);
 	}
 
 	void SetupDefaultGlobalDistanceFieldUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters) const;
