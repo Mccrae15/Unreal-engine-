@@ -922,7 +922,11 @@ void FPixelShaderInOut_MainPS(
 		#elif FORWARD_SHADING || TRANSLUCENCY_LIGHTING_SURFACE_FORWARDSHADING || TRANSLUCENCY_LIGHTING_SURFACE_LIGHTINGVOLUME
 			uint GridIndex = 0;
 
-			#if INSTANCED_STEREO
+			#if INSTANCED_STEREO && SINGLE_PASS_STEREO
+				const uint EyeIndex = SinglePassStereoIsActive() ? InEyeIndex : TmpEyeIndex;
+			#elif SINGLE_PASS_STEREO
+				const uint EyeIndex = InEyeIndex;
+			#elif INSTANCED_STEREO
 				const uint EyeIndex = GetEyeIndex(Interpolants.PackedEyeIndex);
 			#else
 				const uint EyeIndex = 0;
