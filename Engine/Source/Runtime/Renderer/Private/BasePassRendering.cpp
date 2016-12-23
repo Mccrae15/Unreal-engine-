@@ -563,6 +563,7 @@ bool FBasePassOpaqueDrawingPolicyFactory::DrawDynamicMesh(
 				DrawingContext.TextureMode,
 				View.GetFeatureLevel(), 
 				bIsInstancedStereo,
+				false, // const bool InbUseMobileMultiViewMask = false
 				bIsSinglePassStereo
 				),
 			FDrawBasePassDynamicMeshAction(
