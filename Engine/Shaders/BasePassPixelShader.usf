@@ -984,11 +984,11 @@ void FPixelShaderInOut_MainPS(
 		
 	// Volume lighting for lit translucency
 	#if (MATERIAL_SHADINGMODEL_DEFAULT_LIT || MATERIAL_SHADINGMODEL_SUBSURFACE) && (MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ADDITIVE) && !SIMPLE_FORWARD_SHADING && !FORWARD_SHADING
-		uint EyeIndex = 0;
+		uint SPS_EyeIndex = 0;
 		#if SINGLE_PASS_STEREO
-		EyeIndex = InEyeIndex;
+		SPS_EyeIndex = InEyeIndex;
 		#endif
-		Color += GetTranslucencyVolumeLighting(MaterialParameters, PixelMaterialInputs, BasePassInterpolants, GBuffer, IndirectIrradiance, EyeIndex);
+		Color += GetTranslucencyVolumeLighting(MaterialParameters, PixelMaterialInputs, BasePassInterpolants, GBuffer, IndirectIrradiance, SPS_EyeIndex);
 	#endif
 
 	#if !MATERIAL_SHADINGMODEL_UNLIT && USE_DEVELOPMENT_SHADERS

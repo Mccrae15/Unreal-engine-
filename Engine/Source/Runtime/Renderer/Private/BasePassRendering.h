@@ -333,7 +333,7 @@ public:
 		HeightFogParameters.Set(RHICmdList, GetVertexShader(), &View);
 
 		TranslucentLightingVolumeParameters.Set(RHICmdList, GetVertexShader());
-		ForwardLightingParameters.Set(RHICmdList, GetVertexShader(), View, bIsInstancedStereo);
+		ForwardLightingParameters.Set(RHICmdList, GetVertexShader(), View, bIsInstancedStereo || bIsSinglePassStereo);
 
 		if (IsInstancedStereoParameter.IsBound())
 		{
@@ -783,7 +783,8 @@ public:
 		bool bEnableEditorPrimitveDepthTest,
 		ESceneRenderTargetsMode::Type TextureMode,
 		bool bIsInstancedStereo,
-		bool bUseDownsampledTranslucencyViewUniformBuffer)
+		bool bUseDownsampledTranslucencyViewUniformBuffer,
+		bool bIsSinglePassStereo)
 	{
 		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
 
@@ -800,7 +801,7 @@ public:
 		
 		EditorCompositeParams.SetParameters(RHICmdList, MaterialResource, View, bEnableEditorPrimitveDepthTest, GetPixelShader());
 
-		ForwardLightingParameters.Set(RHICmdList, ShaderRHI, *View, bIsInstancedStereo);
+		ForwardLightingParameters.Set(RHICmdList, ShaderRHI, *View, bIsInstancedStereo || bIsSinglePassStereo);
 	}
 
 	void SetMesh(FRHICommandList& RHICmdList, const FVertexFactory* VertexFactory,const FSceneView& View,const FPrimitiveSceneProxy* Proxy,const FMeshBatchElement& BatchElement, const FMeshDrawingRenderState& DrawRenderState, EBlendMode BlendMode);
@@ -1098,7 +1099,7 @@ public:
 		}
 		else
 		{
-			PixelShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, View, BlendMode, bEnableEditorPrimitiveDepthTest, SceneTextureMode, PolicyContext.bIsInstancedStereo, bUseDownsampledTranslucencyViewUniformBuffer);
+			PixelShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, View, BlendMode, bEnableEditorPrimitiveDepthTest, SceneTextureMode, PolicyContext.bIsInstancedStereo, bUseDownsampledTranslucencyViewUniformBuffer, PolicyContext.bIsSinglePassStereo);
 
 			switch(BlendMode)
 			{
