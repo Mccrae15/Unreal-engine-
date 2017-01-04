@@ -14,7 +14,9 @@ struct FPositionOnlyDepthVSToPS
 #if SINGLE_PASS_STEREO
 	float4 NvXRight : NV_X_RIGHT;
 #endif
+#if INSTANCED_STEREO
 	nointerpolation uint PackedEyeIndex : PACKED_EYE_INDEX;
+#endif
 };
 
 #if INSTANCED_STEREO
