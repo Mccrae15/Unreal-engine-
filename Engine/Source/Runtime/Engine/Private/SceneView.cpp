@@ -314,7 +314,7 @@ static TAutoConsoleVariable<int32> CVarMultiResRendering(
 	TEXT("0: off (default)\n")
 	TEXT("1: conservative (saves 28% pixels)\n")
 	TEXT("2: balanced (saves 42% pixels)\n")
-	TEXT("3: aggressive (saves 60% pexels)\n")
+	TEXT("3: aggressive (saves 60% pixels)\n")
 	TEXT("Press Numpad0 to cycle between settings."),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
@@ -323,7 +323,9 @@ static TAutoConsoleVariable<int32> CVarLensMatchedShadingRendering(
 	0,
 	TEXT("Lens Matched Shading rendering toggle:\n")
 	TEXT("0: off (default)\n")
-	TEXT("1: enabled (with crescent bay preset)\n"),
+	TEXT("1: quality\n")
+	TEXT("2: conservative\n")
+	TEXT("3: aggressive\n"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<float> CVarLensMatchedShadingResScaling(
