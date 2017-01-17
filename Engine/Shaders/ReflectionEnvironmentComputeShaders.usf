@@ -574,8 +574,8 @@ void ReflectionEnvironmentTiledDeferredMain(
 
 #if USE_LIGHT_GRID_REFLECTION_CAPTURE_CULLING
 			{
-				// NV_MSCHOTT this works for single eye case but hasn't been verified exhaustively for stereo rendering
-				uint GridIndex = ComputeLightGridCellIndex((uint2)SvPositionToLinearSvPosition(float4(DispatchThreadId.xy, 0, 1)).xy, SceneDepth);
+				
+				uint GridIndex = ComputeLightGridCellIndex((uint2)SvPositionToLinearSvPosition(float4(PixelPos, 0, 1)).xy, SceneDepth);
 				uint NumCulledEntryIndex = (ForwardGlobalLightData.NumGridCells + GridIndex) * NUM_CULLED_LIGHTS_GRID_STRIDE;
 				NumCulledReflectionCaptures = NumCulledLightsGrid[NumCulledEntryIndex + 0];
 				DataStartIndex = NumCulledLightsGrid[NumCulledEntryIndex + 1];
