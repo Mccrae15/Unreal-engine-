@@ -20,7 +20,7 @@
 #else
 #define ATOMIC_REDUCTION	0
 #endif
- 
+
 #define AABB_INTERSECT		1
 #define VISUALIZE_OVERLAP	0
 
@@ -533,59 +533,56 @@ void ReflectionEnvironmentTiledDeferredMain(
 #endif
 
 	BRANCH
-		if (GBuffer.ShadingModelID != SHADINGMODELID_UNLIT && GBuffer.ShadingModelID != SHADINGMODELID_HAIR)
-		{
-			float3 N = GBuffer.WorldNormal;
-			float3 V = -CameraToPixel;
-			float3 R = 2 * dot(V, N) * N - V;
-			float NoV = saturate(dot(N, V));
+	if( GBuffer.ShadingModelID != SHADINGMODELID_UNLIT && GBuffer.ShadingModelID != SHADINGMODELID_HAIR )
+	{		
+		float3 N = GBuffer.WorldNormal;
+		float3 V = -CameraToPixel;
+		float3 R = 2 * dot( V, N ) * N - V;
+		float NoV = saturate( dot( N, V ) );
 
-			// Point lobe in off-specular peak direction
-			R = GetOffSpecularPeakReflectionDir(N, R, GBuffer.Roughness);
+		// Point lobe in off-specular peak direction
+		R = GetOffSpecularPeakReflectionDir(N, R, GBuffer.Roughness);
 
 #if 1
-			// Note: this texture may also contain planar reflections
-			float4 SSR = ScreenSpaceReflections.Load(int3(PixelPos, 0));
-			Color.rgb = SSR.rgb;
-			Color.a = 1 - SSR.a;
+		// Note: this texture may also contain planar reflections
+		float4 SSR = ScreenSpaceReflections.Load( int3(PixelPos, 0) );
+		Color.rgb = SSR.rgb;
+		Color.a = 1 - SSR.a;
 #endif
 
-			if (GBuffer.ShadingModelID == SHADINGMODELID_CLEAR_COAT)
-			{
-				const float ClearCoat = GBuffer.CustomData.x;
-				Color = lerp(Color, float4(0, 0, 0, 1), ClearCoat);
+		if( GBuffer.ShadingModelID == SHADINGMODELID_CLEAR_COAT )
+		{
+			const float ClearCoat = GBuffer.CustomData.x;
+			Color = lerp( Color, float4(0,0,0,1), ClearCoat );
 
 #if CLEAR_COAT_BOTTOM_NORMAL
-				const float2 oct1 = ((float2(GBuffer.CustomData.a, GBuffer.CustomData.z) * 2) - (256.0 / 255.0)) + UnitVectorToOctahedron(GBuffer.WorldNormal);
-				const float3 ClearCoatUnderNormal = OctahedronToUnitVector(oct1);
+			const float2 oct1 = ((float2(GBuffer.CustomData.a, GBuffer.CustomData.z) * 2) - (256.0/255.0)) + UnitVectorToOctahedron(GBuffer.WorldNormal);
+			const float3 ClearCoatUnderNormal = OctahedronToUnitVector(oct1);
 
-				const float3 BottomEffectiveNormal = ClearCoatUnderNormal;
-				R = 2 * dot(V, ClearCoatUnderNormal) * ClearCoatUnderNormal - V;
+			const float3 BottomEffectiveNormal = ClearCoatUnderNormal;			
+			R = 2 * dot( V, ClearCoatUnderNormal ) * ClearCoatUnderNormal - V;
 #endif
-			}
+		}
 
-			float AO = ScreenSpaceData.AmbientOcclusion;
-			float RoughnessSq = GBuffer.Roughness * GBuffer.Roughness;
-			float SpecularOcclusion = GetSpecularOcclusion(NoV, RoughnessSq, AO);
-			Color.a *= SpecularOcclusion;
+		float AO = ScreenSpaceData.AmbientOcclusion;
+		float RoughnessSq = GBuffer.Roughness * GBuffer.Roughness;
+		float SpecularOcclusion = GetSpecularOcclusion(NoV, RoughnessSq, AO);
+		Color.a *= SpecularOcclusion;
 
-			uint NumCulledReflectionCaptures = TileNumReflectionCaptures;
-			uint DataStartIndex = 0;
+		uint NumCulledReflectionCaptures = TileNumReflectionCaptures;
+		uint DataStartIndex = 0;
 
-#if USE_LIGHT_GRID_REFLECTION_CAPTURE_CULLING
-			{
-				
-				uint GridIndex = ComputeLightGridCellIndex((uint2)SvPositionToLinearSvPosition(float4(PixelPos, 0, 1)).xy, SceneDepth);
-				uint NumCulledEntryIndex = (ForwardGlobalLightData.NumGridCells + GridIndex) * NUM_CULLED_LIGHTS_GRID_STRIDE;
-				NumCulledReflectionCaptures = NumCulledLightsGrid[NumCulledEntryIndex + 0];
-				DataStartIndex = NumCulledLightsGrid[NumCulledEntryIndex + 1];
-			}
-#endif
+		#if USE_LIGHT_GRID_REFLECTION_CAPTURE_CULLING
+		{
+			uint GridIndex = ComputeLightGridCellIndex(DispatchThreadId.xy, SceneDepth);
+			uint NumCulledEntryIndex = (ForwardGlobalLightData.NumGridCells + GridIndex) * NUM_CULLED_LIGHTS_GRID_STRIDE;
+			NumCulledReflectionCaptures = NumCulledLightsGrid[NumCulledEntryIndex + 0];
+			DataStartIndex = NumCulledLightsGrid[NumCulledEntryIndex + 1];
+		}
+		#endif
 
-			
-			//bottom for clearcoat or the only reflection.
-			Color.rgb += GatherRadiance(Color.a, WorldPosition, R, GBuffer.Roughness, ScreenPosition, IndirectIrradiance, GBuffer.ShadingModelID, NumCulledReflectionCaptures, DataStartIndex);
-
+		//bottom for clearcoat or the only reflection.
+		Color.rgb += GatherRadiance(Color.a, WorldPosition, R, GBuffer.Roughness, ScreenPosition, IndirectIrradiance, GBuffer.ShadingModelID, NumCulledReflectionCaptures, DataStartIndex);
 
 		BRANCH
 		if( GBuffer.ShadingModelID == SHADINGMODELID_CLEAR_COAT )
