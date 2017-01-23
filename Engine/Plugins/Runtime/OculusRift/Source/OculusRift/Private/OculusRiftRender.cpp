@@ -487,13 +487,13 @@ void FOculusRiftHMD::CalculateRenderTargetSize(const FViewport& Viewport, uint32
 	static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
 	static const auto CVarLensMatchedShadingRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingRendering"));
 	bool bLensMatchedShadeEnabled = GSupportsFastGeometryShader && GSupportsModifiedW &&
-		CVarLensMatchedShading && CVarLensMatchedShading->GetValueOnGameThread() && CVarLensMatchedShadingRendering->GetValueOnGameThread() > 0;
+		CVarLensMatchedShading && CVarLensMatchedShading->GetValueOnAnyThread() && CVarLensMatchedShadingRendering->GetValueOnAnyThread() > 0;
 
 	if (bLensMatchedShadeEnabled)
 	{
 		// Enlarge the buffer to keep the upsampled view center sharp
-		static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingUnwarpScale"));
-		float Scale = CVarLensMatchedShadingUnwarpScale->GetValueOnGameThread();
+		static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
+		float Scale = CVarLensMatchedShadingUnwarpScale->GetValueOnAnyThread();
 
 		InOutSizeX *= Scale;
 		InOutSizeY *= Scale;
