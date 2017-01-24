@@ -139,6 +139,8 @@
 
 # Ignore content folders
 Content/
+Samples/Showcases/
+QAGame/
 
 # Ignore DDC
 /Engine/DerivedDataCache/**
