@@ -14,4 +14,7 @@ Welcome to NVIDIA's Unreal Engine 4 GitHub fork.  This fork contains many branch
 
 If you need to file an issue, please note which branch you are using.
 
+Many of the NVIDIA branches contain binaries (NVAPI, APEX, or PhysX) that are normally fetched by GitDependencies (called by Setup.bat).  When Setup.bat asks to overwrite them, the best answer is "No", otherwise you will need revert the changes to those binaries using Git.
+
 If you are staring at this empty NVIDIA-README branch and are wondering where to find the Unreal Engine 4 source, see a [quick tutorial about git branches](https://www.atlassian.com/git/tutorials/using-branches).  Note, you can view all of NVIDIA's integration branches with the `git branch -r` command.
+
