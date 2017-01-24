@@ -322,13 +322,12 @@ void CollideWithDepthBuffer(
 			}
 #endif
 			// Reconstruct world position.
-			float3 WorldPosition = WorldPositionFromSceneDepth(ScreenPosition.xy, SceneDepth);
+			float3 WorldPosition = WorldPositionFromSceneDepth(LinearScreenPosition.xy, SceneDepth);
 			
 #if FORWARD_SHADING && FORWARD_SHADING_ACCURATE_NORMAL
 			// Compute normal using the two additional neighbooring pixel depth buffer fetches.
-			// NV_MSCHOTT the offsets  might need to be tweaked for the VR projection
-			float3 WorldPosition0 = WorldPositionFromSceneDepth(ScreenPosition.xy + float2(2 * View.ViewSizeAndInvSize.z, 0.0), SceneDepth0);
-			float3 WorldPosition1 = WorldPositionFromSceneDepth(ScreenPosition.xy - float2(0.0, 2 * View.ViewSizeAndInvSize.w), SceneDepth1);
+			float3 WorldPosition0 = WorldPositionFromSceneDepth(VRProjMapNDCVRProjToLinear(ScreenPosition.xy + float2(2 * View.ViewSizeAndInvSize.z, 0.0)), SceneDepth0);
+			float3 WorldPosition1 = WorldPositionFromSceneDepth(VRProjMapNDCVRProjToLinear(ScreenPosition.xy - float2(0.0, 2 * View.ViewSizeAndInvSize.w)), SceneDepth1);
 			float3 WorldNormal = normalize(cross(WorldPosition0 - WorldPosition, WorldPosition1 - WorldPosition));
 #elif FORWARD_SHADING // && !FORWARD_SHADING_ACCURATE_NORMAL
 			// Compute normal using a ddx/ddy hack, hopefully the neighbooring particules will be close enough...
