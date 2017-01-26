@@ -10,6 +10,7 @@
 
 // only for MainPS
 float UpscaleSoftness;
+uint VRProjectionFlags;
 
 // only for MainVS()
 // .x:HalfFOV .y:tan(HalfFov) .z:CylinderDistortion(0=none, 1:full) .w:Correction to scale Y the same as X is scaled in the center
@@ -88,8 +89,12 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 {
 	float2 UV = UVAndScreenPos.xy;
 	OutColor = 0;
+
 	// Remap for warped viewports, no-op for regular viewports
-	UV = VRProjMapRenderTargetLinearToVRProj(UV);
+	if (VRProjectionIsActive() && !(VRProjectionFlags & 0x1))
+	{
+		UV = VRProjMapRenderTargetLinearToVRProj(UV);
+	}
 
 #if METHOD == 0
 	// Nearest sampling (not blurry but blocky, more for testing)
@@ -283,6 +288,36 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 	#endif
 
 #endif
+
+	if (VRProjectionIsActive())
+	{
+		// Visualize boundaries
+
+		// if any of the boundary vis flags are on
+		
+		float2 localUV = VRProjMapRenderTargetToViewRectInternal(UV);
+		//if (localUV.x < View.VRProjectToLinearSplitsX.x)
+		//	OutColor.rgb *= float3(1, 1, 0);
+
+		if ((VRProjectionFlags & 0x2))
+		{
+			float2 boundaryX = abs((localUV.x - View.VRProjectToLinearSplitsX) *PostprocessInput0Size.x);
+			float2 boundaryY = abs((localUV.y - View.VRProjectToLinearSplitsY) *PostprocessInput0Size.y);
+
+			float2 boundaryX2 = smoothstep(1.0f, 3.5f, boundaryX);
+			float2 boundaryY2 = smoothstep(1.0f, 3.5f, boundaryY);
+
+			float boundary = min(boundaryX2.x, boundaryX2.y) * min(boundaryY2.x, boundaryY2.y);
+
+			OutColor.rgb = lerp(float3(0, 0, 0), OutColor.rgb, boundary);
+
+			boundaryX2 = smoothstep(1.0f, 2.0f, boundaryX);
+			boundaryY2 = smoothstep(1.0f, 2.0f, boundaryY);
+
+			boundary = min(boundaryX2.x, boundaryX2.y) * min(boundaryY2.x, boundaryY2.y);
+			OutColor.rgb = lerp(float3(1, 1, 1), OutColor.rgb, boundary);
+		}
+	}
 
 #if 0
 	// Horz scan line pattern.
