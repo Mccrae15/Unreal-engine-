@@ -133,12 +133,6 @@ public:
 
 IMPLEMENT_SHADER_TYPE(,FPostProcessUpscaleVS,TEXT("PostProcessUpscale"),TEXT("MainVS"),SF_Vertex);
 
-static TAutoConsoleVariable<int> CVarProjectionFlags(
-	TEXT("vr.ProjFlags"),
-	0,
-	TEXT("Flags to control VRProjection visulaization\n"),
-	ECVF_RenderThreadSafe);
-
 /** Encapsulates the post processing upscale pixel shader. */
 template <uint32 Method>
 class FPostProcessUpscalePS : public FGlobalShader
@@ -200,7 +194,13 @@ public:
 			SetShaderValue(Context.RHICmdList, ShaderRHI, UpscaleSoftness, UpscaleSoftnessValue);
 		}
 
-		SetShaderValue(Context.RHICmdList, ShaderRHI, VRProjectionFlags, CVarProjectionFlags.GetValueOnRenderThread());
+		{
+			unsigned int Flags = 0;
+			Flags |= Context.View.Family->EngineShowFlags.VisualizeVRWarp ? 0x1 : 0x0;
+			Flags |= Context.View.Family->EngineShowFlags.VisualizeVRWarpDivisions ? 0x2 : 0x0;
+			Flags |= Context.View.Family->EngineShowFlags.VisualizeVRWarpRate ? 0x4 : 0x0;
+			SetShaderValue(Context.RHICmdList, ShaderRHI, VRProjectionFlags, Flags);
+		}
 	}
 	
 	// FShader interface.

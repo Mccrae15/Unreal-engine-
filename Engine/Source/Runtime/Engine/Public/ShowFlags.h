@@ -383,6 +383,9 @@ private:
 		SetMeshUVDensityAccuracy(false);
 		SetMaterialTextureScaleAccuracy(false);
 		SetOutputMaterialTextureScales(false);
+		SetVisualizeVRWarp(false);
+		SetVisualizeVRWarpDivisions(false);
+		SetVisualizeVRWarpRate(false);
 	}
 
 

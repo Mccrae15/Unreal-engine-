@@ -84,6 +84,73 @@ void MainVS(
 	OutTexCoord.zw =  OutPosition.xy;
 }
 
+/******************************************************************************************************************************************
+*
+*EHartNV ToDO - move this to VrProjection.usf once finalized
+*
+*******************************************************************************************************************************************/
+
+// Takes UV coordinate in Render Target space and returns parametric distance from split locations in view space (1.0 is the entire width/height of view)
+float2 VRProjGetDistanceFromBoundaries(float2 UV)
+{
+	float2 Distance = 2.0f; // more than a full screen away
+
+	if (VRProjectionIsActive())
+	{
+
+		UV = VRProjMapRenderTargetToViewRectInternal(UV);
+		if (MultiResIsActive())
+		{
+			float2 BoundaryX = abs(UV.x - View.VRProjectToLinearSplitsX);
+			float2 BoundaryY = abs(UV.y - View.VRProjectToLinearSplitsY);
+
+			Distance = float2(min(BoundaryX.x, BoundaryX.y), min(BoundaryY.x, BoundaryY.y));
+		}
+		else if (LensMatchedShadingIsActive())
+		{
+			// LMS nees to run a transform to get to the right space where the divisions are defined properly
+			float BoundaryX = abs((UV.x - 0.5));
+			float BoundaryY = abs((UV.y - 0.5));
+
+			Distance = float2(BoundaryX,BoundaryY);
+		}
+	}
+
+	return Distance;
+}
+
+// Takes UV coordinate in RenderTarget space and returns shading rate
+float VRProjGetShadingRate(float2 UV)
+{
+	float Rate = 1.0f;
+	if (VRProjectionIsActive())
+	{
+
+		UV = VRProjMapRenderTargetToViewRectInternal(UV);
+		if (MultiResIsActive())
+		{
+			// scales stored in View constants are for texture coordinates, rates need to be derived, just using  fixed dumb levels
+			if (UV.x < View.VRProjectToLinearSplitsX.x)
+				Rate *= 0.5;
+			else if (UV.x < View.VRProjectToLinearSplitsX.y)
+				Rate *= 1.0;
+			else
+				Rate *= 0.5;
+
+			if (UV.y < View.VRProjectToLinearSplitsX.x)
+				Rate *= 0.5;
+			else if (UV.y < View.VRProjectToLinearSplitsX.y)
+				Rate *= 1.0;
+			else
+				Rate *= 0.5;
+		}
+		else if (LensMatchedShadingIsActive())
+		{
+		}
+	}
+
+	return Rate;
+}
 
 void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
 {
@@ -293,30 +360,28 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 	{
 		// Visualize boundaries
 
-		// if any of the boundary vis flags are on
-		
-		float2 localUV = VRProjMapRenderTargetToViewRectInternal(UV);
-		//if (localUV.x < View.VRProjectToLinearSplitsX.x)
-		//	OutColor.rgb *= float3(1, 1, 0);
+		// adjust color based on shading rate
+		if ((VRProjectionFlags & 0x4))
+		{
+			// just scale color by rate for now
+			OutColor.rgb *= VRProjGetShadingRate(UV);
+		}
 
+		// draw boundaries
 		if ((VRProjectionFlags & 0x2))
 		{
-			float2 boundaryX = abs((localUV.x - View.VRProjectToLinearSplitsX) *PostprocessInput0Size.x);
-			float2 boundaryY = abs((localUV.y - View.VRProjectToLinearSplitsY) *PostprocessInput0Size.y);
+			// find closest distance to regsion boundaries and convert to pixels
+			float2 Distance = VRProjGetDistanceFromBoundaries(UV) * PostprocessInput0Size.xy;
+			float ScalarDistance = min(Distance.x, Distance.y);
 
-			float2 boundaryX2 = smoothstep(1.0f, 3.5f, boundaryX);
-			float2 boundaryY2 = smoothstep(1.0f, 3.5f, boundaryY);
+			// EHart, may be worth tweaking smoothstep scales
+			OutColor.rgb = lerp(float3(0, 0, 0), OutColor.rgb, smoothstep(1.0f, 4.0f, ScalarDistance));
 
-			float boundary = min(boundaryX2.x, boundaryX2.y) * min(boundaryY2.x, boundaryY2.y);
+			OutColor.rgb = lerp(float3(1, 1, 1), OutColor.rgb, smoothstep(1.0f, 2.0f, ScalarDistance));
 
-			OutColor.rgb = lerp(float3(0, 0, 0), OutColor.rgb, boundary);
 
-			boundaryX2 = smoothstep(1.0f, 2.0f, boundaryX);
-			boundaryY2 = smoothstep(1.0f, 2.0f, boundaryY);
-
-			boundary = min(boundaryX2.x, boundaryX2.y) * min(boundaryY2.x, boundaryY2.y);
-			OutColor.rgb = lerp(float3(1, 1, 1), OutColor.rgb, boundary);
 		}
+
 	}
 
 #if 0
