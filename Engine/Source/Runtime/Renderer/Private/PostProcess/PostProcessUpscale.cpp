@@ -163,6 +163,7 @@ public:
 	FPostProcessPassParameters PostprocessParameter;
 	FDeferredPixelShaderParameters DeferredParameters;
 	FShaderParameter UpscaleSoftness;
+	FShaderParameter VRProjectionFlags;
 
 	/** Initialization constructor. */
 	FPostProcessUpscalePS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -171,6 +172,7 @@ public:
 		PostprocessParameter.Bind(Initializer.ParameterMap);
 		DeferredParameters.Bind(Initializer.ParameterMap);
 		UpscaleSoftness.Bind(Initializer.ParameterMap,TEXT("UpscaleSoftness"));
+		VRProjectionFlags.Bind(Initializer.ParameterMap, TEXT("VRProjectionFlags"));
 	}
 
 	void SetPS(const FRenderingCompositePassContext& Context)
@@ -191,13 +193,21 @@ public:
 
 			SetShaderValue(Context.RHICmdList, ShaderRHI, UpscaleSoftness, UpscaleSoftnessValue);
 		}
+
+		{
+			unsigned int Flags = 0;
+			Flags |= Context.View.Family->EngineShowFlags.VisualizeVRWarp ? 0x1 : 0x0;
+			Flags |= Context.View.Family->EngineShowFlags.VisualizeVRWarpDivisions ? 0x2 : 0x0;
+			Flags |= Context.View.Family->EngineShowFlags.VisualizeVRWarpRate ? 0x4 : 0x0;
+			SetShaderValue(Context.RHICmdList, ShaderRHI, VRProjectionFlags, Flags);
+		}
 	}
 	
 	// FShader interface.
 	virtual bool Serialize(FArchive& Ar) override
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter << DeferredParameters << UpscaleSoftness;
+		Ar << PostprocessParameter << DeferredParameters << UpscaleSoftness << VRProjectionFlags;
 		return bShaderHasOutdatedParameters;
 	}
 
