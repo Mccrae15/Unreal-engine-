@@ -755,6 +755,8 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 			SceneContext.SetLightAttenuationMode(true);
 
 		}
+
+		RHICmdList.ClearDepthStencilTexture(SceneContext.GetSceneDepthSurface(), EClearDepthStencil::Stencil, 0.0f, 0, FIntRect());
 	}
 }
 
