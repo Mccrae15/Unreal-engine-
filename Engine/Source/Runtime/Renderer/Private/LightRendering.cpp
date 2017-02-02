@@ -34,6 +34,14 @@ static FAutoConsoleVariableRef CVarAllowSimpleLights(
 	TEXT("If true, we allow simple (ie particle) lights")
 );
 
+ // Stencil culling of regions outside the view area, defaults to off due to a stencil interaction bug under active debug
+static int32 bLMSStencilOpt = 0;
+static FAutoConsoleVariableRef CVarLMSStencilOptimization(
+	TEXT("vr.LMSStencilOptimization"),
+	bLMSStencilOpt,
+	TEXT("If true, use the setncil optimization when rendering lights with LMS")
+);
+
 // Implement a version for directional lights, and a version for point / spot lights
 IMPLEMENT_SHADER_TYPE(template<>,TDeferredLightVS<false>,TEXT("DeferredLightVertexShaders"),TEXT("DirectionalVertexMain"),SF_Vertex);
 IMPLEMENT_SHADER_TYPE(template<>,TDeferredLightVS<true>,TEXT("DeferredLightVertexShaders"),TEXT("RadialVertexMain"),SF_Vertex);
@@ -507,6 +515,7 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 				RenderSimpleLightsStandardDeferred(RHICmdList, SimpleLights);
 			}
 
+			if (bLMSStencilOpt)
 			{
 				bool IsLMSEnabled = false;
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
@@ -817,7 +826,7 @@ void SetBoundingGeometryRasterizerAndDepthState(FRHICommandList& RHICmdList, con
 		RHICmdList.SetRasterizerState(View.bReverseCulling ? TStaticRasterizerState<FM_Solid, CM_CCW>::GetRHI() : TStaticRasterizerState<FM_Solid, CM_CW>::GetRHI());
 	}
 
-	if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+	if (bLMSStencilOpt && View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
 	{
 		RHICmdList.SetDepthStencilState(
 			bCameraInsideLightGeometry
