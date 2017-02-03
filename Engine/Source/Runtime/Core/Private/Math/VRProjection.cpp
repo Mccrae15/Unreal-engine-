@@ -141,11 +141,10 @@ void FVRProjection::CalculateFastGSCBData(
 	}
 }
 
-
-// Conservative Conf has splits at 25% in from each edge,
+// Quality Conf has splits at 25% in from each edge,
 // and scales the outer Viewports to 70% of their original pixel density.
 // Overall, reduces pixel Count by 28%.
-CORE_API const FMultiRes::Configuration FMultiRes::Configuration_Rift_Conservative =
+CORE_API const FMultiRes::Configuration FMultiRes::Configuration_Rift_Quality =
 {
 	0.63f, 0.62f,
 	0.53f, 0.45f,
@@ -158,7 +157,7 @@ CORE_API const FMultiRes::Configuration FMultiRes::Configuration_Rift_Conservati
 // Conservative Conf has splits at 25% in from each edge,
 // and scales the outer Viewports to 70% of their original pixel density.
 // Overall, reduces pixel Count by 28%.
-CORE_API const FMultiRes::Configuration FMultiRes::Configuration_Rift_Aggressive =
+CORE_API const FMultiRes::Configuration FMultiRes::Configuration_Rift_Conservative =
 {
 	0.4f, 0.4f,
 	0.57f, 0.41f,
@@ -166,6 +165,19 @@ CORE_API const FMultiRes::Configuration FMultiRes::Configuration_Rift_Aggressive
 	{ 0.0f, 0.0f },	// SplitY are calculated by calling CalculateSplits()
 	{ 0.64f, 1.0f, 0.64f },
 	{ 0.64f, 1.0f, 0.64f }
+};
+
+// Conservative Conf has splits at 25% in from each edge,
+// and scales the outer Viewports to 70% of their original pixel density.
+// Overall, reduces pixel Count by 28%.
+CORE_API const FMultiRes::Configuration FMultiRes::Configuration_Rift_Aggressive =
+{
+	0.39f, 0.39f,
+	0.57f, 0.41f,
+	{ 0.0f, 0.0f }, // SplitX are calculated by calling CalculateSplits()
+	{ 0.0f, 0.0f },	// SplitY are calculated by calling CalculateSplits()
+	{ 0.43f, 1.0f, 0.43f },
+	{ 0.43f, 1.0f, 0.43f }
 };
 
 // Conservative Conf has splits at 25% in from each edge,
@@ -586,8 +598,7 @@ FVector2D FMultiRes::MapMultiResToLinear(const RemapCBData* CBData, const FVecto
 	return Result;
 }
 
-
-CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configuration_Rift_Conservative =
+CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configuration_Rift_Quality =
 {
 	0.471f, 0.471f,
 	0.471f, 0.471f,
@@ -596,13 +607,22 @@ CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configura
 	0.534f, 0.368f
 };
 
-CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configuration_Rift_Aggressive =
+CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configuration_Rift_Conservative =
 {
 	0.9f, 0.9f,
 	0.9f, 0.9f,
 
 	0.361f, 0.481f, // relative to CV1 render target size for one eye, 1332x1586
 	0.465f, 0.321f
+};
+
+CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configuration_Rift_Aggressive =
+{
+	0.9f, 0.9f,
+	0.9f, 0.9f,
+
+	0.311f, 0.412f, // relative to CV1 render target size for one eye, 1332x1586
+	0.401f, 0.276f
 };
 
 CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configuration_Vive_Quality =

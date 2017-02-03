@@ -162,6 +162,7 @@ struct FMultiRes : public FVRProjection
 	};
 
 	// A couple of preset configurations, for convenience
+	static CORE_API const Configuration Configuration_Rift_Quality;
 	static CORE_API const Configuration Configuration_Rift_Conservative;
 	static CORE_API const Configuration Configuration_Rift_Aggressive;
 
@@ -256,6 +257,7 @@ struct FLensMatchedShading : public FVRProjection
 	};
 
 
+	static CORE_API const Configuration Configuration_Rift_Quality;
 	static CORE_API const Configuration Configuration_Rift_Conservative;
 	static CORE_API const Configuration Configuration_Rift_Aggressive;
 

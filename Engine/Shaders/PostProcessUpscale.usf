@@ -119,35 +119,51 @@ float2 VRProjGetDistanceFromBoundaries(float2 UV)
 	return Distance;
 }
 
-// Takes UV coordinate in RenderTarget space and returns shading rate
-float VRProjGetShadingRate(float2 UV)
+// Jonah's red-blue heatmap scheme
+static const float gHeatmapPoints = 5;
+
+static const float4 gHeatmap[] = {
+	float4(0.25,	1, 0, 0),
+	float4(0.97, 1, 0.78, 0.78),
+	float4(0.975,	1, 1, 1),
+	float4(2,	0.5, 0.5, 1),
+	float4(5,	0, 0, 1)
+};
+
+float3 ShadingRateHeatmap(float Value)
 {
-	float Rate = 1.0f;
-	if (VRProjectionIsActive())
+	if (Value < gHeatmap[0].x)
+		return gHeatmap[0].yzw;
+
+	for (int idx = 0; idx < gHeatmapPoints - 1; idx++)
 	{
+		float4 Left = gHeatmap[idx];
+		float4 Right = gHeatmap[idx + 1];
 
-		UV = VRProjMapRenderTargetToViewRectInternal(UV);
-		if (MultiResIsActive())
+		if (Left.x <= Value && Value <= Right.x)
 		{
-			// scales stored in View constants are for texture coordinates, rates need to be derived, just using  fixed dumb levels
-			if (UV.x < View.VRProjectToLinearSplitsX.x)
-				Rate *= 0.5;
-			else if (UV.x < View.VRProjectToLinearSplitsX.y)
-				Rate *= 1.0;
-			else
-				Rate *= 0.5;
-
-			if (UV.y < View.VRProjectToLinearSplitsX.x)
-				Rate *= 0.5;
-			else if (UV.y < View.VRProjectToLinearSplitsX.y)
-				Rate *= 1.0;
-			else
-				Rate *= 0.5;
-		}
-		else if (LensMatchedShadingIsActive())
-		{
+			float f = (Value - Left.x) / (Right.x - Left.x);
+			return lerp(Left.yzw, Right.yzw, f);
 		}
 	}
+
+	return gHeatmap[gHeatmapPoints - 1].yzw;
+}
+
+// Takes UV coordinate in RenderTarget space and returns shading rate
+float3 VRProjGetShadingRate(float2 UV)
+{
+	float3 Rate = 1.0f;
+
+	float2 PixelCoord = UV * View.BufferSizeAndInvSize.xy;
+
+	float2 pdx = ddx(PixelCoord);
+	float2 pdy = ddy(PixelCoord);
+	float3 HeatMap = 0.0f;
+
+	// jacobian determinant, showing sampling rate in pixel area ratio
+	float JacobDet = pdx.x * pdy.y - pdx.y * pdy.x;
+	Rate = pow(ShadingRateHeatmap(JacobDet), 2.2);
 
 	return Rate;
 }
@@ -356,32 +372,37 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 
 #endif
 
-	if (VRProjectionIsActive())
+	// adjust color based on shading rate
+	if ((VRProjectionFlags & 0x4))
 	{
-		// Visualize boundaries
+		float3 ShadingRateVis = VRProjGetShadingRate(UV);
 
-		// adjust color based on shading rate
-		if ((VRProjectionFlags & 0x4))
+		// boundary and grid
+		if (any(UV > 1.0) || any(UV < 0.0))
+			ShadingRateVis = float3(0, 0, 0);
+		else
 		{
-			// just scale color by rate for now
-			OutColor.rgb *= VRProjGetShadingRate(UV);
+			float2 PixelCoord = UV * View.BufferSizeAndInvSize.xy;
+			float2 grid = smoothstep(30.5, 32.0, abs(fmod(PixelCoord, 64.0) - 32.0));
+			ShadingRateVis = lerp(ShadingRateVis, float3(0, 0, 0), max(grid.x, grid.y));
 		}
 
+		//OutColor = lerp(OutColor, float4(ShadingRateVis, 1.0f), 0.3f);
+		OutColor *= float4(lerp(float3(1.0f, 1.0f, 1.0f), ShadingRateVis, 0.6f), 1.0f);
+	}
+
+	// Visualize boundaries
+	if (VRProjectionIsActive() && (VRProjectionFlags & 0x2))
+	{
 		// draw boundaries
-		if ((VRProjectionFlags & 0x2))
-		{
-			// find closest distance to regsion boundaries and convert to pixels
-			float2 Distance = VRProjGetDistanceFromBoundaries(UV) * PostprocessInput0Size.xy;
-			float ScalarDistance = min(Distance.x, Distance.y);
+		// find closest distance to regsion boundaries and convert to pixels
+		float2 Distance = VRProjGetDistanceFromBoundaries(UV) * PostprocessInput0Size.xy;
+		float ScalarDistance = min(Distance.x, Distance.y);
 
-			// EHart, may be worth tweaking smoothstep scales
-			OutColor.rgb = lerp(float3(0, 0, 0), OutColor.rgb, smoothstep(1.0f, 4.0f, ScalarDistance));
+		// EHart, may be worth tweaking smoothstep scales
+		OutColor.rgb = lerp(float3(0, 0, 0), OutColor.rgb, smoothstep(1.0f, 4.0f, ScalarDistance));
 
-			OutColor.rgb = lerp(float3(1, 1, 1), OutColor.rgb, smoothstep(1.0f, 2.0f, ScalarDistance));
-
-
-		}
-
+		OutColor.rgb = lerp(float3(1, 1, 1), OutColor.rgb, smoothstep(1.0f, 2.0f, ScalarDistance));
 	}
 
 #if 0

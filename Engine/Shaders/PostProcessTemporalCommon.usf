@@ -123,7 +123,7 @@ which can be configured via defines for various temporal AA passes.
 	#define AA_DYNAMIC_ANTIGHOST 0
 #endif
 
-	float2 ScreenPos = VRProjMapNDCVRProjToLinear((UV * PostprocessInput0Size.xy - 0.5 - ScreenPosToPixel.zw ) / ScreenPosToPixel.xy);
+	float2 ScreenPos = SvPositionToScreenPosition(SvPosition).xy;
 
 	// FIND MOTION OF PIXEL AND NEAREST IN NEIGHBORHOOD
     // ------------------------------------------------
