@@ -35,10 +35,10 @@ static FAutoConsoleVariableRef CVarAllowSimpleLights(
 );
 
  // Stencil culling of regions outside the view area, defaults to off due to a stencil interaction bug under active debug
-static int32 bLMSStencilOpt = 1;
+static int32 bLMSStencilOptimization = 1;
 static FAutoConsoleVariableRef CVarLMSStencilOptimization(
 	TEXT("vr.LMSStencilOptimization"),
-	bLMSStencilOpt,
+	bLMSStencilOptimization,
 	TEXT("If true, use the setncil optimization when rendering lights with LMS")
 );
 
@@ -515,7 +515,7 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 				RenderSimpleLightsStandardDeferred(RHICmdList, SimpleLights);
 			}
 
-			if (bLMSStencilOpt)
+			if (bLMSStencilOptimization)
 			{
 				SCOPED_DRAW_EVENT(RHICmdList, SetStencilWhite);
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
@@ -526,19 +526,33 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 						// render octagon stencil here
 						SceneContext.BeginRenderingStencilOnly(RHICmdList, true);
 
-						RHICmdList.SetDepthStencilState(TStaticDepthStencilState<
-							false, CF_Always,
-							true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
-							false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-							0x80, 0x80
-						>::GetRHI(), 1 << 7);
-
 						RHICmdList.SetRasterizerState(TStaticRasterizerState<FM_Solid, CM_None>::GetRHI());
 
 						for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 						{
 							const FViewInfo& View = Views[ViewIndex];
 							RHICmdList.SetGPUMask(View.StereoPass);
+
+							// First clear the stencil in the whole view to 0x80
+							FIntRect ViewPortRect = View.ViewRect;
+							RHICmdList.SetViewport(ViewPortRect.Min.X, ViewPortRect.Min.Y, 0.0f, ViewPortRect.Max.X, ViewPortRect.Max.Y, 1.0f);
+
+							RHICmdList.SetDepthStencilState(TStaticDepthStencilState<
+								false, CF_Always,
+								true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+								false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+								0xff, 0xff
+							>::GetRHI(), 0x80);
+
+							RenderModifiedWBoundaryMask(RHICmdList);
+
+							// Clear stencil in the octagon area to 0
+							RHICmdList.SetDepthStencilState(TStaticDepthStencilState<
+								false, CF_Always,
+								true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+								false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+								0xff, 0xff
+							>::GetRHI(), 0);
 
 							View.BeginVRProjectionStates(RHICmdList);
 							RenderModifiedWBoundaryMask(RHICmdList);
@@ -748,7 +762,7 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 			// Restore the default mode
 			SceneContext.SetLightAttenuationMode(true);
 
-			if (bLMSStencilOpt)
+			if (bLMSStencilOptimization)
 			{
 				SCOPED_DRAW_EVENT(RHICmdList, ClearStencilWhite);
 
@@ -838,15 +852,15 @@ void SetBoundingGeometryRasterizerAndDepthState(FRHICommandList& RHICmdList, con
 
 	if (bCameraInsideLightGeometry)
 	{
-		if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched && bLMSStencilOpt)
+		if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched && bLMSStencilOptimization)
 		{
 			// no depth test or writes, Test stencil for 0xff.
 			RHICmdList.SetDepthStencilState(TStaticDepthStencilState<
 				false, CF_Always,
-				true, CF_Equal, SO_Keep, SO_Keep, SO_Keep,
+				true, CF_NotEqual, SO_Keep, SO_Keep, SO_Keep,
 				false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
 				0x80, 0x80 // Mask the highest bit
-			>::GetRHI(), 1 << 7);
+			>::GetRHI(), 0x80);
 		}
 		else
 		{

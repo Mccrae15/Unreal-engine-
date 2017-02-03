@@ -610,7 +610,7 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 			false, CF_DepthNearOrEqual,
 			true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
 			false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-			0x7f, 0x7f
+			0xff, 0xff
 			>::GetRHI(), 1);
 
 		// Pre-shadows mask by receiver elements, self-shadow mask by subject elements.
@@ -731,7 +731,7 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 			false,CF_DepthNearOrEqual,
 			true,CF_Always,SO_Keep,SO_Increment,SO_Keep,
 			true,CF_Always,SO_Keep,SO_Decrement,SO_Keep,
-			0x7f,0x7f
+			0xff,0xff
 			>::GetRHI());
 
 			RHICmdList.SetRasterizerState(TStaticRasterizerState<FM_Solid, CM_None>::GetRHI());
@@ -801,7 +801,7 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 				false,CF_DepthNearOrEqual,
 				true,CF_Always,SO_Keep,SO_Increment,SO_Keep,
 				true,CF_Always,SO_Keep,SO_Decrement,SO_Keep,
-				0x7f,0x7f
+				0xff,0xff
 				>::GetRHI());
 		}
 		else
@@ -812,7 +812,7 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 				false,CF_DepthNearOrEqual,
 				true,CF_Always,SO_Keep,SO_Keep,SO_Increment,
 				true,CF_Always,SO_Keep,SO_Keep,SO_Decrement,
-				0x7f,0x7f
+				0xff,0xff
 				>::GetRHI());
 		}
 		
@@ -846,7 +846,7 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 				false, CF_DepthNearOrEqual,
 				true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
 				true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
-				0x7f, 0x7f
+				0xff, 0xff
 			>::GetRHI(), 0);
 
 			FDepthDrawingPolicyFactory::ContextType Context(DDM_AllOccluders, false);
@@ -870,7 +870,9 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 	}
 	else
 	{
-		if (GStencilOptimization)
+		static const auto CVarLMSStencilOpt = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LMSStencilOptimization"));
+
+		if (GStencilOptimization || (View->bVRProjectEnabled && View->VRProjMode == FSceneView::EVRProjectMode::LensMatched && CVarLMSStencilOpt->GetValueOnRenderThread()))
 		{
 			// No depth test or writes, zero the stencil
 			// Note: this will disable hi-stencil on many GPUs, but still seems 
@@ -879,7 +881,7 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 				false, CF_Always,
 				true, CF_NotEqual, SO_Zero, SO_Zero, SO_Zero,
 				false, CF_Always, SO_Zero, SO_Zero, SO_Zero,
-				0x7f, 0x7f
+				0xff, 0xff
 			>::GetRHI());
 		}
 		else
@@ -889,7 +891,7 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 				false, CF_Always,
 				true, CF_NotEqual, SO_Keep, SO_Keep, SO_Keep,
 				false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-				0x7f, 0x7f
+				0xff, 0xff
 			>::GetRHI());
 		}
 	}
@@ -972,8 +974,10 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 	}
 	else
 	{
+		static const auto CVarLMSStencilOpt = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LMSStencilOptimization"));
+
 		// Clear the stencil buffer to 0.
-		if (!GStencilOptimization)
+		if (!(GStencilOptimization || (View->bVRProjectEnabled && View->VRProjMode == FSceneView::EVRProjectMode::LensMatched && CVarLMSStencilOpt->GetValueOnRenderThread())))
 		{
 			FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 			RHICmdList.ClearDepthStencilTexture(SceneContext.GetSceneDepthSurface(), EClearDepthStencil::Stencil, 0, 0, FIntRect());
