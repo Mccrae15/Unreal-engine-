@@ -517,7 +517,7 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 
 			if (bLMSStencilOptimization)
 			{
-				SCOPED_DRAW_EVENT(RHICmdList, SetStencilWhite);
+				SCOPED_DRAW_EVENT(RHICmdList, SetStencilForLMS);
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 				{
 					const FViewInfo& View = Views[ViewIndex];
@@ -541,7 +541,7 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 								false, CF_Always,
 								true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
 								false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-								0xff, 0xff
+								0x80, 0x80
 							>::GetRHI(), 0x80);
 
 							RenderModifiedWBoundaryMask(RHICmdList);
@@ -551,7 +551,7 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 								false, CF_Always,
 								true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
 								false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-								0xff, 0xff
+								0x80, 0x80
 							>::GetRHI(), 0);
 
 							View.BeginVRProjectionStates(RHICmdList);
@@ -764,7 +764,7 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 
 			if (bLMSStencilOptimization)
 			{
-				SCOPED_DRAW_EVENT(RHICmdList, ClearStencilWhite);
+				SCOPED_DRAW_EVENT(RHICmdList, ClearStencilForLMS);
 
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 				{
