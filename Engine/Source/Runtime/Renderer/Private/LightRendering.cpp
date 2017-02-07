@@ -524,45 +524,42 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 					if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
 					{
 						// render octagon stencil here
-						SceneContext.BeginRenderingStencilOnly(RHICmdList, true);
+						SceneContext.BeginRenderingStencilOnly(RHICmdList, false);
 
 						RHICmdList.SetRasterizerState(TStaticRasterizerState<FM_Solid, CM_None>::GetRHI());
 
-						for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
-						{
-							const FViewInfo& View = Views[ViewIndex];
-							RHICmdList.SetGPUMask(View.StereoPass);
+						RHICmdList.SetGPUMask(View.StereoPass);
 
-							// First clear the stencil in the whole view to 0x80
-							FIntRect ViewPortRect = View.ViewRect;
-							RHICmdList.SetViewport(ViewPortRect.Min.X, ViewPortRect.Min.Y, 0.0f, ViewPortRect.Max.X, ViewPortRect.Max.Y, 1.0f);
+						// First clear the stencil in the whole view to 0x80
+						FIntRect ViewPortRect = View.ViewRect;
+						RHICmdList.SetViewport(ViewPortRect.Min.X, ViewPortRect.Min.Y, 0.0f, ViewPortRect.Max.X, ViewPortRect.Max.Y, 1.0f);
 
-							RHICmdList.SetDepthStencilState(TStaticDepthStencilState<
-								false, CF_Always,
-								true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
-								false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-								0x80, 0x80
-							>::GetRHI(), 0x80);
+						RHICmdList.SetDepthStencilState(TStaticDepthStencilState<
+							false, CF_Always,
+							true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+							false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+							0x80, 0x80
+						>::GetRHI(), 0x80);
 
-							RenderModifiedWBoundaryMask(RHICmdList);
+						RenderModifiedWBoundaryMask(RHICmdList);
 
-							// Clear stencil in the octagon area to 0
-							RHICmdList.SetDepthStencilState(TStaticDepthStencilState<
-								false, CF_Always,
-								true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
-								false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-								0x80, 0x80
-							>::GetRHI(), 0);
+						// Clear stencil in the octagon area to 0
+						RHICmdList.SetDepthStencilState(TStaticDepthStencilState<
+							false, CF_Always,
+							true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+							false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+							0x80, 0x80
+						>::GetRHI(), 0);
 
-							View.BeginVRProjectionStates(RHICmdList);
-							RenderModifiedWBoundaryMask(RHICmdList);
-							View.EndVRProjectionStates(RHICmdList);
-						}
-						RHICmdList.SetGPUMask(0);
+						View.BeginVRProjectionStates(RHICmdList);
+						RenderModifiedWBoundaryMask(RHICmdList);
+						View.EndVRProjectionStates(RHICmdList);
 
 						SceneContext.FinishRenderingStencilOnly(RHICmdList);
 					}
 				}
+
+				RHICmdList.SetGPUMask(0);
 			}
 
 			{
