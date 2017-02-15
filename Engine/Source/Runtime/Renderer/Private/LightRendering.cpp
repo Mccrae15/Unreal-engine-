@@ -768,9 +768,13 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 					const FViewInfo& View = Views[ViewIndex];
 					if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
 					{
+						SceneContext.BeginRenderingStencilOnly(RHICmdList, false);
+
 						// Clear stencil if any view has LMS enabled
 						// Don't have to clear per-view since at this point the engine expects a clean stencil buffer
 						RHICmdList.ClearDepthStencilTexture(SceneContext.GetSceneDepthSurface(), EClearDepthStencil::Stencil, 0.0f, 0, FIntRect());
+
+						SceneContext.FinishRenderingStencilOnly(RHICmdList);
 						break;
 					}
 				}
