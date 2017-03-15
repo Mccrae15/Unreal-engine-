@@ -715,7 +715,7 @@ FShaderCompileJob* FMaterialShaderType::BeginCompileShader(
 		ShaderPipeline,
 		GetShaderFilename(),
 		GetFunctionName(),
-		FShaderTarget(GetFrequency(),Platform),
+		FShaderTarget(GetFrequency(),Platform,GetIsFastGeometryShader()),
 		NewJob,
 		NewJobs
 		);

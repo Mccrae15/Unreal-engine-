@@ -188,7 +188,7 @@ void FHMDViewExtension::PostRenderViewFamily_RenderThread(FRHICommandListImmedia
 
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 
-	SetRenderTarget(RHICmdList, InViewFamily.RenderTarget->GetRenderTargetTexture(), SceneContext.GetSceneDepthTexture());
+	SetRenderTarget(RHICmdList, InViewFamily.RenderTarget->GetRenderTargetTexture(), nullptr);
 
 	FHMDLayerManager *LayerMgr = HeadMountedDisplay->GetLayerManager();//->GetLayerMgr();
 	LayerMgr->PokeAHole(RHICmdList, RenderContext.RenderFrame.Get(), HeadMountedDisplay->GetRendererModule(), InViewFamily);

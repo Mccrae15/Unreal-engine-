@@ -11,6 +11,7 @@
 #include "Shader.h"
 #include "MeshMaterialShader.h"
 #include "DrawingPolicy.h"
+#include "ShaderParameterUtils.h"
 
 class FPrimitiveSceneProxy;
 struct FMeshBatchElement;
@@ -103,18 +104,48 @@ public:
 	FBaseDS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
 		FMeshMaterialShader(Initializer)
 	{
+		NeedsSinglePassStereoBiasParameter.Bind(Initializer.ParameterMap, TEXT("bNeedsSinglePassStereoBias"));
+		IsSinglePassStereoParameter.Bind(Initializer.ParameterMap, TEXT("bIsSinglePassStereo"));
 	}
 
 	FBaseDS() {}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FMaterialRenderProxy* MaterialRenderProxy,const FSceneView& View)
+	virtual bool Serialize(FArchive& Ar) override
+	{
+		const bool result = FMeshMaterialShader::Serialize(Ar);
+		Ar << NeedsSinglePassStereoBiasParameter;
+		Ar << IsSinglePassStereoParameter;
+		return result;
+	}
+
+	void SetParameters(FRHICommandList& RHICmdList, const FMaterialRenderProxy* MaterialRenderProxy,const FSceneView& View,
+													const bool bNeedsSinglePassStereoBias = false, const bool bIsSinglePassStereo = false)
 	{
 		FMeshMaterialShader::SetParameters(RHICmdList, (FDomainShaderRHIParamRef)GetDomainShader(), MaterialRenderProxy, *MaterialRenderProxy->GetMaterial(View.GetFeatureLevel()), View, View.ViewUniformBuffer, ESceneRenderTargetsMode::SetTextures);
+
+		SetSPSParameters(RHICmdList, bNeedsSinglePassStereoBias, bIsSinglePassStereo);
+	}
+
+	void SetSPSParameters(FRHICommandList& RHICmdList, const bool bNeedsSinglePassStereoBias, const bool bIsSinglePassStereo)
+	{
+		if (NeedsSinglePassStereoBiasParameter.IsBound())
+		{
+			SetShaderValue(RHICmdList, (FDomainShaderRHIParamRef)GetDomainShader(), NeedsSinglePassStereoBiasParameter, bNeedsSinglePassStereoBias);
+		}
+
+		if (IsSinglePassStereoParameter.IsBound())
+		{
+			SetShaderValue(RHICmdList, (FDomainShaderRHIParamRef)GetDomainShader(), IsSinglePassStereoParameter, bIsSinglePassStereo);
+		}
 	}
 
 	void SetMesh(FRHICommandList& RHICmdList, const FVertexFactory* VertexFactory,const FSceneView& View,const FPrimitiveSceneProxy* Proxy,const FMeshBatchElement& BatchElement, const FDrawingPolicyRenderState& DrawRenderState)
 	{
 		FMeshMaterialShader::SetMesh(RHICmdList, (FDomainShaderRHIParamRef)GetDomainShader(),VertexFactory,View,Proxy,BatchElement,DrawRenderState);
 	}
+
+private:
+	FShaderParameter NeedsSinglePassStereoBiasParameter;
+	FShaderParameter IsSinglePassStereoParameter;
 };
 

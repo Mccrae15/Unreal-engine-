@@ -66,6 +66,7 @@ typedef struct
 NVAPI_INTERFACE NvAPI_D3D_GetCurrentSLIState(IUnknown *pDevice, NV_GET_CURRENT_SLI_STATE *pSliState);
 #endif //if defined(_D3D9_H_) || defined(__d3d10_h__) || defined(__d3d11_h__)
 #if defined(_D3D9_H_) || defined(__d3d10_h__) || defined(__d3d11_h__)
+
 ///////////////////////////////////////////////////////////////////////////////
 //
 // FUNCTION NAME: NvAPI_D3D_SetResourceHint
@@ -135,6 +136,7 @@ NVAPI_INTERFACE NvAPI_D3D_SetResourceHint(IUnknown *pDev, NVDX_ObjectHandle obj,
                                           NvU32 dwHintName, 
                                           NvU32 *pdwHintValue);
 #endif //defined(_D3D9_H_) || defined(__d3d10_h__) || defined(__d3d11_h__)
+
 #if defined(_D3D9_H_) || defined(__d3d10_h__) || defined(__d3d11_h__)
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -173,6 +175,7 @@ typedef enum  _NVAPI_D3D_RESOURCERENDERING_FLAG
 NVAPI_INTERFACE NvAPI_D3D_BeginResourceRendering(IUnknown *pDev, NVDX_ObjectHandle obj, NvU32 Flags);
 
 #endif //defined(_D3D9_H_) || defined(__d3d10_h__) || defined(__d3d11_h__)
+
 #if defined(_D3D9_H_) || defined(__d3d10_h__) || defined(__d3d11_h__)
 ///////////////////////////////////////////////////////////////////////////////
 //

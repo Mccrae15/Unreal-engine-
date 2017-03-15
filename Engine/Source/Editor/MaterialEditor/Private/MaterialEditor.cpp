@@ -150,7 +150,8 @@ bool FMatExpressionPreview::ShouldCache(EShaderPlatform Platform, const FShaderT
 		{
 			if (FCString::Stristr(ShaderType->GetName(), TEXT("BasePassVSFNoLightMapPolicy")) ||
 				FCString::Stristr(ShaderType->GetName(), TEXT("BasePassHSFNoLightMapPolicy")) ||
-				FCString::Stristr(ShaderType->GetName(), TEXT("BasePassDSFNoLightMapPolicy")))
+				FCString::Stristr(ShaderType->GetName(), TEXT("BasePassDSFNoLightMapPolicy")) ||
+				FCString::Stristr(ShaderType->GetName(), TEXT("BasePassGSFNoLightMapPolicy")))
 			{
 				return true;
 			}

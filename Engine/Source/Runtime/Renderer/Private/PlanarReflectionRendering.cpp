@@ -570,6 +570,7 @@ bool FDeferredShadingSceneRenderer::RenderDeferredPlanarReflections(FRHICommandL
 		}
 
 		{
+			RHICmdList.SetGPUMask(View.StereoPass); // NV_MSCHOTT could this be moved outside this function,one level above
 			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
 
 			// Blend over previous reflections in the output target (SSR or planar reflections that have already been rendered)
@@ -609,6 +610,7 @@ bool FDeferredShadingSceneRenderer::RenderDeferredPlanarReflections(FRHICommandL
 				}
 			}
 		}
+		RHICmdList.SetGPUMask(0); // NV_MSCHOTT could this be moved outside this function,one level above
 
 		RHICmdList.CopyToResolveTarget(Output->GetRenderTargetItem().TargetableTexture, Output->GetRenderTargetItem().ShaderResourceTexture, false, FResolveParams());
 

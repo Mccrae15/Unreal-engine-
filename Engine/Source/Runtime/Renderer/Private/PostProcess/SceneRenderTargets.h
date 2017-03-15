@@ -187,6 +187,7 @@ protected:
 		bVelocityPass(false),
 		bSeparateTranslucencyPass(false),
 		BufferSize(0, 0),
+		LinearBufferSize(0, 0),
 		SeparateTranslucencyBufferSize(0, 0),
 		SeparateTranslucencyScale(1),
 		SmallColorDepthDownsampleFactor(2),
@@ -226,6 +227,10 @@ public:
 	void SetBufferSize(int32 InBufferSizeX, int32 InBufferSizeY);
 
 	void SetSeparateTranslucencyBufferSize(bool bAnyViewWantsDownsampledSeparateTranslucency);
+	/**
+	*
+	*/
+	void SetLinearBufferSize(int32 InLinearBufferSizeX, int32 InLinearBufferSizeY);
 
 	void BeginRenderingGBuffer(FRHICommandList& RHICmdList, ERenderTargetLoadAction ColorLoadAction, ERenderTargetLoadAction DepthLoadAction, bool bBindQuadOverdrawBuffers, const FLinearColor& ClearColor = FLinearColor(0, 0, 0, 1));
 	void FinishRenderingGBuffer(FRHICommandListImmediate& RHICmdList);
@@ -295,6 +300,9 @@ public:
 	{
 		DefaultDepthClear = DepthClear;
 	}
+
+	void BeginRenderingStencilOnly(FRHICommandList& RHICmdList, bool bPerformClear);
+	void FinishRenderingStencilOnly(FRHICommandList& RHICmdList);
 
 	void GetSeparateTranslucencyDimensions(FIntPoint& OutScaledSize, float& OutScale)
 	{
@@ -449,6 +457,8 @@ public:
 	}
 	/** Returns the size of most screen space render targets e.g. SceneColor, SceneDepth, GBuffer, ... might be different from final RT or output Size because of ScreenPercentage use. */
 	FIntPoint GetBufferSizeXY() const { return BufferSize; }
+	/** Returns the size of a linear version of the screen space render targets, Differs from GetBufferSize as this is without the vr projection sacling. */
+	FIntPoint GetLinearBufferSizeXY() const { return LinearBufferSize; }
 	/** */
 	uint32 GetSmallColorDepthDownsampleFactor() const { return SmallColorDepthDownsampleFactor; }
 	/** Returns an index in the range [0, NumCubeShadowDepthSurfaces) given an input resolution. */
@@ -516,6 +526,12 @@ public:
 
 	TRefCountPtr<IPooledRenderTarget>& GetReflectionBrightnessTarget();
 
+	/**
+	* Takes the requested buffer size and quantizes it to an appropriate size for the rest of the
+	* rendering pipeline. Currently ensures that sizes are multiples of 8 so that they can safely
+	* be halved in size several times.
+	*/
+	static void QuantizeBufferSize(int32& InOutBufferSizeX, int32& InOutBufferSizeY);
 
 	bool IsSeparateTranslucencyActive(const FViewInfo& View) const;
 
@@ -718,6 +734,9 @@ private:
 	FUniformBufferRHIRef GBufferResourcesUniformBuffer;
 	/** size of the back buffer, in editor this has to be >= than the biggest view port */
 	FIntPoint BufferSize;
+	/** size of the virtual back buffer, without vr projection scaling */
+	FIntPoint LinearBufferSize;
+
 	FIntPoint SeparateTranslucencyBufferSize;
 	float SeparateTranslucencyScale;
 	/** e.g. 2 */

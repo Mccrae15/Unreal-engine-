@@ -119,7 +119,11 @@ int32 TStaticMeshDrawList<DrawingPolicyType>::DrawElement(
 
 	if (!bDrawnShared)
 	{
-		if (ensure(IsValidRef(DrawingPolicyLink->BoundShaderState)))
+		if ( (View.bVRProjectEnabled || PolicyContext.bIsSinglePassStereo) && IsValidRef(DrawingPolicyLink->MultiResBoundShaderState))
+		{
+			RHICmdList.SetBoundShaderState(DrawingPolicyLink->MultiResBoundShaderState);
+		}
+		else if (ensure(IsValidRef(DrawingPolicyLink->BoundShaderState)))
 		{
 			RHICmdList.SetBoundShaderState(DrawingPolicyLink->BoundShaderState);
 		}
@@ -320,7 +324,7 @@ bool TStaticMeshDrawList<DrawingPolicyType>::DrawVisibleInner(
 {
 	// We should have a single view's visibility data, or a stereo pair
 	check((StaticMeshVisibilityMap != nullptr && BatchVisibilityArray != nullptr) || StereoView != nullptr);
-	check((InstancedStereo != InstancedStereoPolicy::Disabled) == (StereoView != nullptr));
+	check((InstancedStereo != InstancedStereoPolicy::Disabled || PolicyContext.bIsSinglePassStereo) == (StereoView != nullptr));
 
 	bool bDirty = false;
 	STAT(int32 StatInc = 0;)
@@ -336,7 +340,7 @@ bool TStaticMeshDrawList<DrawingPolicyType>::DrawVisibleInner(
 		for (int32 ElementIndex = 0; ElementIndex < NumElements; ElementIndex++, CompactElementPtr++)
 		{
 			// Single view
-			if (InstancedStereo == InstancedStereoPolicy::Disabled)
+			if (InstancedStereo == InstancedStereoPolicy::Disabled && !PolicyContext.bIsSinglePassStereo)
 			{
 				if (StaticMeshVisibilityMap->AccessCorrespondingBit(FRelativeBitReference(CompactElementPtr->MeshId)))
 				{
@@ -368,9 +372,17 @@ bool TStaticMeshDrawList<DrawingPolicyType>::DrawVisibleInner(
 					const FElement& Element = DrawingPolicyLink->Elements[ElementIndex];
 					STAT(StatInc += Element.Mesh->GetNumPrimitives();)
 						int32 SubCount = Element.Mesh->Elements.Num();
+				    
 					// Avoid the cache miss looking up batch visibility if there is only one element.
 					uint64 BatchElementMask = Element.Mesh->bRequiresPerElementVisibility ? (*ResolvedVisiblityArray)[Element.Mesh->Id] : ((1ull << SubCount) - 1);
-					Count += DrawElement<InstancedStereo>(RHICmdList, View, PolicyContext, DrawRenderState, Element, BatchElementMask, DrawingPolicyLink, bDrawnShared);
+					if (PolicyContext.bIsSinglePassStereo)
+					{
+						Count += DrawElement<InstancedStereoPolicy::Disabled>(RHICmdList, View, PolicyContext, DrawRenderState, Element, BatchElementMask, DrawingPolicyLink, bDrawnShared);
+					}
+					else
+					{
+						Count += DrawElement<InstancedStereo>(RHICmdList, View, PolicyContext, DrawRenderState, Element, BatchElementMask, DrawingPolicyLink, bDrawnShared);
+					}
 				}
 			}
 		}
@@ -474,13 +486,21 @@ public:
 					{
 						BatchEnd++;
 					}
-					if (!this->PolicyContext.bIsInstancedStereo)
+
+					if (!this->PolicyContext.bIsInstancedStereo && !this->PolicyContext.bIsSinglePassStereo)
 					{
 						this->Caller.template DrawVisibleInner<InstancedStereoPolicy::Disabled>(this->RHICmdList, this->View, this->PolicyContext, this->DrawRenderState, this->StaticMeshVisibilityMap, this->BatchVisibilityArray, nullptr, Start, BatchEnd, true);
 					}
 					else
 					{
-						this->Caller.template DrawVisibleInner<InstancedStereoPolicy::Enabled>(this->RHICmdList, *this->StereoView.LeftView, this->PolicyContext, this->DrawRenderState, nullptr, nullptr, &StereoView, Start, BatchEnd, true);
+						if (this->PolicyContext.bIsSinglePassStereo)
+						{
+							this->Caller.template DrawVisibleInner<InstancedStereoPolicy::Disabled>(this->RHICmdList, *this->StereoView.LeftView, this->PolicyContext, this->DrawRenderState, nullptr, nullptr, &StereoView, Start, BatchEnd, true);
+						}
+						else
+						{
+							this->Caller.template DrawVisibleInner<InstancedStereoPolicy::Enabled>(this->RHICmdList, *this->StereoView.LeftView, this->PolicyContext, this->DrawRenderState, nullptr, nullptr, &StereoView, Start, BatchEnd, true);
+						}
 					}
 					
 					Start = BatchEnd + 1;
@@ -489,13 +509,20 @@ public:
 		}
 		else
 		{
-			if (!this->PolicyContext.bIsInstancedStereo)
+			if (!this->PolicyContext.bIsInstancedStereo && !this->PolicyContext.bIsSinglePassStereo)
 			{
 				this->Caller.template DrawVisibleInner<InstancedStereoPolicy::Disabled>(this->RHICmdList, this->View, this->PolicyContext, this->DrawRenderState, this->StaticMeshVisibilityMap, this->BatchVisibilityArray, nullptr, this->FirstPolicy, this->LastPolicy, true);
 			}
 			else
 			{
-				this->Caller.template DrawVisibleInner<InstancedStereoPolicy::Enabled>(this->RHICmdList, *this->StereoView.LeftView, this->PolicyContext, this->DrawRenderState, nullptr, nullptr, &StereoView, this->FirstPolicy, this->LastPolicy, true);
+				if (this->PolicyContext.bIsSinglePassStereo)
+				{
+					this->Caller.template DrawVisibleInner<InstancedStereoPolicy::Disabled>(this->RHICmdList, *this->StereoView.LeftView, this->PolicyContext, this->DrawRenderState, nullptr, nullptr, &StereoView, this->FirstPolicy, this->LastPolicy, true);
+				}
+				else
+				{
+					this->Caller.template DrawVisibleInner<InstancedStereoPolicy::Enabled>(this->RHICmdList, *this->StereoView.LeftView, this->PolicyContext, this->DrawRenderState, nullptr, nullptr, &StereoView, this->FirstPolicy, this->LastPolicy, true);
+				}
 			}
 		}
 		this->RHICmdList.HandleRTThreadTaskCompletion(MyCompletionGraphEvent);
@@ -558,7 +585,7 @@ void TStaticMeshDrawList<DrawingPolicyType>::DrawVisibleParallelInternal(
 			{
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_FDeferredShadingSceneRenderer_DrawVisibleParallel_FullVisibilityScan);
 				ParallelForWithPreWork(NumPolicies, 
-					[this, &PerDrawingPolicyCounts, &StaticMeshVisibilityMap, &BatchVisibilityArray, StereoView](int32 Index)
+					[this, &PerDrawingPolicyCounts, &StaticMeshVisibilityMap, &BatchVisibilityArray, StereoView, PolicyContext](int32 Index)
 					{
 						int32 Count = 0;
 
@@ -567,20 +594,21 @@ void TStaticMeshDrawList<DrawingPolicyType>::DrawVisibleParallelInternal(
 						FPlatformMisc::Prefetch(CompactElementPtr);
 						const int32 NumElements = DrawingPolicyLink->CompactElements.Num();
 						FPlatformMisc::Prefetch(&DrawingPolicyLink->CompactElements.GetData()->MeshId);
-						const bool bIsInstancedStereo = StereoView != nullptr;
+						const bool bIsSinglePassStereo = (StereoView != nullptr) && PolicyContext.bIsSinglePassStereo;
+						const bool bIsInstancedStereo = (StereoView != nullptr) && (!bIsSinglePassStereo);
 						for (int32 ElementIndex = 0; ElementIndex < NumElements; ElementIndex++, CompactElementPtr++)
 						{
 							bool bIsVisible = false;
 
 							// Single view
-							if (!bIsInstancedStereo && StaticMeshVisibilityMap->AccessCorrespondingBit(FRelativeBitReference(CompactElementPtr->MeshId)))
+							if (!bIsInstancedStereo && !bIsSinglePassStereo && StaticMeshVisibilityMap->AccessCorrespondingBit(FRelativeBitReference(CompactElementPtr->MeshId)))
 							{
 								bIsVisible = true;
 							}
 
 							// Stereo pair, we need to test both eyes
 							else if (
-								bIsInstancedStereo &&
+								(bIsInstancedStereo || bIsSinglePassStereo) &&
 								(StereoView->LeftViewVisibilityMap->AccessCorrespondingBit(FRelativeBitReference(CompactElementPtr->MeshId)) ||
 								StereoView->RightViewVisibilityMap->AccessCorrespondingBit(FRelativeBitReference(CompactElementPtr->MeshId))))
 							{
@@ -597,7 +625,7 @@ void TStaticMeshDrawList<DrawingPolicyType>::DrawVisibleParallelInternal(
 								{
 									++Count;
 								}
-								else if (!bIsInstancedStereo)
+								else if (!bIsInstancedStereo && !bIsSinglePassStereo)
 								{
 									Count += CountBits((*BatchVisibilityArray)[Element.Mesh->Id]);
 								}

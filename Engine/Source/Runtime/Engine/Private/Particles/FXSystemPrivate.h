@@ -190,6 +190,7 @@ public:
 
 	void PrepareGPUSimulation(FRHICommandListImmediate& RHICmdList);
 	void FinalizeGPUSimulation(FRHICommandListImmediate& RHICmdList);
+	void CopyGPUSimulationMGPU(FRHICommandListImmediate& RHICmdList, EParticleSimulatePhase::Type Phase);
 
 private:
 

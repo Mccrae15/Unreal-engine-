@@ -283,7 +283,7 @@ FORCEINLINE_DEBUGGABLE FMeshDrawingPolicyOverrideSettings ComputeMeshOverrideSet
 * Creates and sets the base PSO so that resources can be set. Generally best to call during SetSharedState.
 */
 template<class DrawingPolicyType>
-void CommitGraphicsPipelineState(FRHICommandList& RHICmdList, const DrawingPolicyType& DrawingPolicy, const FDrawingPolicyRenderState& DrawRenderState, ERHIFeatureLevel::Type	FeatureLevel)
+void CommitGraphicsPipelineState(FRHICommandList& RHICmdList, const DrawingPolicyType& DrawingPolicy, const FDrawingPolicyRenderState& DrawRenderState, ERHIFeatureLevel::Type	FeatureLevel, bool bMultiProj /* = false */)
 {
 #if RHI_PSO_X_VALIDATION
 	RHICmdList.ValidatePsoState(DrawRenderState.GetBlendState(), DrawRenderState.GetDepthStencilState());
@@ -291,7 +291,7 @@ void CommitGraphicsPipelineState(FRHICommandList& RHICmdList, const DrawingPolic
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	GraphicsPSOInit.PrimitiveType = DrawingPolicy.GetPrimitiveType();
-	GraphicsPSOInit.BoundShaderState = DrawingPolicy.GetBoundShaderStateInput(FeatureLevel);
+	GraphicsPSOInit.BoundShaderState = DrawingPolicy.GetBoundShaderStateInput(FeatureLevel, bMultiProj);
 	GraphicsPSOInit.RasterizerState = DrawingPolicy.ComputeRasterizerState(DrawRenderState.GetViewOverrideFlags());
 
 	check(DrawRenderState.GetDepthStencilState());
@@ -322,9 +322,9 @@ public:
 	/** Context data required by the drawing policy that is not known when caching policies in static mesh draw lists. */
 	struct ContextDataType
 	{
-		ContextDataType(const bool InbIsInstancedStereo) : bIsInstancedStereo(InbIsInstancedStereo) {};
-		ContextDataType() : bIsInstancedStereo(false) {};
-		bool bIsInstancedStereo;
+		ContextDataType(const bool InbIsInstancedStereo, const bool InIsSinglePassStereo) : bIsInstancedStereo(InbIsInstancedStereo), bIsSinglePassStereo(InIsSinglePassStereo) {};
+		ContextDataType() : bIsInstancedStereo(false), bIsSinglePassStereo(false) {};
+		bool bIsInstancedStereo, bIsSinglePassStereo;
 	};
 
 	FMeshDrawingPolicy(
@@ -459,6 +459,7 @@ public:
 	const FVertexFactory* GetVertexFactory() const { return VertexFactory; }
 	const FMaterialRenderProxy* GetMaterialRenderProxy() const { return MaterialRenderProxy; }
 
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	FORCEINLINE EDebugViewShaderMode GetDebugViewShaderMode() const { return (EDebugViewShaderMode)DebugViewShaderMode; }
 	FORCEINLINE bool UseDebugViewPS() const { return DebugViewShaderMode != DVSM_None; }
@@ -466,6 +467,8 @@ public:
 	FORCEINLINE EDebugViewShaderMode GetDebugViewShaderMode() const { return DVSM_None; }
 	FORCEINLINE bool UseDebugViewPS() const { return false; }
 #endif
+
+	FORCEINLINE FGeometryShaderRHIRef GetMultiResFastGS() { return FGeometryShaderRHIRef(); }
 
 protected:
 	const FVertexFactory* VertexFactory;
