@@ -1344,13 +1344,14 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 						DrawAllTranslucencyPasses(RHICmdList, View, DrawRenderState, ETranslucencyPass::TPT_SeparateTranslucency);
 					}
 
-					// EHartNV : ToDo - confirm correctness, previously, this was unconditional
-					if (View.bVRProjectEnabled)
-					{
-						View.EndVRProjectionStates(RHICmdList);
-					}
 
 					EndTimingSeparateTranslucencyPass(RHICmdList, View);
+				}
+
+				// EHartNV : ToDo - confirm correctness, previously, this was unconditional
+				if (View.bVRProjectEnabled)
+				{
+					View.EndVRProjectionStates(RHICmdList);
 				}
 			}
 		}

@@ -377,7 +377,7 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 
 	if (View.StereoPass == eSSP_FULL || View.StereoPass == eSSP_LEFT_EYE)
 	{
-		Context.SetViewportAndCallRHI(DestRect);
+		Context.SetViewportAndCallRHI(ViewportGap > 0.0 ? FullClearRect : DestRect);
 		DrawClearQuad(Context.RHICmdList, Context.GetFeatureLevel(), true, FLinearColor::Black, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, ExcludeRect);
 		// NVCHANGE_YY, this is the function used in UE4.14 here ---> Context.RHICmdList.ClearColorTexture(DestRenderTarget.TargetableTexture, FLinearColor::Black, ExcludeRect);
 	}

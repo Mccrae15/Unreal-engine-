@@ -403,7 +403,7 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
 		ConsoleVariable = "vr.SinglePassStereo", DisplayName = "SinglePassStereo",
-		ToolTip = "Enable SinglePassStereo (only available for D3D SM5).",
+		ToolTip = "Enable SinglePassStereo (only available for Pascal GPUs with R367 drivers and above).",
 		ConfigRestartRequired = true))
 		uint32 bSinglePassStereo : 1;
 
