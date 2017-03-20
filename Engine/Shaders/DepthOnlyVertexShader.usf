@@ -63,7 +63,7 @@ struct FDepthOnlyVSToPS
 	{
 		FDepthOnlyVSToPS O;
 		
-		#if !MATERIALBLENDING_SOLID || OUTPUT_PIXEL_DEPTH_OFFSET
+		#if !MATERIALBLENDING_SOLID || OUTPUT_PIXEL_DEPTH_OFFSET || ((MULTIRES || LENS_MATCHED) && INSTANCED_STEREO)
 			O.FactoryInterpolants = VertexFactoryAssignInterpolants(Interpolants.FactoryInterpolants);
 		#endif
 
