@@ -257,7 +257,7 @@ void MainVertexShader(
 
 	#if INSTANCED_STEREO && !MULTI_VIEW
 	BRANCH
-	if (bIsInstancedStereo)
+	if (bIsInstancedStereo && !LensMatchedShadingIsActive())
 	{
 		// Clip at the center of the screen
 		OutClipDistance = dot(Output.Position, EyeClipEdge[EyeIndex]);
