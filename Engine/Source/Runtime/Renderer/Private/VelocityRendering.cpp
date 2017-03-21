@@ -807,6 +807,7 @@ static void SetVelocitiesState(FRHICommandList& RHICmdList, const FViewInfo& Vie
 		const uint32 MaxX = View.ViewRect.Max.X * VelocityBufferSize.X / BufferSize.X;
 		const uint32 MaxY = View.ViewRect.Max.Y * VelocityBufferSize.Y / BufferSize.Y;
 		RHICmdList.SetViewport(MinX, MinY, 0.0f, MaxX, MaxY, 1.0f);
+		RHICmdList.SetGPUMask(View.StereoPass);
 	}
 	else if (View.bIsMultiViewEnabled)
 	{
@@ -873,6 +874,21 @@ static TAutoConsoleVariable<int32> CVarRHICmdFlushRenderThreadTasksVelocityPass(
 	0,
 	TEXT("Wait for completion of parallel render thread tasks at the end of the velocity pass.  A more granular version of r.RHICmdFlushRenderThreadTasks. If either r.RHICmdFlushRenderThreadTasks or r.RHICmdFlushRenderThreadTasksVelocityPass is > 0 we will flush."));
 
+static void SetupPassViewScissorAndMaskVelocityPass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+{
+	if (GRHISupportsMultipleGPUStereo && View.StereoPass != eSSP_FULL)
+	{
+		// note: we need to be sure the scissor rect is not enabled downstream. 
+		RHICmdList.SetGPUMask(View.StereoPass);
+		RHICmdList.SetScissorRect(true, View.ViewRect.Min.X, View.ViewRect.Min.Y, View.ViewRect.Max.X, View.ViewRect.Max.Y);
+		RHICmdList.SetGPUMask(0);
+	}
+	else
+	{
+		RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
+	}
+}
+
 void FDeferredShadingSceneRenderer::RenderVelocitiesInnerParallel(FRHICommandListImmediate& RHICmdList, TRefCountPtr<IPooledRenderTarget>& VelocityRT)
 {
 	// parallel version
@@ -881,8 +897,8 @@ void FDeferredShadingSceneRenderer::RenderVelocitiesInnerParallel(FRHICommandLis
 	for(int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		const FViewInfo& View = Views[ViewIndex];
-
-		RHICmdList.SetGPUMask(View.StereoPass);
+		SetupPassViewScissorAndMaskVelocityPass(RHICmdList, View);
+		/// RHICmdList.SetGPUMask(View.StereoPass);
 
 		if (View.ShouldRenderView())
 		{
@@ -938,6 +954,7 @@ void FDeferredShadingSceneRenderer::RenderVelocitiesInnerParallel(FRHICommandLis
 			} 
 		}
 	RHICmdList.SetGPUMask(0);
+	RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
 	}
 }
 
@@ -948,10 +965,11 @@ void FDeferredShadingSceneRenderer::RenderVelocitiesInner(FRHICommandListImmedia
 		const FViewInfo& View = Views[ViewIndex];
 
 		FDrawingPolicyRenderState DrawRenderState(&RHICmdList, View);
+		SetupPassViewScissorAndMaskVelocityPass(RHICmdList, View);
 
 		if (View.ShouldRenderView())
 		{
-			RHICmdList.SetGPUMask(View.StereoPass);
+			/// RHICmdList.SetGPUMask(View.StereoPass);
 			SetVelocitiesState(RHICmdList, View, DrawRenderState, VelocityRT);
 
 			// Draw velocities for movable static meshes.
@@ -994,6 +1012,7 @@ void FDeferredShadingSceneRenderer::RenderVelocitiesInner(FRHICommandListImmedia
 		}
 	}
 	RHICmdList.SetGPUMask(0);
+	RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
 }
 
 bool FDeferredShadingSceneRenderer::ShouldRenderVelocities() const
