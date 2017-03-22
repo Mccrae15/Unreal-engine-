@@ -856,6 +856,16 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 	{
 		SetupProjectionStencilMask(RHICmdList, View, FrustumVertices, bMobileModulatedProjections, bCameraInsideShadowFrustum);
 	}
+	else
+	{
+		if (View->bVRProjectEnabled)
+		{
+			// EHartNV : ToDo - follow-up on Nathan's optimization issue
+			// @todo: restrict rendering to the light's screen-space rectangle (as in LightSceneInfo->Proxy->SetScissorRect).
+			// Would need to map the scissor rect to multi-res coordinates, then intersect it with the vr projection scissors.
+			View->BeginVRProjectionStates(RHICmdList);
+		}
+	}
 
 	// solid rasterization w/ back-face culling.
 	RHICmdList.SetRasterizerState(
@@ -867,6 +877,11 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 		FVector4 Far = View->ViewMatrices.GetProjectionMatrix().TransformFVector4(FVector4(0, 0, CascadeSettings.SplitFar));
 		float DepthNear = Near.Z / Near.W;
 		float DepthFar = Far.Z / Far.W;
+
+		if (View->bVRProjectEnabled && View->VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		{
+			DepthFar = 0;// Far.Z / (FMath::Max(View->LensMatchedShadingConf.WarpUp, View->LensMatchedShadingConf.WarpDown) + FMath::Max(View->LensMatchedShadingConf.WarpLeft, View->LensMatchedShadingConf.WarpRight) + Far.W);
+		}
 
 		DepthFar = FMath::Clamp(DepthFar, 0.0f, 1.0f);
 		DepthNear = FMath::Clamp(DepthNear, 0.0f, 1.0f);
