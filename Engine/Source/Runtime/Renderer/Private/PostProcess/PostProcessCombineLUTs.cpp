@@ -750,6 +750,9 @@ void FRCPassPostProcessCombineLUTs::Process(FRenderingCompositePassContext& Cont
 	const FSceneView& View = Context.View;
 	const FSceneViewFamily& ViewFamily = *(View.Family);
 
+	// NVCHANGE_YY : For stereo rendering the combine LUT pass should only be executed for eSSP_LEFT_EYE
+	// and the result is reused by eSSP_RIGHT_EYE.
+	Context.RHICmdList.SetGPUMask(0);
 
 	uint32 LocalCount = 1;
 
@@ -816,6 +819,10 @@ void FRCPassPostProcessCombineLUTs::Process(FRenderingCompositePassContext& Cont
 	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget->TargetableTexture, DestRenderTarget->ShaderResourceTexture, false, FResolveParams());
 
 	Context.View.SetValidTonemappingLUT();
+
+	// NVCHANGE_YY : For stereo rendering the combine LUT pass should only be executed for eSSP_LEFT_EYE
+	// and the result is reused by eSSP_RIGHT_EYE.
+	Context.RHICmdList.SetGPUMask(View.StereoPass);
 }
 
 FPooledRenderTargetDesc FRCPassPostProcessCombineLUTs::ComputeOutputDesc(EPassOutputId InPassOutputId) const
