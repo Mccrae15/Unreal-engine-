@@ -957,7 +957,16 @@ void FPixelShaderInOut_MainPS(
 			#endif
 
 			#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5
-				GridIndex = ComputeLightGridCellIndex((uint2)(MaterialParameters.SvPosition.xy - ResolvedView.ViewRectMin.xy), MaterialParameters.SvPosition.w, EyeIndex);
+				float2 PixelPos = MaterialParameters.SvPosition.xy - ResolvedView.ViewRectMin.xy;
+				float SceneDepth = MaterialParameters.SvPosition.w;
+				if (VRProjectionIsActive())
+				{
+					float2 PixelVRProjUV = PixelPos * ResolvedView.ViewSizeAndInvSize.zw;
+					float2 PixelLinearUV = VRProjMapVRProjToLinear(PixelVRProjUV);
+					PixelPos = PixelLinearUV * ResolvedView.ViewSizeAndInvSize.xy;
+					SceneDepth = LMSReverseModifiedW(PixelLinearUV, SceneDepth);
+				}
+				GridIndex = ComputeLightGridCellIndex((uint2)(PixelPos), SceneDepth, EyeIndex);
 
 				#if FORWARD_SHADING || TRANSLUCENCY_LIGHTING_SURFACE_FORWARDSHADING
 					Color += GetForwardDirectLighting(GridIndex, MaterialParameters.AbsoluteWorldPosition, MaterialParameters.CameraVector, GBuffer, NearestResolvedDepthScreenUV, EyeIndex);

@@ -957,3 +957,44 @@ float LensMatchedCorrectDeviceZUint(float InDepth, uint2 InPixelPos)
 		return InDepth;
 	}
 }
+
+float2 GetModifiedWABFromClipPos(
+	FModifiedWConfiguration	Conf,
+	float4				ClipPos)
+{
+	float A, B;
+
+	if (ClipPos.x < 0)
+	{
+		A = -Conf.WarpLeft;
+	}
+	else
+	{
+		A = +Conf.WarpRight;
+	}
+
+	if (ClipPos.y < 0)
+	{
+		B = -Conf.WarpDown;
+	}
+	else
+	{
+		B = +Conf.WarpUp;
+	}
+
+	return float2(A, B);
+}
+
+float LMSReverseModifiedW(float2 LinearUV, float InModifiedW)
+{
+	if (LensMatchedShadingIsActive())
+	{
+		float4 ClipPos = float4(LinearUV.x * 2 - 1, -LinearUV.y * 2 + 1, 0, 1);
+		float2 AB = GetModifiedWABFromClipPos(GetModifiedWConfigurationView(), ClipPos);
+		return InModifiedW / (AB.x * ClipPos.x + AB.y * ClipPos.y + 1.0f);
+	}
+	else
+	{
+		return InModifiedW;
+	}
+}
