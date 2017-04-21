@@ -1014,7 +1014,7 @@ float3 MapUVWLensMatchedToLinear(
 float3 VRProjMapVRProjToLinearEx(float2 UV, float InModifiedW)
 {
 	// Scale-bias U and V based on which viewport they're in
-	float3 Result;
+	float3 Result = float3(UV, InModifiedW);
 
 	if (MultiResIsActive())
 	{
