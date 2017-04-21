@@ -998,3 +998,33 @@ float LMSReverseModifiedW(float2 LinearUV, float InModifiedW)
 		return InModifiedW;
 	}
 }
+
+float3 MapUVWLensMatchedToLinear(
+	FModifiedWConfiguration	Conf,
+	float2				LensMatchedUV,
+	float					InModifiedW)
+{
+	float2 WindowPos = LensMatchedUV * Conf.BoundingRectSize + Conf.BoundingRectOrigin;
+	float4 ClipPos = ModifiedWMapWindowToClip(Conf, float3(WindowPos, 0), false);
+	ClipPos.xy /= ClipPos.w;
+	float2 LinearUV = float2(ClipPos.x * 0.5 + 0.5, -ClipPos.y * 0.5 + 0.5);
+	return float3(LinearUV, InModifiedW*ClipPos.w);
+}
+
+float3 VRProjMapVRProjToLinearEx(float2 UV, float InModifiedW)
+{
+	// Scale-bias U and V based on which viewport they're in
+	float3 Result;
+
+	if (MultiResIsActive())
+	{
+		Result.xy = MapMultiResToLinearInternal(UV);
+		Result.z = InModifiedW;
+	}
+	else if (LensMatchedShadingIsActive())
+	{
+		Result = MapUVWLensMatchedToLinear(GetModifiedWConfigurationView(), UV, InModifiedW);
+	}
+
+	return Result;
+}

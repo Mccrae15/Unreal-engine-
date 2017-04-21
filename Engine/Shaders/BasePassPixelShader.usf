@@ -962,9 +962,9 @@ void FPixelShaderInOut_MainPS(
 				if (VRProjectionIsActive())
 				{
 					float2 PixelVRProjUV = PixelPos * ResolvedView.ViewSizeAndInvSize.zw;
-					float2 PixelLinearUV = VRProjMapVRProjToLinear(PixelVRProjUV);
-					PixelPos = PixelLinearUV * ResolvedView.ViewSizeAndInvSize.xy;
-					SceneDepth = LMSReverseModifiedW(PixelLinearUV, SceneDepth);
+					float3 PixelLinearUVW = VRProjMapVRProjToLinearEx(PixelVRProjUV, SceneDepth);
+					PixelPos = PixelLinearUVW.xy * ResolvedView.ViewSizeAndInvSize.xy;
+					SceneDepth = PixelLinearUVW.z;
 				}
 				GridIndex = ComputeLightGridCellIndex((uint2)(PixelPos), SceneDepth, EyeIndex);
 
