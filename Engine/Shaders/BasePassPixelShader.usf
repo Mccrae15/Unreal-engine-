@@ -585,7 +585,7 @@ void FPixelShaderInOut_MainPS(
 	ResolvedView = ResolveView(TmpEyeIndex);
 	uint InEyeIndex = SinglePassStereoIsActive() ? TmpEyeIndex : 0; // Only needed with SPS.
 #elif SINGLE_PASS_STEREO
-	uint InEyeIndex = GetEyeIndexFromViewportIndex(In.SvViewportArrayIndex);
+	uint InEyeIndex = SinglePassStereoIsActive() ? GetEyeIndexFromViewportIndex(In.SvViewportArrayIndex) : 0;
 	ResolvedView = ResolveView(InEyeIndex);
 #elif INSTANCED_STEREO
 	ResolvedView = ResolveView(GetEyeIndex(Interpolants.PackedEyeIndex));
