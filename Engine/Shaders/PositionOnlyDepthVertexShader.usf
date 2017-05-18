@@ -29,10 +29,10 @@ bool bNeedsSinglePassStereoBias;
 
 void Main(
 	FPositionOnlyVertexFactoryInput Input
+	, out FPositionOnlyDepthVSToPS Output
 #if USE_GLOBAL_CLIP_PLANE
 	, out float OutGlobalClipPlaneDistance : SV_ClipDistance
 #endif
-	, out FPositionOnlyDepthVSToPS Output
 #if INSTANCED_STEREO
 	, uint InstanceId : SV_InstanceID
 	#if !MULTI_VIEW
