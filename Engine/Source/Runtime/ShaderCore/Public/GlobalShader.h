@@ -60,7 +60,8 @@ public:
 		ConstructCompiledType InConstructCompiledRef,
 		ModifyCompilationEnvironmentType InModifyCompilationEnvironmentRef,
 		ShouldCacheType InShouldCacheRef,
-		GetStreamOutElementsType InGetStreamOutElementsRef
+		GetStreamOutElementsType InGetStreamOutElementsRef,
+		bool InIsFastGeometryShader = false
 		):
 		FShaderType(EShaderTypeForDynamicCast::Global, InName, InSourceFilename, InFunctionName, InFrequency, InConstructSerializedRef, InGetStreamOutElementsRef),
 		ConstructCompiledRef(InConstructCompiledRef),

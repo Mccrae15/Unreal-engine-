@@ -19,6 +19,16 @@ void ExponentialPixelMain(
 	)
 { 
 	float SceneDepth = CalcSceneDepth(TexCoord);
+
+	if (VRProjectionIsActive())
+	{
+		// Recalculate ScreenVector per-pixel, remapping multi-res UVs to corresponding linear UVs
+		// @todo: Could be done in the vertex shader, by constructing a mesh that's split to match the
+		// multi-res viewports.
+		float4 LinearSvPos = SvPositionToLinearSvPosition(SVPos);
+		ScreenVector.xyz = mul(float4(LinearSvPos.xy, 1, 1), View.SVPositionToTranslatedWorld).xyz;
+	}
+
 	float3 WorldPositionRelativeToCamera = ScreenVector.xyz * SceneDepth;
 
 	float ZSlice = log2(SceneDepth * View.VolumetricFogGridZParams.x + View.VolumetricFogGridZParams.y) * View.VolumetricFogGridZParams.z * View.VolumetricFogInvGridSize.z;

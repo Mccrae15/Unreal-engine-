@@ -35,9 +35,8 @@ void ComputeCellViewAABB(uint3 GridCoordinate, out float3 ViewTileMin, out float
 	float2 TileSize = 2.0f / (float2)ForwardGlobalLightData.CulledGridSize.xy;
 	float2 UnitPlaneMin = -1;
 
-	float2 UnitPlaneTileMin = (GridCoordinate.xy * TileSize + UnitPlaneMin) * float2(1, -1);
-	float2 UnitPlaneTileMax = ((GridCoordinate.xy + 1) * TileSize + UnitPlaneMin) * float2(1, -1);
-
+	float2 UnitPlaneTileMin = (GridCoordinate.xy * TileSize + UnitPlaneMin) * float2(1, -1); /// VRProjMapNDCVRProjToLinear((GridCoordinate.xy * TileSize + UnitPlaneMin) * float2(1, -1));
+	float2 UnitPlaneTileMax = ((GridCoordinate.xy + 1) * TileSize + UnitPlaneMin) * float2(1, -1); /// VRProjMapNDCVRProjToLinear(((GridCoordinate.xy + 1) * TileSize + UnitPlaneMin) * float2(1, -1));
 	float MinTileZ = ComputeDepthFromZSlice(GridCoordinate.z);
 	float MaxTileZ = ComputeDepthFromZSlice(GridCoordinate.z + 1);
 

@@ -204,6 +204,15 @@ public:
 	// @param Data must not be 0
 	virtual void RHISetMultipleViewports(uint32 Count, const FViewportBounds* Data) = 0;
 
+	// Useful when used with geometry shader (emit polygons to different viewports), otherwise SetScissorRect() is simpler
+	// @param Count >0
+	// @param Data must not be 0
+	virtual void RHISetMultipleScissorRects(bool bEnable, uint32 Num, const FIntRect* Rects) = 0;
+
+	// Used for enabling w warp
+	virtual void RHISetModifiedWMode(const FLensMatchedShading::Configuration& Conf, const bool bWarpForward, const bool bEnable) = 0;
+	virtual void RHISetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& Conf, const bool bWarpForward, const bool bEnable) = 0;
+
 	/** Clears a UAV to the multi-component value provided. */
 	virtual void RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef UnorderedAccessViewRHI, const uint32* Values) = 0;
 
@@ -550,11 +559,13 @@ public:
 	 */
 	virtual void RHIEnableDepthBoundsTest(bool bEnable, float MinDepth, float MaxDepth) = 0;
 
+	virtual void RHISetSinglePassStereoParameters(bool bEnable, uint32 RenderTargetIndexOffset, uint8 IndependentViewportMaskEnable) = 0;
 	virtual void RHIPushEvent(const TCHAR* Name, FColor Color) = 0;
-
 	virtual void RHIPopEvent() = 0;
 
 	virtual void RHIUpdateTextureReference(FTextureReferenceRHIParamRef TextureRef, FTextureRHIParamRef NewTexture) = 0;	
+	virtual void RHISetGPUMask(uint32 Mask) = 0;
+	virtual void RHICopyResourceToGPU(FTextureRHIParamRef SourceTextureRHI, FTextureRHIParamRef DestTextureRHI, uint32 DestGPUIndex, uint32 SrcGPUIndex, const FResolveParams& ResolveParams) = 0;
 };
 
 /** The interface which is implemented by the dynamically bound RHI. */
@@ -649,8 +660,21 @@ public:
 		return nullptr;
 	}
 
-	// Some RHIs can have pending messages/logs for error tracking, or debug modes
-	virtual void FlushPendingLogs() {}
+	/** Creates a geometry shader with special restrictions/capabilities. */
+	// FlushType: Wait RHI Thread
+	virtual FGeometryShaderRHIRef RHICreateFastGeometryShader(const TArray<uint8>& Code) = 0;
+
+	// FlushType: Wait RHI Thread
+	virtual FVertexShaderRHIRef RHICreateVertexShaderWithSinglePassStereo(const TArray<uint8>& Code) = 0;
+
+	// FlushType: Wait RHI Thread
+	virtual FHullShaderRHIRef RHICreateHullShaderWithSinglePassStereo(const TArray<uint8>& Code) = 0;
+
+	// FlushType: Wait RHI Thread
+	virtual FDomainShaderRHIRef RHICreateDomainShaderWithSinglePassStereo(const TArray<uint8>& Code) = 0;
+
+	// FlushType: Wait RHI Thread
+	virtual FGeometryShaderRHIRef RHICreateFastGeometryShader_2(const TArray<uint8>& Code, uint32 Usage) = 0;
 
 	// FlushType: Wait RHI Thread
 	virtual FComputeShaderRHIRef RHICreateComputeShader(const TArray<uint8>& Code) = 0;
@@ -665,7 +689,10 @@ public:
 	{
 		return nullptr;
 	}
-	
+
+	// Some RHIs can have pending messages/logs for error tracking, or debug modes
+	virtual void FlushPendingLogs() {}
+
 	/**
 	* Creates a compute fence.  Compute fences are named GPU fences which can be written to once before resetting.
 	* A command to write the fence must be enqueued before any commands to wait on them.  This is enforced on the CPU to avoid GPU hangs.

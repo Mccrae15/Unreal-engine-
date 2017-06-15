@@ -816,44 +816,48 @@ void FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(FRHICommandListImm
 
 					if (bAnyLightShaftsRendered)
 					{
-						// Allocate light shaft render targets on demand, using the pool
-						// Need two targets to ping pong between
-						AllocateOrReuseLightShaftRenderTarget(RHICmdList, LightShafts0, TEXT("LightShafts0"));
-						AllocateOrReuseLightShaftRenderTarget(RHICmdList, LightShafts1, TEXT("LightShafts1"));
+				        // Allocate light shaft render targets on demand, using the pool
+				        // Need two targets to ping pong between
+				        AllocateOrReuseLightShaftRenderTarget(RHICmdList, LightShafts0, TEXT("LightShafts0"));
+				        AllocateOrReuseLightShaftRenderTarget(RHICmdList, LightShafts1, TEXT("LightShafts1"));
 
-						for (int ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
-						{
-							FViewInfo& View = Views[ViewIndex];
-							
-							SCOPED_DRAW_EVENTF(RHICmdList, RenderLightShaftOcclusion, TEXT("RenderLightShaftOcclusion %dx%d (multiple passes)"), View.ViewRect.Width(), View.ViewRect.Height());
-		
-							if (ShouldRenderLightShaftsForLight(View, LightSceneInfo))
-							{
-								INC_DWORD_STAT(STAT_LightShaftsLights);
-		
-								// Create a downsampled occlusion mask from scene depth, result will be in LightShafts0
-								DownsamplePass<true>(RHICmdList, View, LightSceneInfo, LightShafts0, LightShafts1);
-		
-								FSceneViewState* ViewState = (FSceneViewState*)View.State;
-								// Find the previous frame's occlusion mask
-								TRefCountPtr<IPooledRenderTarget>* HistoryState = ViewState ? &ViewState->LightShaftOcclusionHistoryRT : NULL;
-								TRefCountPtr<IPooledRenderTarget> HistoryOutput;
-		
-								// Apply temporal AA to the occlusion mask
-								// Result will be in HistoryOutput
-								ApplyTemporalAA(RHICmdList, View, TEXT("LSOcclusionHistory"), HistoryState, LightShafts0, HistoryOutput);
-		
-								// Apply radial blur passes
-								// Send HistoryOutput in as the first pass input only, so it will not be overwritten by any subsequent passes, since it is needed for next frame
-								ApplyRadialBlurPasses(RHICmdList, View, LightSceneInfo, HistoryOutput, LightShafts0, LightShafts1);
-		
-								// Apply post-blur masking
-								FinishOcclusionTerm(RHICmdList, View, LightSceneInfo, LightShafts0, LightShafts1);
-		
-								//@todo - different views could have different result render targets
-								Output.LightShaftOcclusion = LightShafts1;
-							}
-						}
+					    for (int ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+				        {
+					        FViewInfo& View = Views[ViewIndex];
+					        
+					        SCOPED_DRAW_EVENTF(RHICmdList, RenderLightShaftOcclusion, TEXT("RenderLightShaftOcclusion %dx%d (multiple passes)"), View.ViewRect.Width(), View.ViewRect.Height());
+        
+					        if (ShouldRenderLightShaftsForLight(View, LightSceneInfo))
+					        {
+						        INC_DWORD_STAT(STAT_LightShaftsLights);
+        
+								RHICmdList.SetGPUMask(View.StereoPass);
+
+						        // Create a downsampled occlusion mask from scene depth, result will be in LightShafts0
+						        DownsamplePass<true>(RHICmdList, View, LightSceneInfo, LightShafts0, LightShafts1);
+        
+						        FSceneViewState* ViewState = (FSceneViewState*)View.State;
+						        // Find the previous frame's occlusion mask
+						        TRefCountPtr<IPooledRenderTarget>* HistoryState = ViewState ? &ViewState->LightShaftOcclusionHistoryRT : NULL;
+						        TRefCountPtr<IPooledRenderTarget> HistoryOutput;
+        
+						        // Apply temporal AA to the occlusion mask
+						        // Result will be in HistoryOutput
+						        ApplyTemporalAA(RHICmdList, View, TEXT("LSOcclusionHistory"), HistoryState, LightShafts0, HistoryOutput);
+        
+						        // Apply radial blur passes
+						        // Send HistoryOutput in as the first pass input only, so it will not be overwritten by any subsequent passes, since it is needed for next frame
+						        ApplyRadialBlurPasses(RHICmdList, View, LightSceneInfo, HistoryOutput, LightShafts0, LightShafts1);
+        
+						        // Apply post-blur masking
+						        FinishOcclusionTerm(RHICmdList, View, LightSceneInfo, LightShafts0, LightShafts1);
+        
+						        //@todo - different views could have different result render targets
+						        Output.LightShaftOcclusion = LightShafts1;
+					        }
+				        }
+						//vrworks todo. what is the next line?
+						RHICmdList.SetGPUMask(0);
 					}				
 				}
 			}
@@ -1037,6 +1041,8 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(FRHICommandListImmedia
 					{
 						INC_DWORD_STAT(STAT_LightShaftsLights);
 
+						RHICmdList.SetGPUMask(View.StereoPass);
+
 						// Generate the bloom source from scene color, masked by depth and downsampled
 						DownsamplePass<false>(RHICmdList, View, LightSceneInfo, LightShafts0, LightShafts1);
 
@@ -1063,6 +1069,7 @@ void FDeferredShadingSceneRenderer::RenderLightShaftBloom(FRHICommandListImmedia
 						ApplyLightShaftBloom(RHICmdList, View, LightSceneInfo, LightShafts0);
 					}
 				}
+					RHICmdList.SetGPUMask(0);
 			}
 		}
 	}

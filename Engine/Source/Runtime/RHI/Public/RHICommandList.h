@@ -683,6 +683,18 @@ struct FRHICommandSetStereoViewport : public FRHICommand<FRHICommandSetStereoVie
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
+struct FRHICommandSetMultipleViewports : public FRHICommand<FRHICommandSetMultipleViewports>
+{
+	uint32 Num;
+	const FViewportBounds* Viewports;
+	FORCEINLINE_DEBUGGABLE FRHICommandSetMultipleViewports(uint32 InNum, const FViewportBounds* InViewports)
+		: Num(InNum)
+		, Viewports(InViewports)
+	{
+	}
+	RHI_API void Execute(FRHICommandListBase& CmdList);
+};
+
 struct FRHICommandSetScissorRect : public FRHICommand<FRHICommandSetScissorRect>
 {
 	bool bEnable;
@@ -696,6 +708,77 @@ struct FRHICommandSetScissorRect : public FRHICommand<FRHICommandSetScissorRect>
 		, MinY(InMinY)
 		, MaxX(InMaxX)
 		, MaxY(InMaxY)
+	{
+	}
+	RHI_API void Execute(FRHICommandListBase& CmdList);
+};
+
+struct FRHICommandSetMultipleScissorRects : public FRHICommand<FRHICommandSetMultipleScissorRects>
+{
+	bool bEnable;
+	uint32 Num;
+	const FIntRect* Rects;
+	FORCEINLINE_DEBUGGABLE FRHICommandSetMultipleScissorRects(bool InbEnable, uint32 InNum, const FIntRect* InRects)
+		: bEnable(InbEnable)
+		, Num(InNum)
+		, Rects(InRects)
+	{
+	}
+	RHI_API void Execute(FRHICommandListBase& CmdList);
+};
+
+struct FRHICommandSetModifiedWMode : public FRHICommand<FRHICommandSetModifiedWMode>
+{
+	FLensMatchedShading::Configuration Conf;
+	bool bWarpForward;
+	bool bEnable;
+	FORCEINLINE_DEBUGGABLE FRHICommandSetModifiedWMode(const FLensMatchedShading::Configuration& InConf, const bool InbWarpForward, const bool InbEnable)
+		: Conf(InConf)
+		, bWarpForward(InbWarpForward)
+		, bEnable(InbEnable)
+	{
+	}
+	RHI_API void Execute(FRHICommandListBase& CmdList);
+};
+
+struct FRHICommandSetModifiedWModeStereo : public FRHICommand<FRHICommandSetModifiedWModeStereo>
+{
+	FLensMatchedShading::StereoConfiguration Conf;
+	bool bWarpForward;
+	bool bEnable;
+	FORCEINLINE_DEBUGGABLE FRHICommandSetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& InConf, const bool InbWarpForward, const bool InbEnable)
+		: Conf(InConf)
+		, bWarpForward(InbWarpForward)
+		, bEnable(InbEnable)
+	{
+	}
+	RHI_API void Execute(FRHICommandListBase& CmdList);
+};
+
+struct FRHICommandSetGPUMask : public FRHICommand<FRHICommandSetGPUMask>
+{
+	uint32 Mask;
+	FORCEINLINE_DEBUGGABLE FRHICommandSetGPUMask(uint32 InMask)
+		: Mask(InMask)
+	{
+	}
+	RHI_API void Execute(FRHICommandListBase& CmdList);
+};
+
+struct FRHICommandCopyResourceToGPU : public FRHICommand<FRHICommandCopyResourceToGPU>
+{
+	FResolveParams ResolveParams;
+	FTextureRHIParamRef SourceTexture;
+	FTextureRHIParamRef DestTexture;
+	uint32 DestGPUIndex;
+	uint32 SrcGPUIndex;
+
+	FORCEINLINE_DEBUGGABLE FRHICommandCopyResourceToGPU(FTextureRHIParamRef InSourceTexture, FTextureRHIParamRef InDestTexture, uint32 InDestGPUIndex, uint32 InSrcGPUIndex, const FResolveParams& InResolveParams)
+		: ResolveParams(InResolveParams)
+		, SourceTexture(InSourceTexture)
+		, DestTexture(InDestTexture)
+		, DestGPUIndex(InDestGPUIndex)
+		, SrcGPUIndex(InSrcGPUIndex)
 	{
 	}
 	RHI_API void Execute(FRHICommandListBase& CmdList);
@@ -951,6 +1034,21 @@ struct FRHICommandEnableDepthBoundsTest : public FRHICommand<FRHICommandEnableDe
 		: bEnable(InbEnable)
 		, MinDepth(InMinDepth)
 		, MaxDepth(InMaxDepth)
+	{
+	}
+	RHI_API void Execute(FRHICommandListBase& CmdList);
+};
+
+struct FRHICommandSetSinglePassStereoParameters : public FRHICommand<FRHICommandSetSinglePassStereoParameters>
+{
+	bool bEnable;
+	uint32 RenderTargetIndexOffset;
+	uint8 IndependentViewportMaskEnable;
+
+	FORCEINLINE_DEBUGGABLE FRHICommandSetSinglePassStereoParameters(bool InbEnable, uint32 InRenderTargetIndexOffset, uint8 InIndependentViewportMaskEnable)
+		: bEnable(InbEnable)
+		, RenderTargetIndexOffset(InRenderTargetIndexOffset)
+		, IndependentViewportMaskEnable(InIndependentViewportMaskEnable)
 	{
 	}
 	RHI_API void Execute(FRHICommandListBase& CmdList);
@@ -1940,6 +2038,18 @@ public:
 		}
 		new (AllocCommand<FRHICommandSetStereoViewport>()) FRHICommandSetStereoViewport(LeftMinX, RightMinX, MinY, MinZ, LeftMaxX, RightMaxX, MaxY, MaxZ);
 	}
+	
+	FORCEINLINE_DEBUGGABLE void SetMultipleViewports(uint32 Num, const FViewportBounds* Viewports)
+	{
+		if (Bypass())
+		{
+			CMD_CONTEXT(RHISetMultipleViewports)(Num, Viewports);
+			return;
+		}
+		FViewportBounds* ViewportsCopy = static_cast<FViewportBounds*>(Alloc(Num * sizeof(FViewportBounds), 16));
+		FMemory::Memcpy(ViewportsCopy, Viewports, Num * sizeof(FViewportBounds));
+		new (AllocCommand<FRHICommandSetMultipleViewports>()) FRHICommandSetMultipleViewports(Num, ViewportsCopy);
+	}
 
 	FORCEINLINE_DEBUGGABLE void SetScissorRect(bool bEnable, uint32 MinX, uint32 MinY, uint32 MaxX, uint32 MaxY)
 	{
@@ -1997,6 +2107,58 @@ public:
 		{
 			GraphicsPSOInit.NumSamples = PSOContext.CachedDepthStencilTarget.Texture->GetNumSamples();
 		}
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetMultipleScissorRects(bool bEnable, uint32 Num, const FIntRect* Rects)
+	{
+		if (Bypass())
+		{
+			CMD_CONTEXT(RHISetMultipleScissorRects)(bEnable, Num, Rects);
+			return;
+		}
+		FIntRect* RectsCopy = static_cast<FIntRect*>(Alloc(Num * sizeof(FIntRect), 16));
+		FMemory::Memcpy(RectsCopy, Rects, Num * sizeof(FIntRect));
+		new (AllocCommand<FRHICommandSetMultipleScissorRects>()) FRHICommandSetMultipleScissorRects(bEnable, Num, RectsCopy);
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetModifiedWMode(const FLensMatchedShading::Configuration& Conf, const bool bWarpForward, const bool bEnable)
+	{
+		if (Bypass())
+		{
+			CMD_CONTEXT(RHISetModifiedWMode)(Conf, bWarpForward, bEnable);
+			return;
+		}
+		new (AllocCommand<FRHICommandSetModifiedWMode>()) FRHICommandSetModifiedWMode(Conf, bWarpForward, bEnable);
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& Conf, const bool bWarpForward, const bool bEnable)
+	{
+		if (Bypass())
+		{
+			CMD_CONTEXT(RHISetModifiedWModeStereo)(Conf, bWarpForward, bEnable);
+			return;
+		}
+		new (AllocCommand<FRHICommandSetModifiedWModeStereo>()) FRHICommandSetModifiedWModeStereo(Conf, bWarpForward, bEnable);
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetGPUMask(uint32 Mask)
+	{
+		if (Bypass())
+		{
+			CMD_CONTEXT(RHISetGPUMask)(Mask);
+			return;
+		}
+		new (AllocCommand<FRHICommandSetGPUMask>()) FRHICommandSetGPUMask(Mask);
+	}
+
+	FORCEINLINE_DEBUGGABLE void CopyResourceToGPU(FTextureRHIParamRef SourceTextureRHI, FTextureRHIParamRef DestTextureRHI, uint32 DestGPUIndex, uint32 SrcGPUIndex, const FResolveParams& ResolveParams)
+	{
+		if (Bypass())
+		{
+			CMD_CONTEXT(RHICopyResourceToGPU)(SourceTextureRHI, DestTextureRHI, DestGPUIndex, SrcGPUIndex, ResolveParams);
+			return;
+		}
+		new (AllocCommand<FRHICommandCopyResourceToGPU>()) FRHICommandCopyResourceToGPU(SourceTextureRHI, DestTextureRHI, DestGPUIndex, SrcGPUIndex, ResolveParams);
 	}
 
 	FORCEINLINE_DEBUGGABLE void SetRenderTargets(
@@ -2242,6 +2404,16 @@ public:
 			return;
 		}
 		new (AllocCommand<FRHICommandEnableDepthBoundsTest>()) FRHICommandEnableDepthBoundsTest(bEnable, MinDepth, MaxDepth);
+	}
+
+	FORCEINLINE_DEBUGGABLE void SetSinglePassStereoParameters(bool bEnable, uint32 RenderTargetIndexOffset, uint8 IndependentViewportMaskEnable)
+	{
+		if (Bypass())
+		{
+			CMD_CONTEXT(RHISetSinglePassStereoParameters)(bEnable, RenderTargetIndexOffset, IndependentViewportMaskEnable);
+			return;
+		}
+		new (AllocCommand<FRHICommandSetSinglePassStereoParameters>()) FRHICommandSetSinglePassStereoParameters(bEnable, RenderTargetIndexOffset, IndependentViewportMaskEnable);
 	}
 
 	FORCEINLINE_DEBUGGABLE void CopyToResolveTarget(FTextureRHIParamRef SourceTextureRHI, FTextureRHIParamRef DestTextureRHI, bool bKeepOriginalSurface, const FResolveParams& ResolveParams)
@@ -2797,7 +2969,37 @@ public:
 	{
 		return GDynamicRHI->CreateGeometryShaderWithStreamOutput_RenderThread(*this, ElementList, NumStrides, Strides, RasterizedStream, Library, Hash);
 	}
-	
+
+	FORCEINLINE FGeometryShaderRHIRef CreateFastGeometryShader(const TArray<uint8>& Code)
+	{
+		FScopedRHIThreadStaller StallRHIThread(*this);
+		return GDynamicRHI->RHICreateFastGeometryShader(Code);
+	}
+
+	FORCEINLINE FVertexShaderRHIRef CreateVertexShaderWithSinglePassStereo(const TArray<uint8>& Code)
+	{
+		FScopedRHIThreadStaller StallRHIThread(*this);
+		return GDynamicRHI->RHICreateVertexShaderWithSinglePassStereo(Code);
+	}
+
+	FORCEINLINE FHullShaderRHIRef CreateHullShaderWithSinglePassStereo(const TArray<uint8>& Code)
+	{
+		FScopedRHIThreadStaller StallRHIThread(*this);
+		return GDynamicRHI->RHICreateHullShaderWithSinglePassStereo(Code);
+	}
+
+	FORCEINLINE FDomainShaderRHIRef CreateDomainShaderWithSinglePassStereo(const TArray<uint8>& Code)
+	{
+		FScopedRHIThreadStaller StallRHIThread(*this);
+		return GDynamicRHI->RHICreateDomainShaderWithSinglePassStereo(Code);
+	}
+
+	FORCEINLINE FGeometryShaderRHIRef CreateFastGeometryShader_2(const TArray<uint8>& Code, uint32 Usage)
+	{
+		FScopedRHIThreadStaller StallRHIThread(*this);
+		return GDynamicRHI->RHICreateFastGeometryShader_2(Code, Usage);
+	}
+
 	FORCEINLINE FComputeShaderRHIRef CreateComputeShader(const TArray<uint8>& Code)
 	{
 		return GDynamicRHI->CreateComputeShader_RenderThread(*this, Code);
@@ -3537,6 +3739,31 @@ FORCEINLINE FGeometryShaderRHIRef RHICreateGeometryShaderWithStreamOutput(const 
 FORCEINLINE FGeometryShaderRHIRef RHICreateGeometryShaderWithStreamOutput(const FStreamOutElementList& ElementList, uint32 NumStrides, const uint32* Strides, int32 RasterizedStream, FRHIShaderLibraryParamRef Library, FSHAHash Hash)
 {
 	return FRHICommandListExecutor::GetImmediateCommandList().CreateGeometryShaderWithStreamOutput(ElementList, NumStrides, Strides, RasterizedStream, Library, Hash);
+}
+
+FORCEINLINE FGeometryShaderRHIRef RHICreateFastGeometryShader(const TArray<uint8>& Code)
+{
+	return FRHICommandListExecutor::GetImmediateCommandList().CreateFastGeometryShader(Code);
+}
+
+FORCEINLINE FVertexShaderRHIRef RHICreateVertexShaderWithSinglePassStereo(const TArray<uint8>& Code)
+{
+	return FRHICommandListExecutor::GetImmediateCommandList().CreateVertexShaderWithSinglePassStereo(Code);
+}
+
+FORCEINLINE FHullShaderRHIRef RHICreateHullShaderWithSinglePassStereo(const TArray<uint8>& Code)
+{
+	return FRHICommandListExecutor::GetImmediateCommandList().CreateHullShaderWithSinglePassStereo(Code);
+}
+
+FORCEINLINE FDomainShaderRHIRef RHICreateDomainShaderWithSinglePassStereo(const TArray<uint8>& Code)
+{
+	return FRHICommandListExecutor::GetImmediateCommandList().CreateDomainShaderWithSinglePassStereo(Code);
+}
+
+FORCEINLINE FGeometryShaderRHIRef RHICreateFastGeometryShader_2(const TArray<uint8>& Code, uint32 Usage)
+{
+	return FRHICommandListExecutor::GetImmediateCommandList().CreateFastGeometryShader_2(Code, Usage);
 }
 
 FORCEINLINE FComputeShaderRHIRef RHICreateComputeShader(const TArray<uint8>& Code)

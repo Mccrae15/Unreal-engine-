@@ -448,7 +448,38 @@ void FRCPassPostProcessSSRTemporalAA::Process(FRenderingCompositePassContext& Co
 
 	const FSceneRenderTargetItem& DestRenderTarget = PassOutputs[0].RequestSurface(Context);
 
-	SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIRef());
+	if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+	{
+		FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(Context.RHICmdList);
+
+		// bind depth to respect safezone in lens matched shading
+		SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, SceneContext.GetSceneDepthTexture(), ESimpleRenderTargetMode::EUninitializedColorAndDepth, FExclusiveDepthStencil::DepthRead_StencilNop);
+		FGraphicsPipelineStateInitializer GraphicsPSOInit;
+		Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+		//vrworks todo. Is it needed and neccessary?
+		TShaderMapRef< FPostProcessTonemapVS > VertexShader(Context.GetShaderMap());
+		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+		GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNear>::GetRHI();
+		SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
+	}
+	else
+	{
+		// bind only the dest render target
+		SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIRef());
+		FGraphicsPipelineStateInitializer GraphicsPSOInit;
+		Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+		//vrworks todo. Is it needed and neccessary?
+		TShaderMapRef< FPostProcessTonemapVS > VertexShader(Context.GetShaderMap());
+		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+		GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+		SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
+	}
 
 	// is optimized away if possible (RT size=view size, )
 	DrawClearQuad(Context.RHICmdList, Context.GetFeatureLevel(), true, FLinearColor::Black, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, SrcRect);
@@ -863,6 +894,7 @@ void FRCPassPostProcessTemporalAA::Process(FRenderingCompositePassContext& Conte
 
 	if (bIsComputePass)
 	{
+		//vrworks todo. 4.16 adds compute shader code path. Any vr code on compute shader?
 		// Common setup
 		SetRenderTarget(Context.RHICmdList, nullptr, nullptr);
 		Context.SetViewportAndCallRHI(DestRect, 0.0f, 1.0f);
@@ -929,9 +961,18 @@ void FRCPassPostProcessTemporalAA::Process(FRenderingCompositePassContext& Conte
 			// On camera cut this turns on responsive everywhere.
 		
 			// Normal temporal feedback
-			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false,CF_Always>::GetRHI();
+			if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+			{
+				// respect safezone depth in lens matched shading mode
+				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNear>::GetRHI();
+			}
+			else
+			{
+				// bind only the dest render target
+				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+			}
 			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-
+	
 			TShaderMapRef< FPostProcessTonemapVS >			VertexShader(Context.GetShaderMap());
 			if (bUseFast)
 			{
@@ -973,16 +1014,31 @@ void FRCPassPostProcessTemporalAA::Process(FRenderingCompositePassContext& Conte
 		}
 		else
 		{
-			{	
+			{
 				// Normal temporal feedback
 				// Draw to pixels where stencil == 0
-				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
-					false, CF_Always,
-					true, CF_Equal, SO_Keep, SO_Keep, SO_Keep,
-					false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-					STENCIL_TEMPORAL_RESPONSIVE_AA_MASK, STENCIL_TEMPORAL_RESPONSIVE_AA_MASK
-				>::GetRHI();
-	
+				if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+				{
+					// respect safezone depth in lens matched shading mode
+					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState
+						<
+						false, CF_DepthNear,
+						true, CF_Equal, SO_Keep, SO_Keep, SO_Keep,
+						false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+						STENCIL_TEMPORAL_RESPONSIVE_AA_MASK, STENCIL_TEMPORAL_RESPONSIVE_AA_MASK
+						>::GetRHI();
+				}
+				else
+				{
+					// bind only the dest render target
+					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState
+						<
+						false, CF_Always,
+						true, CF_Equal, SO_Keep, SO_Keep, SO_Keep,
+						false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+						STENCIL_TEMPORAL_RESPONSIVE_AA_MASK, STENCIL_TEMPORAL_RESPONSIVE_AA_MASK
+						>::GetRHI();
+				}
 				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 				TShaderMapRef< FPostProcessTonemapVS >			VertexShader(Context.GetShaderMap());
@@ -1027,13 +1083,27 @@ void FRCPassPostProcessTemporalAA::Process(FRenderingCompositePassContext& Conte
 	
 			{	// Responsive feedback for tagged pixels
 				// Draw to pixels where stencil != 0
-				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
-					false, CF_Always,
-					true, CF_NotEqual, SO_Keep, SO_Keep, SO_Zero,
-					false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-					STENCIL_TEMPORAL_RESPONSIVE_AA_MASK, STENCIL_TEMPORAL_RESPONSIVE_AA_MASK
-				>::GetRHI();
-			
+				if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+				{
+					// respect safezone depth in lens matched shading mode
+					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState
+						<
+						false, CF_DepthNear,
+						true, CF_NotEqual, SO_Keep, SO_Keep, SO_Keep,
+						false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+						STENCIL_TEMPORAL_RESPONSIVE_AA_MASK, STENCIL_TEMPORAL_RESPONSIVE_AA_MASK
+						>::GetRHI();
+				}
+				else
+				{
+					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState
+						<
+						false, CF_Always,
+						true, CF_NotEqual, SO_Keep, SO_Keep, SO_Zero,
+						false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+						STENCIL_TEMPORAL_RESPONSIVE_AA_MASK, STENCIL_TEMPORAL_RESPONSIVE_AA_MASK
+						>::GetRHI();
+				}
 				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 				TShaderMapRef< FPostProcessTonemapVS >			VertexShader(Context.GetShaderMap());

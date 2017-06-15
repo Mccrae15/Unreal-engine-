@@ -49,6 +49,52 @@ public:
 };
 
 /**
+* Fast geometry shader for multi-res single color rendering
+*/
+template< bool bUsingVertexLayers = false>
+class TOneColorFastGS : public FGlobalShader
+{
+	DECLARE_EXPORTED_SHADER_TYPE(TOneColorFastGS, Global, UTILITYSHADERS_API);
+
+	/** Default constructor. */
+	TOneColorFastGS() {}
+
+public:
+
+	TOneColorFastGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FGlobalShader(Initializer)
+	{}
+
+	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+	{
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View.ViewUniformBuffer);
+	}
+
+	static void ModifyCompilationEnvironment(EShaderPlatform Platform, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Platform, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("USING_LAYERS"), (uint32)(bUsingVertexLayers ? 1 : 0));
+	}
+
+	static bool ShouldCache(EShaderPlatform Platform)
+	{
+		return  RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+	}
+
+	static const TCHAR* GetSourceFilename()
+	{
+		return TEXT("OneColorShader");
+	}
+
+	static const TCHAR* GetFunctionName()
+	{
+		return TEXT("VRProjectFastGS");
+	}
+
+	static const bool IsFastGeometryShader = true;
+};
+
+/**
  * Pixel shader for rendering a single, constant color.
  */
 class FOneColorPS : public FGlobalShader
