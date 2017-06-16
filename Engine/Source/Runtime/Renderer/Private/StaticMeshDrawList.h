@@ -247,6 +247,13 @@ private:
 		{
 			check(IsInRenderingThread());
 			BoundShaderStateInput = DrawingPolicy.GetBoundShaderStateInput(FeatureLevel);
+
+			FGeometryShaderRHIRef VRProjectFastGS = DrawingPolicy.GetMultiResFastGS();
+			if (VRProjectFastGS.IsValid())
+			{
+				MultiResBoundShaderStateInput = BoundShaderStateInput;
+				MultiResBoundShaderStateInput.GeometryShaderRHI = VRProjectFastGS;
+			}
 		}
 
 		SIZE_T GetSizeBytes() const
@@ -257,32 +264,6 @@ private:
 		void ReleaseBoundShaderState()
 		{
 			BoundShaderState.SafeRelease();
-		}
-
-		void CreateBoundShaderState()
-		{
-			check(IsInRenderingThread());
-			FBoundShaderStateInput BoundShaderStateInput = DrawingPolicy.GetBoundShaderStateInput(FeatureLevel);
-			BoundShaderState = RHICreateBoundShaderState(
-				BoundShaderStateInput.VertexDeclarationRHI,
-				BoundShaderStateInput.VertexShaderRHI,
-				BoundShaderStateInput.HullShaderRHI,
-				BoundShaderStateInput.DomainShaderRHI,
-				BoundShaderStateInput.PixelShaderRHI,
-				BoundShaderStateInput.GeometryShaderRHI);
-
-			// Determine if the drawing policy supports multi-res, and if so, create MultiResBoundShaderState as well.
-			FGeometryShaderRHIRef VRProjectFastGS = DrawingPolicy.GetMultiResFastGS();
-			if (VRProjectFastGS.IsValid())
-			{
-				MultiResBoundShaderState = RHICreateBoundShaderState(
-					BoundShaderStateInput.VertexDeclarationRHI,
-					BoundShaderStateInput.VertexShaderRHI,
-					BoundShaderStateInput.HullShaderRHI,
-					BoundShaderStateInput.DomainShaderRHI,
-					BoundShaderStateInput.PixelShaderRHI,
-					VRProjectFastGS);
-			}
 		}
 	};
 
