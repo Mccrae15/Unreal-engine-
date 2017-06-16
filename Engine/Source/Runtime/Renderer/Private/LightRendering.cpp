@@ -524,6 +524,8 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 						SceneContext.BeginRenderingStencilOnly(RHICmdList, false);
 
 						FGraphicsPipelineStateInitializer GraphicsPSOInit;
+						RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+						GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
 						GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 
 						RHICmdList.SetGPUMask(View.StereoPass);
@@ -541,9 +543,7 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 							>::GetRHI();
 						RHICmdList.SetStencilRef(0x80);
 
-						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-
-						RenderModifiedWBoundaryMask(RHICmdList);
+						RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit);
 
 						// Clear stencil in the octagon area to 0
 						GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState
@@ -558,7 +558,7 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
 						View.BeginVRProjectionStates(RHICmdList);
-						RenderModifiedWBoundaryMask(RHICmdList);
+						RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit);
 						View.EndVRProjectionStates(RHICmdList);
 
 						SceneContext.FinishRenderingStencilOnly(RHICmdList);

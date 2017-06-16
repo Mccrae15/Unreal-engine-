@@ -1618,7 +1618,7 @@ void FRCPassPostProcessTonemap::Process(FRenderingCompositePassContext& Context)
 			{
 				SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, SceneContext.GetSceneDepthTexture(), ESimpleRenderTargetMode::EUninitializedColorExistingDepth, FExclusiveDepthStencil::DepthRead_StencilNop);
 				FGraphicsPipelineStateInitializer GraphicsPSOInit;
-				//vrworks todo. Is it needed and neccessary?
+				Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 				TShaderMapRef<FPostProcessTonemapVS> VertexShader(Context.GetShaderMap());
 				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
 				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
@@ -1631,7 +1631,6 @@ void FRCPassPostProcessTonemap::Process(FRenderingCompositePassContext& Context)
 			{
 				SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIParamRef(), ESimpleRenderTargetMode::EUninitializedColorAndDepth);
 				FGraphicsPipelineStateInitializer GraphicsPSOInit;
-				//vrworks todo. Is it needed and neccessary?
 				Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 				TShaderMapRef<FPostProcessTonemapVS> VertexShader(Context.GetShaderMap());
 				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
