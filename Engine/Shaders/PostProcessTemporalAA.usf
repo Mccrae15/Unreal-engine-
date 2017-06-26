@@ -311,6 +311,7 @@ void DOFTemporalAAPS(
 void DOFTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 {
 	float2 UV = ((float2)DispatchThreadId + View.ViewRectMin.xy + 0.5f) * TemporalAAComputeParams.zw;
+	float4 SvPosition = float4(UV*2-1,0,1);
 	float4 OutColor = 0;
 
 	if (IsComputeUVOutOfBounds(UV))
@@ -363,7 +364,7 @@ void LightShaftTemporalAAPS(
 // 0.0f or 1.0f (if the RT format is not PF_FloatRGBA)
 float DitherScale;
 
-float4 MainTemporalAACommon(in float2 UV, in float InExposureScale)
+float4 MainTemporalAACommon(in float2 UV, in float InExposureScale, in float4 SvPosition)
 {
 	float4 OutColor = 0;
 
@@ -399,7 +400,7 @@ void MainTemporalAAPS(
 		OutColor = float4(MinimalReprojectionForDebugging(UV, SvPosition), 0);
 	#else
 		float InExposureScale = InExposureScaleVignette.x;
-		OutColor = MainTemporalAACommon(UV, InExposureScale);
+		OutColor = MainTemporalAACommon(UV, InExposureScale, SvPosition);
 	#endif
 #else
 	OutColor = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV, 0);
@@ -424,7 +425,7 @@ void MainTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		OutColor = float4(MinimalReprojectionForDebugging(UV, SvPosition), 0);
 	#else
 		float InExposureScale = EyeAdaptationLookup();
-		OutColor = MainTemporalAACommon(UV, InExposureScale);
+		OutColor = MainTemporalAACommon(UV, InExposureScale, SvPosition);
 	#endif
 #else
 	OutColor = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV, 0);
@@ -435,7 +436,7 @@ void MainTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 }
 #endif
 
-float4 MainFastTemporalAACommon(in float2 UV, in float InExposureScale)
+float4 MainFastTemporalAACommon(in float2 UV, in float InExposureScale, in float4 SvPosition)
 {
 	float4 OutColor = 0;
 
@@ -465,7 +466,7 @@ void MainFastTemporalAAPS(
 {
 #if ENABLE_TEMPORAL_AA
 	float InExposureScale = InExposureScaleVignette.x;
-	OutColor = MainFastTemporalAACommon(UV, InExposureScale);
+	OutColor = MainFastTemporalAACommon(UV, InExposureScale, SvPosition);
 #else
 	OutColor = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV, 0);
 #endif
@@ -476,6 +477,7 @@ void MainFastTemporalAAPS(
 void MainFastTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 {
 	float2 UV = ((float2)DispatchThreadId + View.ViewRectMin.xy + 0.5f) * TemporalAAComputeParams.zw;
+	float4 SvPosition = float4(UV*2-1,0,1);
 	float4 OutColor = 0;
 
 	if (IsComputeUVOutOfBounds(UV))
@@ -485,7 +487,7 @@ void MainFastTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 
 #if ENABLE_TEMPORAL_AA
 	float InExposureScale = EyeAdaptationLookup();
-	OutColor = MainFastTemporalAACommon(UV, InExposureScale);
+	OutColor = MainFastTemporalAACommon(UV, InExposureScale, SvPosition);
 #else
 	OutColor = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV, 0);
 #endif

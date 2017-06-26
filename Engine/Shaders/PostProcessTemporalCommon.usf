@@ -108,7 +108,8 @@ which can be configured via defines for various temporal AA passes.
 	#define AA_SINGLE_PASS_RESPONSIVE	0
 #endif
 
-	float2 ScreenPos = ( UV * PostprocessInput0Size.xy - 0.5 - ScreenPosToPixel.zw ) / ScreenPosToPixel.xy;
+// vrworks todo. The compute shader path is not verified. That code branch is new in 4.16.
+	float2 ScreenPos = SvPositionToScreenPosition(SvPosition).xy;
 
 	// Handle single or multi-pass responsive AA
 #if RESPONSIVE
