@@ -808,11 +808,6 @@ bool TDistortionMeshDrawingPolicyFactory<DistortMeshPolicy>::DrawDynamicMesh(
 			View.Family->GetDebugViewShaderMode(),
 			FeatureLevel
 			);
-		// vrworks todo. can replace old api?
-		FGraphicsPipelineStateInitializer GraphicsPSOInit;
-		GraphicsPSOInit.BoundShaderState = DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel(), View.bVRProjectEnabled);
-		FLocalGraphicsPipelineState GraphicsPipelineState = RHICmdList.BuildLocalGraphicsPipelineState(GraphicsPSOInit);;
-		RHICmdList.SetLocalGraphicsPipelineState(GraphicsPipelineState);
 
 		FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 		DrawRenderStateLocal.SetDitheredLODTransitionAlpha(Mesh.DitheredLODTransitionAlpha);
@@ -1262,13 +1257,6 @@ void FSceneRenderer::RenderDistortion(FRHICommandListImmediate& RHICmdList)
 
 		//vrworks todo. Still necessary to restore state in 4.16?
 		RHICmdList.SetGPUMask(0);
-
-		// restore state
-		//vrworks todo. can replace? RHICmdList.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
-		FGraphicsPipelineStateInitializer GraphicsPSOInit;
-		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-		FLocalGraphicsPipelineState GraphicsPipelineState = RHICmdList.BuildLocalGraphicsPipelineState(GraphicsPSOInit);;
-		RHICmdList.SetLocalGraphicsPipelineState(GraphicsPipelineState);
 	}
 }
 
