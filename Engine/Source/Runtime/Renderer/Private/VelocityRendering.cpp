@@ -239,7 +239,10 @@ public:
 		FMeshMaterialShader::SetMesh(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), VertexFactory, View, Proxy, Mesh.Elements[BatchElementIndex], DrawRenderState);
 	}
 
-	static const bool IsFastGeometryShader = true;
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
 };
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FVelocityVS,TEXT("VelocityShader"),TEXT("MainVertexShader"),SF_Vertex); 

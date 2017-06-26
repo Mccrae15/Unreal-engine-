@@ -72,10 +72,6 @@ int32 FOcclusionQueryHelpers::GetNumBufferedFrames()
 IMPLEMENT_SHADER_TYPE(,FOcclusionQueryVS,TEXT("OcclusionQueryVertexShader"),TEXT("Main"),SF_Vertex);
 IMPLEMENT_SHADER_TYPE(,FOcclusionQueryMultiResGS, TEXT("OcclusionQueryVertexShader"), TEXT("VRProjectFastGS"), SF_Geometry);
 
-//vrworks todo. Use 4.16 "static FGlobalBoundShaderState GOcclusionTestBoundShaderState;" and extend MultiRes version ?
-FGlobalBoundShaderState FDeferredShadingSceneRenderer::OcclusionTestBoundShaderState;
-FGlobalBoundShaderState FDeferredShadingSceneRenderer::OcclusionTestMultiResBoundShaderState;
-
 /** 
  * Returns an array of visibility data for the given view position, or NULL if none exists. 
  * The data bits are indexed by VisibilityId of each primitive in the scene.
@@ -1221,7 +1217,6 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 		{
 			FViewInfo& View = Views[ViewIndex];
 			FViewOcclusionQueries& ViewQuery = ViewQueries[ViewIndex];
-
 			FSceneViewState* ViewState = (FSceneViewState*)View.State;
 
 			if (ViewState && !View.bDisableQuerySubmissions)
@@ -1335,7 +1330,7 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 			{
 				SetRenderTarget(RHICmdList, NULL, SceneContext.GetSceneDepthSurface(), ESimpleRenderTargetMode::EExistingColorAndDepth, FExclusiveDepthStencil::DepthRead_StencilWrite);
 			}
-
+			
 			FGraphicsPipelineStateInitializer GraphicsPSOInit;
 			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
@@ -1367,7 +1362,7 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 					const uint32 DownsampledY = FMath::TruncToInt(View.ViewRect.Min.Y / SceneContext.GetSmallColorDepthDownsampleFactor());
 					const uint32 DownsampledSizeX = FMath::TruncToInt(View.ViewRect.Width() / SceneContext.GetSmallColorDepthDownsampleFactor());
 					const uint32 DownsampledSizeY = FMath::TruncToInt(View.ViewRect.Height() / SceneContext.GetSmallColorDepthDownsampleFactor());
-
+					
 					// Setup the viewport for rendering to the downsampled depth buffer
 					RHICmdList.SetViewport(DownsampledX, DownsampledY, 0.0f, DownsampledX + DownsampledSizeX, DownsampledY + DownsampledSizeY, 1.0f);
 				}
@@ -1385,7 +1380,6 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 
 				// Lookup the vertex shader.
 				TShaderMapRef<FOcclusionQueryVS> VertexShader(View.ShaderMap);
-				//vrworks todo. check behavior.
 				TOptionalShaderMapRef<FOcclusionQueryMultiResGS> GeometryShader(View.ShaderMap);
 
 				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector3();
@@ -1450,10 +1444,10 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 					View.EndVRProjectionStates(RHICmdList);
 				}
 			}
-
+			
 			RHICmdList.SetGPUMask(0);
 			RHICmdList.EndOcclusionQueryBatch();
-
+			
 			if (bUseDownsampledDepth)
 			{
 				// Restore default render target

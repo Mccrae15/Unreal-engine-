@@ -201,7 +201,10 @@ public:
 		FMeshMaterialShader::SetMesh(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), VertexFactory, View, Proxy, BatchElement, DrawRenderState);
 	}
 
-	static const bool IsFastGeometryShader = true;
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
 };
 
 /**
@@ -460,7 +463,7 @@ void FDepthDrawingPolicy::SetInstancedEyeIndex(FRHICommandList& RHICmdList, cons
 
 void FDepthDrawingPolicy::SetSharedState(FRHICommandList& RHICmdList, const FDrawingPolicyRenderState& DrawRenderState, const FSceneView* View, const FDepthDrawingPolicy::ContextDataType PolicyContext) const
 {
-	CommitGraphicsPipelineState(RHICmdList, *this, DrawRenderState, GetBoundShaderStateInput(View->GetFeatureLevel(), View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo));
+//vrworks todo. 4.16 removes it.	CommitGraphicsPipelineState(RHICmdList, *this, DrawRenderState, GetBoundShaderStateInput(View->GetFeatureLevel(), View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo));
 
 	// Set the depth-only shader parameters for the material.
 	VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, DrawRenderState.GetViewUniformBuffer(), PolicyContext.bIsInstancedStereo, PolicyContext.bIsInstancedStereoEmulated, PolicyContext.bIsSinglePassStereo, PolicyContext.bNeedsSinglePassStereoBias);
@@ -569,7 +572,7 @@ FPositionOnlyDepthDrawingPolicy::FPositionOnlyDepthDrawingPolicy(
 
 void FPositionOnlyDepthDrawingPolicy::SetSharedState(FRHICommandList& RHICmdList, const FDrawingPolicyRenderState& DrawRenderState, const FSceneView* View, FPositionOnlyDepthDrawingPolicy::ContextDataType PolicyContext) const
 {
-	CommitGraphicsPipelineState(RHICmdList, *this, DrawRenderState, GetBoundShaderStateInput(View->GetFeatureLevel(), View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo));
+//vrworks todo. 4.16 removes it.	CommitGraphicsPipelineState(RHICmdList, *this, DrawRenderState, GetBoundShaderStateInput(View->GetFeatureLevel(), View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo));
 
 	// Set the depth-only shader parameters for the material.
 	VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, View->ViewUniformBuffer, PolicyContext.bIsInstancedStereo, PolicyContext.bIsInstancedStereoEmulated, PolicyContext.bIsSinglePassStereo, PolicyContext.bNeedsSinglePassStereoBias);
@@ -768,7 +771,7 @@ bool FDepthDrawingPolicyFactory::DrawMesh(
 
 			FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 			DrawingPolicy.SetupPipelineState(DrawRenderStateLocal, View);
-			CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel()));
+			CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel(), View.bVRProjectEnabled));//vrworks todo. no DrawingContext.bIsSinglePassStereo?
 			DrawingPolicy.SetSharedState(RHICmdList, DrawRenderStateLocal, &View, FPositionOnlyDepthDrawingPolicy::ContextDataType(bIsInstancedStereo, bIsSinglePassStereo, bIsInstancedStereoEmulated, bNeedsSinglePassStereoBias));
 
 			int32 BatchElementIndex = 0;
@@ -835,7 +838,7 @@ bool FDepthDrawingPolicyFactory::DrawMesh(
 
 				FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 				DrawingPolicy.SetupPipelineState(DrawRenderStateLocal, View);
-				CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel()));
+				CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel(), View.bVRProjectEnabled));//vrworks todo. no DrawingContext.bIsSinglePassStereo?
 				DrawingPolicy.SetSharedState(RHICmdList, DrawRenderStateLocal, &View, FDepthDrawingPolicy::ContextDataType(bIsInstancedStereo, bIsSinglePassStereo, bIsInstancedStereoEmulated, bNeedsSinglePassStereoBias));
 
 				int32 BatchElementIndex = 0;
@@ -1240,8 +1243,8 @@ bool FDeferredShadingSceneRenderer::RenderPrePassViewParallel(const FViewInfo& V
 {
 	bool bDepthWasCleared = false;
 	FPrePassParallelCommandListSet ParallelCommandListSet(View, ParentCmdList,
-		CVarRHICmdPrePassDeferredContexts.GetValueOnRenderThread() > 0,
-		CVarRHICmdFlushRenderThreadTasksPrePass.GetValueOnRenderThread() == 0 && CVarRHICmdFlushRenderThreadTasks.GetValueOnRenderThread() == 0);
+		CVarRHICmdPrePassDeferredContexts.GetValueOnRenderThread() > 0, 
+		CVarRHICmdFlushRenderThreadTasksPrePass.GetValueOnRenderThread() == 0  && CVarRHICmdFlushRenderThreadTasks.GetValueOnRenderThread() == 0);
 
 	if (!View.IsInstancedStereoPass() && !View.IsSinglePassStereoAllowed())
 	{
@@ -1256,7 +1259,7 @@ bool FDeferredShadingSceneRenderer::RenderPrePassViewParallel(const FViewInfo& V
 
 		// Draw opaque occluders with masked materials
 		if (EarlyZPassMode >= DDM_AllOccluders)
-		{
+		{			
 			Scene->MaskedDepthDrawList.DrawVisibleParallel(View.StaticMeshOccluderMap, View.StaticMeshBatchVisibility, ParallelCommandListSet);
 		}
 	}
@@ -1480,12 +1483,12 @@ bool FDeferredShadingSceneRenderer::RenderPrePass(FRHICommandListImmediate& RHIC
 	}
 
 	// Draw a depth pass to avoid overdraw in the other passes.
-	if (EarlyZPassMode != DDM_None)
+	if(EarlyZPassMode != DDM_None)
 	{
 		if (bParallel)
 		{
 			FScopedCommandListWaitForTasks Flusher(CVarRHICmdFlushRenderThreadTasksPrePass.GetValueOnRenderThread() > 0 || CVarRHICmdFlushRenderThreadTasks.GetValueOnRenderThread() > 0, RHICmdList);
-			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+			for(int32 ViewIndex = 0;ViewIndex < Views.Num();ViewIndex++)
 			{
 				SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
 				const FViewInfo& View = Views[ViewIndex];
@@ -1620,8 +1623,6 @@ bool FDeferredShadingSceneRenderer::RenderPrePassHMD(FRHICommandListImmediate& R
 		else
 		{
 			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
-			// vrworks todo. combine all conflicts.
-			RenderHiddenAreaMaskView(RHICmdList, GraphicsPSOInit, View);
 		}
 
 		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)

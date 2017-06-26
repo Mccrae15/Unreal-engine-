@@ -785,7 +785,10 @@ public:
 	static const uint32 ShaderMagic_Initialized = 0x335b43ab;
 
 	/** FastGS is off by default; this is overridden in derived classes to enable it */
-	static const bool IsFastGeometryShader = false;
+	static bool IsFastGeometryShader()
+	{
+		return false;
+	}
 };
 
 /** An object which is used to serialize/deserialize, compile, and cache a particular shader class. */
@@ -801,6 +804,7 @@ public:
 
 	typedef class FShader* (*ConstructSerializedType)();
 	typedef void (*GetStreamOutElementsType)(FStreamOutElementList& ElementList, TArray<uint32>& StreamStrides, int32& RasterizedStream);
+	typedef bool (*IsFastGeometryShaderType)();
 
 	/** @return The global shader factory list. */
 	static TLinkedList<FShaderType*>*& GetTypeList();
@@ -832,7 +836,8 @@ public:
 		uint32 InFrequency,
 		ConstructSerializedType InConstructSerializedRef,
 		GetStreamOutElementsType InGetStreamOutElementsRef,
-		bool InIsFastGeometryShader = false);
+		IsFastGeometryShaderType InIsFastGeometryShaderRef
+	);
 
 	virtual ~FShaderType();
 
@@ -887,11 +892,6 @@ public:
 	inline EShaderFrequency GetFrequency() const
 	{ 
 		return (EShaderFrequency)Frequency; 
-	}
-
-	inline bool GetIsFastGeometryShader() const
-	{
-		return IsFastGeometryShader;
 	}
 
 	inline const TCHAR* GetName() const
@@ -960,6 +960,15 @@ public:
 		(*GetStreamOutElementsRef)(ElementList, StreamStrides, RasterizedStream);
 	}
 
+	/**
+	* Checks if the shader type's geometry shader is a fast geometry shader.
+	* @return True if this shader type use fast geometry shader.
+	*/
+	bool IsFastGeometryShader() const
+	{
+		return (*IsFastGeometryShaderRef)();
+	}
+
 private:
 	EShaderTypeForDynamicCast ShaderTypeForDynamicCast;
 	uint32 HashIndex;
@@ -968,10 +977,10 @@ private:
 	const TCHAR* SourceFilename;
 	const TCHAR* FunctionName;
 	uint32 Frequency;
-	bool IsFastGeometryShader;
 
 	ConstructSerializedType ConstructSerializedRef;
 	GetStreamOutElementsType GetStreamOutElementsRef;
+	IsFastGeometryShaderType IsFastGeometryShaderRef;
 
 	/** A map from shader ID to shader.  A shader will be removed from it when deleted, so this doesn't need to use a TRefCountPtr. */
 	TMap<FShaderId,FShader*> ShaderIdMap;

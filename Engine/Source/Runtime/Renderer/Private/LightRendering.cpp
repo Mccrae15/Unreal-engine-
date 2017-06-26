@@ -68,7 +68,10 @@ public:
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View.ViewUniformBuffer);
 	}
 
-	static const bool IsFastGeometryShader = true;
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
 };
 
 IMPLEMENT_SHADER_TYPE(, FDeferredLightFastGS, TEXT("DeferredLightVertexShaders"), TEXT("VRProjectFastGS"), SF_Geometry);

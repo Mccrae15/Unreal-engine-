@@ -3814,7 +3814,7 @@ FShaderCompileJob* FGlobalShaderTypeCompiler::BeginCompileShader(FGlobalShaderTy
 		ShaderPipeline,
 		ShaderType->GetShaderFilename(),
 		ShaderType->GetFunctionName(),
-		FShaderTarget(ShaderType->GetFrequency(), Platform),
+		FShaderTarget(ShaderType->GetFrequency(), Platform, ShaderType->IsFastGeometryShader()),
 		NewJob,
 		NewJobs
 	);

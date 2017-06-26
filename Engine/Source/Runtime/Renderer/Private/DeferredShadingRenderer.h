@@ -124,10 +124,6 @@ public:
 	void RenderVisualizeTexturePool(FRHICommandListImmediate& RHICmdList);
 #endif
 
-	/** bound shader state for occlusion test prims */
-	static FGlobalBoundShaderState OcclusionTestBoundShaderState;
-	static FGlobalBoundShaderState OcclusionTestMultiResBoundShaderState;
-
 private:
 
 	// fences to make sure the rhi thread has digested the occlusion query renders before we attempt to read them back async

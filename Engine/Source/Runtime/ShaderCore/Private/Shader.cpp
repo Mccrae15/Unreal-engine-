@@ -129,7 +129,7 @@ FShaderType::FShaderType(
 	uint32 InFrequency,
 	ConstructSerializedType InConstructSerializedRef,
 	GetStreamOutElementsType InGetStreamOutElementsRef,
-	bool InIsFastGeometryShader
+	IsFastGeometryShaderType InIsFastGeometryShaderRef
 	):
 	ShaderTypeForDynamicCast(InShaderTypeForDynamicCast),
 	Name(InName),
@@ -137,9 +137,9 @@ FShaderType::FShaderType(
 	SourceFilename(InSourceFilename),
 	FunctionName(InFunctionName),
 	Frequency(InFrequency),
-	IsFastGeometryShader(InIsFastGeometryShader),
 	ConstructSerializedRef(InConstructSerializedRef),
 	GetStreamOutElementsRef(InGetStreamOutElementsRef),
+	IsFastGeometryShaderRef(InIsFastGeometryShaderRef),
 	GlobalListLink(this)
 {
 	for (int32 Platform = 0; Platform < SP_NumPlatforms; Platform++)
@@ -781,7 +781,7 @@ FShaderId::FShaderId(const FSHAHash& InMaterialShaderMapHash, const FShaderPipel
 }
 
 FSelfContainedShaderId::FSelfContainedShaderId() :
-	Target(FShaderTarget(SF_NumFrequencies, SP_NumPlatforms))
+	Target(FShaderTarget(SF_NumFrequencies, SP_NumPlatforms, false))
 {}
 
 FSelfContainedShaderId::FSelfContainedShaderId(const FShaderId& InShaderId)
