@@ -65,7 +65,10 @@ public:
 	{
 	}
 
-	static const bool IsFastGeometryShader = true;
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
 };
 
 IMPLEMENT_SHADER_TYPE(, FModifiedWBoundaryMaskFGS, TEXT("ModifiedWBoundaryMask"), TEXT("FGSMain"), SF_Geometry);

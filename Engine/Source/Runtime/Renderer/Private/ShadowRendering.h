@@ -1969,6 +1969,9 @@ public:
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View.ViewUniformBuffer);
 	}
 
-	static const bool IsFastGeometryShader = true;
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
 };
 

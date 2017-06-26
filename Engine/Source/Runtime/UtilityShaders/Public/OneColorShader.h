@@ -91,7 +91,10 @@ public:
 		return TEXT("VRProjectFastGS");
 	}
 
-	static const bool IsFastGeometryShader = true;
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
 };
 
 /**

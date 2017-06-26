@@ -84,7 +84,7 @@ struct FShaderTarget
 	FShaderTarget()
 	{}
 
-	FShaderTarget(EShaderFrequency InFrequency, EShaderPlatform InPlatform, bool InIsFastGeometryShader = false)
+	FShaderTarget(EShaderFrequency InFrequency, EShaderPlatform InPlatform, bool InIsFastGeometryShader)
 	:	Frequency(InFrequency)
 	,	Platform(InPlatform)
 	,	IsFastGeometryShader(InIsFastGeometryShader)

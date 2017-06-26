@@ -53,9 +53,9 @@ public:
 		ModifyCompilationEnvironmentType InModifyCompilationEnvironmentRef,
 		ShouldCacheType InShouldCacheRef,
 		GetStreamOutElementsType InGetStreamOutElementsRef,
-		bool InIsFastGeometryShader = false
+		IsFastGeometryShaderType InIsFastGeometryShaderRef
 		):
-		FShaderType(EShaderTypeForDynamicCast::MeshMaterial, InName,InSourceFilename,InFunctionName,InFrequency,InConstructSerializedRef,InGetStreamOutElementsRef, InIsFastGeometryShader),
+		FShaderType(EShaderTypeForDynamicCast::MeshMaterial, InName,InSourceFilename,InFunctionName,InFrequency,InConstructSerializedRef,InGetStreamOutElementsRef, InIsFastGeometryShaderRef),
 		ConstructCompiledRef(InConstructCompiledRef),
 		ShouldCacheRef(InShouldCacheRef),
 		ModifyCompilationEnvironmentRef(InModifyCompilationEnvironmentRef)

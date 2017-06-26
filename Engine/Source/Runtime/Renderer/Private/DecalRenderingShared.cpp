@@ -114,7 +114,10 @@ public:
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View.ViewUniformBuffer);
 	}
 
-	static const bool IsFastGeometryShader = true;
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
 };
 
 IMPLEMENT_SHADER_TYPE(, FDeferredDecalFastGS, TEXT("DeferredDecal"), TEXT("VRProjectFastGS"), SF_Geometry);

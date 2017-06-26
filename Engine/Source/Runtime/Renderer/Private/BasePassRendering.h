@@ -522,7 +522,10 @@ public:
 		FMeshMaterialShader::SetMesh(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), VertexFactory, View, Proxy, BatchElement, DrawRenderState);
 	}
 
-	static const bool IsFastGeometryShader = true;
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
 };
 
 
@@ -559,7 +562,10 @@ public:
 		return bShaderHasOutdatedParameters;
 	}
 
-	static const bool IsFastGeometryShader = true;
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
 };
 
 /**
