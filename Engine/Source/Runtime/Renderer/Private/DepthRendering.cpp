@@ -1563,9 +1563,6 @@ static FORCEINLINE bool HasHiddenAreaMask()
 
 bool FDeferredShadingSceneRenderer::RenderPrePassHMD(FRHICommandListImmediate& RHICmdList)
 {
-	static const auto* const HiddenAreaMaskCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.HiddenAreaMask"));
-	const int32 HiddenAreaMaskVal = HiddenAreaMaskCVar->GetValueOnRenderThread();
-
 	// EHartNV - ToDo
 	//  The HMD PrePass has specialized its setup to where it seems to no longer be compatible with the general
 	//  Need to understand differences and determine safe solution for vr projection setup
@@ -1597,7 +1594,7 @@ bool FDeferredShadingSceneRenderer::RenderPrePassHMD(FRHICommandListImmediate& R
 		float ClearDepth = 1.f; // we plan to clear Z to near plane, then overwrite the visible octagon to far plane
 		uint32 ClearStencil = 0;
 		// NV_MSCHOTT render target stuff 
-		DrawClearQuad(RHICmdList, ViewFamily.GetFeatureLevel(), false, ClearColor, true, ClearDepth, true, ClearStencil);
+		DrawClearQuad(RHICmdList, GMaxRHIFeatureLevel, false, ClearColor, true, ClearDepth, true, ClearStencil);
 	}
 
 
@@ -1605,8 +1602,7 @@ bool FDeferredShadingSceneRenderer::RenderPrePassHMD(FRHICommandListImmediate& R
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 	GraphicsPSOInit.BlendState = TStaticBlendState<CW_NONE>::GetRHI();
-	//vrworks todo. why vrworks 4.15 use CF_Always?
-	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
+	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_Always>::GetRHI();
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 
 	RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
