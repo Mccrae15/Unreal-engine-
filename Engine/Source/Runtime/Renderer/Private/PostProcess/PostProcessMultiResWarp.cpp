@@ -103,9 +103,6 @@ void FRCPassPostProcessVRProjectWarp::Process(FRenderingCompositePassContext& Co
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 
-	// vrworks todo. SetGraphicsPipelineState before DrawClearQuad?
-	DrawClearQuad(Context.RHICmdList, Context.GetFeatureLevel(), true, FLinearColor(0, 0, 0, 0), false, 0.0f, false, 0, DestSize, DestRect);
-
 	TShaderMapRef<FPostProcessVS> VertexShader(Context.GetShaderMap());
 	TShaderMapRef<FPostProcessMultiResWarpPS> PixelShader(Context.GetShaderMap());
 

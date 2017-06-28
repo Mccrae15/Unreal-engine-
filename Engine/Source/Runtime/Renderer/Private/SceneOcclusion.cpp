@@ -1351,7 +1351,6 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 				// We only need to render the front-faces of the culling geometry (this halves the amount of pixels we touch)
 				GraphicsPSOInit.RasterizerState = View.bReverseCulling ? TStaticRasterizerState<FM_Solid, CM_CCW>::GetRHI() : TStaticRasterizerState<FM_Solid, CM_CW>::GetRHI();
 				
-				//vrworks todo. check the behavior.
 				RHICmdList.SetGPUMask(View.StereoPass);
 
 				if (bUseDownsampledDepth)

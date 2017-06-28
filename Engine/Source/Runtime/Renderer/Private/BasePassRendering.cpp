@@ -1219,13 +1219,16 @@ static void SetupBasePassView(FRHICommandList& RHICmdList, const FViewInfo& View
 		RHICmdList.SetMultipleViewports(View.StereoVRProjectViewportArray.Num(), View.StereoVRProjectViewportArray.GetData());
 		RHICmdList.SetMultipleScissorRects(true, View.StereoVRProjectScissorArray.Num(), View.StereoVRProjectScissorArray.GetData());
 
-		//vrworks todo.
 		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
 		{
 			if (View.IsInstancedStereoPass())
+			{
 				RHICmdList.SetModifiedWModeStereo(View.LensMatchedShadingStereoConf, true, true);
+			}
 			else
+			{
 				RHICmdList.SetModifiedWMode(View.LensMatchedShadingConf, true, true);
+			}
 		}
 	}
 	else if (bIsSinglePassStereo)
