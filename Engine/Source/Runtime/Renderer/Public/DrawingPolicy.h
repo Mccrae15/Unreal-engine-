@@ -250,7 +250,6 @@ FORCEINLINE_DEBUGGABLE FMeshDrawingPolicyOverrideSettings ComputeMeshOverrideSet
 /**
 * Creates and sets the base PSO so that resources can be set. Generally best to call during SetSharedState.
 */
-// vrworks todo. call DrawingPolicy.GetBoundShaderStateInput(FeatureLevel, bMultiProj) with (, ERHIFeatureLevel::Type	FeatureLevel, bool bMultiProj /* = false */) before the function call.
 template<class DrawingPolicyType>
 void CommitGraphicsPipelineState(FRHICommandList& RHICmdList, const DrawingPolicyType& DrawingPolicy, const FDrawingPolicyRenderState& DrawRenderState, const FBoundShaderStateInput& BoundShaderStateInput)
 {

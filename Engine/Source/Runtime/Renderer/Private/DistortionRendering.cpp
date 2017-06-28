@@ -1255,7 +1255,6 @@ void FSceneRenderer::RenderDistortion(FRHICommandListImmediate& RHICmdList)
 			}
 		}
 
-		//vrworks todo. Still necessary to restore state in 4.16?
 		RHICmdList.SetGPUMask(0);
 	}
 }

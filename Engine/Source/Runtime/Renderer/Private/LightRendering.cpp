@@ -917,17 +917,15 @@ static void SetShaderTemplLighting(
 	if (bUseFastGS)
 	{
 		GeometryShader = View.ShaderMap->GetShader<FDeferredLightFastGS>();
+		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(GeometryShader);
 	}
 
 	if(View.Family->EngineShowFlags.VisualizeLightCulling)
 	{
 		TShaderMapRef<TDeferredLightPS<false, bRadialAttenuation, false, true, false> > PixelShader(View.ShaderMap);
-		// vrworks todo. is it the same as "SetGlobalBoundShaderState(RHICmdList, View.GetFeatureLevel(), PixelShader->GetBoundShaderState(bUseFastGS), GetDeferredLightingVertexDeclaration<bRadialAttenuation>(), VertexShader, *PixelShader, GeometryShader);"?
-		// And GetBoundShaderState(bMultiRes) may be no longer needed and should be removed.
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetDeferredLightingVertexDeclaration<bRadialAttenuation>();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(VertexShader);
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(GeometryShader);
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 		PixelShader->SetParameters(RHICmdList, View, LightSceneInfo);
 	}
@@ -936,24 +934,18 @@ static void SetShaderTemplLighting(
 		if (View.bUsesLightingChannels)
 		{
 			TShaderMapRef<TDeferredLightPS<bUseIESProfile, bRadialAttenuation, bInverseSquaredFalloff, false, true> > PixelShader(View.ShaderMap);
-			//vrworks todo. Is it the same as "SetGlobalBoundShaderState(RHICmdList, View.GetFeatureLevel(), PixelShader->GetBoundShaderState(bUseFastGS), GetDeferredLightingVertexDeclaration<bRadialAttenuation>(), VertexShader, *PixelShader, GeometryShader);"?
-			// And GetBoundShaderState(bMultiRes) may be no longer needed and should be removed.
 			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetDeferredLightingVertexDeclaration<bRadialAttenuation>();
 			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(VertexShader);
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-			GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(GeometryShader);
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 			PixelShader->SetParameters(RHICmdList, View, LightSceneInfo);
 		}
 		else
 		{
 			TShaderMapRef<TDeferredLightPS<bUseIESProfile, bRadialAttenuation, bInverseSquaredFalloff, false, false> > PixelShader(View.ShaderMap);
-			//vrworks todo. Is it the same as "SetGlobalBoundShaderState(RHICmdList, View.GetFeatureLevel(), PixelShader->GetBoundShaderState(bUseFastGS), GetDeferredLightingVertexDeclaration<bRadialAttenuation>(), VertexShader, *PixelShader, GeometryShader);"?
-			// And GetBoundShaderState(bMultiRes) may be no longer needed and should be removed.
 			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetDeferredLightingVertexDeclaration<bRadialAttenuation>();
 			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(VertexShader);
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-			GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(GeometryShader);
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 			PixelShader->SetParameters(RHICmdList, View, LightSceneInfo);
 		}
@@ -980,29 +972,24 @@ static void SetShaderTemplLightingSimple(
 	if (bVRProjectEnabled)
 	{
 		GeometryShader = View.ShaderMap->GetShader<FDeferredLightFastGS>();
+		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(GeometryShader);
 	}
 
 	if (View.Family->EngineShowFlags.VisualizeLightCulling)
 	{
 		TShaderMapRef<TDeferredLightPS<false, bRadialAttenuation, false, true, false> > PixelShader(View.ShaderMap);
-		//vrworks todo. The same as "SetGlobalBoundShaderState(RHICmdList, View.GetFeatureLevel(), PixelShader->GetBoundShaderState(bVRProjectEnabled), GetDeferredLightingVertexDeclaration<bRadialAttenuation>(), VertexShader, *PixelShader, GeometryShader);"?
-		// And GetBoundShaderState(bMultiRes) may be no longer needed and should be removed.
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetDeferredLightingVertexDeclaration<bRadialAttenuation>();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(VertexShader);
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(GeometryShader);
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 		PixelShader->SetParametersSimpleLight(RHICmdList, View, SimpleLight, SimpleLightPerViewData);
 	}
 	else
 	{
 		TShaderMapRef<TDeferredLightPS<bUseIESProfile, bRadialAttenuation, bInverseSquaredFalloff, false, false> > PixelShader(View.ShaderMap);
-		//vrworks todo. The same as "SetGlobalBoundShaderState(RHICmdList, View.GetFeatureLevel(), PixelShader->GetBoundShaderState(bVRProjectEnabled), GetDeferredLightingVertexDeclaration<bRadialAttenuation>(), VertexShader, *PixelShader, GeometryShader);"?
-		// And GetBoundShaderState(bMultiRes) may be no longer needed and should be removed.
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetDeferredLightingVertexDeclaration<bRadialAttenuation>();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(VertexShader);
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(GeometryShader);
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 		PixelShader->SetParametersSimpleLight(RHICmdList, View, SimpleLight, SimpleLightPerViewData);
 	}
@@ -1163,8 +1150,6 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 			if (bRenderOverlap)
 			{
 				TShaderMapRef<TDeferredLightOverlapPS<true> > PixelShader(View.ShaderMap);
-				//vrworks todo. Is it the same as "SetGlobalBoundShaderState(RHICmdList, FeatureLevel, PixelShader->GetBoundShaderState(View.bVRProjectEnabled), GetDeferredLightingVertexDeclaration<true>(), *VertexShader, *PixelShader);"?
-				// And GetBoundShaderState(bMultiRes) may be no longer needed and should be removed.
 				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetDeferredLightingVertexDeclaration<true>();
 				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);

@@ -454,9 +454,9 @@ void FRCPassPostProcessSSRTemporalAA::Process(FRenderingCompositePassContext& Co
 
 		// bind depth to respect safezone in lens matched shading
 		SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, SceneContext.GetSceneDepthTexture(), ESimpleRenderTargetMode::EUninitializedColorAndDepth, FExclusiveDepthStencil::DepthRead_StencilNop);
+
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
 		Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-		//vrworks todo. Is it needed and neccessary?
 		TShaderMapRef< FPostProcessTonemapVS > VertexShader(Context.GetShaderMap());
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
@@ -469,9 +469,9 @@ void FRCPassPostProcessSSRTemporalAA::Process(FRenderingCompositePassContext& Co
 	{
 		// bind only the dest render target
 		SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIRef());
+
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
 		Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-		//vrworks todo. Is it needed and neccessary?
 		TShaderMapRef< FPostProcessTonemapVS > VertexShader(Context.GetShaderMap());
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);

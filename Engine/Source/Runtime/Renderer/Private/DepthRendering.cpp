@@ -463,8 +463,6 @@ void FDepthDrawingPolicy::SetInstancedEyeIndex(FRHICommandList& RHICmdList, cons
 
 void FDepthDrawingPolicy::SetSharedState(FRHICommandList& RHICmdList, const FDrawingPolicyRenderState& DrawRenderState, const FSceneView* View, const FDepthDrawingPolicy::ContextDataType PolicyContext) const
 {
-//vrworks todo. 4.16 removes it.	CommitGraphicsPipelineState(RHICmdList, *this, DrawRenderState, GetBoundShaderStateInput(View->GetFeatureLevel(), View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo));
-
 	// Set the depth-only shader parameters for the material.
 	VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, DrawRenderState.GetViewUniformBuffer(), PolicyContext.bIsInstancedStereo, PolicyContext.bIsInstancedStereoEmulated, PolicyContext.bIsSinglePassStereo, PolicyContext.bNeedsSinglePassStereoBias);
 	if(HullShader && DomainShader)
@@ -572,8 +570,6 @@ FPositionOnlyDepthDrawingPolicy::FPositionOnlyDepthDrawingPolicy(
 
 void FPositionOnlyDepthDrawingPolicy::SetSharedState(FRHICommandList& RHICmdList, const FDrawingPolicyRenderState& DrawRenderState, const FSceneView* View, FPositionOnlyDepthDrawingPolicy::ContextDataType PolicyContext) const
 {
-//vrworks todo. 4.16 removes it.	CommitGraphicsPipelineState(RHICmdList, *this, DrawRenderState, GetBoundShaderStateInput(View->GetFeatureLevel(), View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo));
-
 	// Set the depth-only shader parameters for the material.
 	VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, View->ViewUniformBuffer, PolicyContext.bIsInstancedStereo, PolicyContext.bIsInstancedStereoEmulated, PolicyContext.bIsSinglePassStereo, PolicyContext.bNeedsSinglePassStereoBias);
 
@@ -771,7 +767,7 @@ bool FDepthDrawingPolicyFactory::DrawMesh(
 
 			FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 			DrawingPolicy.SetupPipelineState(DrawRenderStateLocal, View);
-			CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel(), View.bVRProjectEnabled));//vrworks todo. no DrawingContext.bIsSinglePassStereo?
+			CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel(), View.bVRProjectEnabled || bIsSinglePassStereo));
 			DrawingPolicy.SetSharedState(RHICmdList, DrawRenderStateLocal, &View, FPositionOnlyDepthDrawingPolicy::ContextDataType(bIsInstancedStereo, bIsSinglePassStereo, bIsInstancedStereoEmulated, bNeedsSinglePassStereoBias));
 
 			int32 BatchElementIndex = 0;
@@ -838,7 +834,7 @@ bool FDepthDrawingPolicyFactory::DrawMesh(
 
 				FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 				DrawingPolicy.SetupPipelineState(DrawRenderStateLocal, View);
-				CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel(), View.bVRProjectEnabled));//vrworks todo. no DrawingContext.bIsSinglePassStereo?
+				CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel(), View.bVRProjectEnabled || bIsSinglePassStereo));
 				DrawingPolicy.SetSharedState(RHICmdList, DrawRenderStateLocal, &View, FDepthDrawingPolicy::ContextDataType(bIsInstancedStereo, bIsSinglePassStereo, bIsInstancedStereoEmulated, bNeedsSinglePassStereoBias));
 
 				int32 BatchElementIndex = 0;

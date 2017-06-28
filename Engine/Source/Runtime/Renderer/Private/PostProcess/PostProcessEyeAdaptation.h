@@ -22,7 +22,7 @@ public:
 	{
 		bIsComputePass = bInIsComputePass;
 		bPreferAsyncCompute = false;
-		//vrworks todo.bPreferAsyncCompute &= (GNumActiveGPUsForRendering == 1); // Can't handle multi-frame updates on async pipe
+		bPreferAsyncCompute &= (GNumAlternateFrameRenderingGroups/*GNumActiveGPUsForRendering*/ == 1); // Can't handle multi-frame updates on async pipe
 	}
 
 	// compute the parameters used for eye-adaptation.  These will default to values

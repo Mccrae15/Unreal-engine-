@@ -856,7 +856,7 @@ void FDeferredShadingSceneRenderer::RenderLightShaftOcclusion(FRHICommandListImm
 						        Output.LightShaftOcclusion = LightShafts1;
 					        }
 				        }
-						//vrworks todo. what is the next line?
+
 						RHICmdList.SetGPUMask(0);
 					}				
 				}
