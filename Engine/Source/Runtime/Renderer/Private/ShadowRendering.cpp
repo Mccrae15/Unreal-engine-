@@ -255,8 +255,6 @@ void StencilingGeometry::DrawCone(FRHICommandList& RHICmdList)
 *  [2]:FShadowProjectionVS
 *  [3]:FShadowProjectionVS + FShadowProjectionMultiResGS
 */
-static FGlobalBoundShaderState MaskBoundShaderState[4];
-
 template <uint32 Quality, bool bVRProjectEnabled>
 static void SetShadowProjectionShaderTemplNewMultiRes(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, int32 ViewIndex, const FViewInfo& View, const FProjectedShadowInfo* ShadowInfo, bool bMobileModulatedProjections)
 {
@@ -730,7 +728,6 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShaderNoTransform);
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-		// vrworks todo. The original MaskBoundShaderState[0],[1] usage needed?
 		const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[View->GetFeatureLevel()]) && IsFastGSNeeded();
 		if (View->bVRProjectEnabled && bMultiRes)
 		{
@@ -813,7 +810,6 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 		// Find the projection shaders.
 		TShaderMapRef<FShadowProjectionVS> VertexShader(View->ShaderMap);
 
-		//vrworks todo. Original MaskBoundShaderState[2], [3] usage needed?
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
@@ -825,6 +821,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 			GraphicsPSOInit.BoundShaderState.GeometryShaderRHI =  GETSAFERHISHADER_GEOMETRY(*MultiResGeometryShader);
 
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+
 			MultiResGeometryShader->SetParameters(RHICmdList, *View);
 		}
 		else
@@ -948,7 +945,6 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 			DepthFar = 0.0f;
 		}
 
-		//vrworks todo. compare with the original EnableDepthBoundsTest(RHICmdList, CascadeSettings.SplitNear, CascadeSettings.SplitFar, View->ViewMatrices.GetProjectionMatrix());
 		// Note, using a reversed z depth surface
 		RHICmdList.EnableDepthBoundsTest(true, DepthFar, DepthNear);
 
@@ -1080,16 +1076,15 @@ template <uint32 Quality, bool bVRProjectEnabled>
 static void SetPointLightShaderTemplMultiRes(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, int32 ViewIndex, const FViewInfo& View, const FProjectedShadowInfo* ShadowInfo)
 {
 	TShaderMapRef<FShadowProjectionVS> VertexShader(View.ShaderMap);
-	TOptionalShaderMapRef<FShadowProjectionMultiResGS> MultiResGS(View.ShaderMap);
 	TShaderMapRef<TOnePassPointShadowProjectionPS<Quality> > PixelShader(View.ShaderMap);
 
-	//vrworks todo. compare with the original SetGlobalBoundShaderState.
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
 
 	if (bVRProjectEnabled)
 	{
+		TOptionalShaderMapRef<FShadowProjectionMultiResGS> MultiResGS(View.ShaderMap);
 		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(*MultiResGS);
 
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
