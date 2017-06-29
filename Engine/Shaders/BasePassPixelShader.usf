@@ -1014,12 +1014,7 @@ void FPixelShaderInOut_MainPS(
 		float4 Fogging = BasePassInterpolants.VertexFog;
 		#endif
 	#elif NEEDS_BASEPASS_PIXEL_FOGGING
-		#if SINGLE_PASS_STEREO
-		//vrworks todo.
-		float4 Fogging = float4(0,0,0,1);
-		#else
 		float4 Fogging = CalculateHeightFog(MaterialParameters.WorldPosition_CamRelative);
-		#endif
 	#else
 		float4 Fogging = float4(0,0,0,1);
 	#endif
