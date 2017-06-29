@@ -894,7 +894,6 @@ void FRCPassPostProcessTemporalAA::Process(FRenderingCompositePassContext& Conte
 
 	if (bIsComputePass)
 	{
-		//vrworks todo. 4.16 adds compute shader code path. Any vr code on compute shader?
 		// Common setup
 		SetRenderTarget(Context.RHICmdList, nullptr, nullptr);
 		Context.SetViewportAndCallRHI(DestRect, 0.0f, 1.0f);
