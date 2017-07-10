@@ -1620,7 +1620,7 @@ bool FDeferredShadingSceneRenderer::RenderPrePassHMD(FRHICommandListImmediate& R
 		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
 		{
 			// always render boundary mask if LMS is on
-			RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit);
+			RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit, 0x00);
 		}
 		if (View.StereoPass != eSSP_FULL && HasHiddenAreaMask())
 		{

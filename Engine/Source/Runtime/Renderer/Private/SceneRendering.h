@@ -1498,7 +1498,7 @@ protected:
 	void ResolveSceneColor(FRHICommandList& RHICmdList);
 
 	/** Renders a depth mask to block out areas not visible with ModifiedW rendering **/
-	void RenderModifiedWBoundaryMask(FRHICommandListImmediate& RHICmdList, FGraphicsPipelineStateInitializer &GraphicsPSOInit);
+	void RenderModifiedWBoundaryMask(FRHICommandListImmediate& RHICmdList, FGraphicsPipelineStateInitializer &GraphicsPSOInit, uint32 StencilRef);
 };
 
 /**

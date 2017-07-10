@@ -1362,7 +1362,8 @@ void FDeferredShadingSceneRenderer::RenderStandardDeferredImageBasedReflections(
 
 					TShaderMapRef<TDeferredLightVS<true> > VertexShader(View.ShaderMap);
 
-					SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds);
+					uint32 StencilRef;
+					SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds, StencilRef);
 
 					// Use the appropriate shader for the capture shape
 					if (ReflectionCapture.CaptureProperties.Z == 0)
@@ -1373,6 +1374,7 @@ void FDeferredShadingSceneRenderer::RenderStandardDeferredImageBasedReflections(
 						GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
 						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+						RHICmdList.SetStencilRef(StencilRef);
 
 						PixelShader->SetParameters(RHICmdList, View, ReflectionCapture);
 					}
@@ -1384,6 +1386,7 @@ void FDeferredShadingSceneRenderer::RenderStandardDeferredImageBasedReflections(
 						GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
 						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+						RHICmdList.SetStencilRef(StencilRef);
 
 						PixelShader->SetParameters(RHICmdList, View, ReflectionCapture);
 					}
