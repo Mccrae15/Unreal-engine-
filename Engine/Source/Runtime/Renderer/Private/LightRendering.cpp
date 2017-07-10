@@ -544,9 +544,8 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 							false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
 							0x80, 0x80
 							>::GetRHI();
-						RHICmdList.SetStencilRef(0x80);
 
-						RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit);
+						RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit, 0x80);
 
 						// Clear stencil in the octagon area to 0
 						GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState
@@ -556,12 +555,9 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 							false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
 							0x80, 0x80
 							>::GetRHI();
-						RHICmdList.SetStencilRef(0);
-
-						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
 						View.BeginVRProjectionStates(RHICmdList);
-						RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit);
+						RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit, 0x00);
 						View.EndVRProjectionStates(RHICmdList);
 
 						SceneContext.FinishRenderingStencilOnly(RHICmdList);
@@ -864,7 +860,7 @@ void FDeferredShadingSceneRenderer::RenderStationaryLightOverlap(FRHICommandList
 }
 
 /** Sets up rasterizer and depth state for rendering bounding geometry in a deferred pass. */
-void SetBoundingGeometryRasterizerAndDepthState(FGraphicsPipelineStateInitializer& GraphicsPSOInit, const FViewInfo& View, const FSphere& LightBounds)
+void SetBoundingGeometryRasterizerAndDepthState(FGraphicsPipelineStateInitializer& GraphicsPSOInit, const FViewInfo& View, const FSphere& LightBounds, uint32& StencilRef)
 {
 	const bool bCameraInsideLightGeometry = ((FVector)View.ViewMatrices.GetViewOrigin() - LightBounds.Center).SizeSquared() < FMath::Square(LightBounds.W * 1.05f + View.NearClippingDistance * 2.0f)
 		// Always draw backfaces in ortho
@@ -882,17 +878,30 @@ void SetBoundingGeometryRasterizerAndDepthState(FGraphicsPipelineStateInitialize
 		GraphicsPSOInit.RasterizerState = View.bReverseCulling ? TStaticRasterizerState<FM_Solid, CM_CCW>::GetRHI() : TStaticRasterizerState<FM_Solid, CM_CW>::GetRHI();
 	}
 
-	GraphicsPSOInit.DepthStencilState =
-		bCameraInsideLightGeometry
-		? ((View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched && bLMSStencilOptimization)
-			? TStaticDepthStencilState<
+	StencilRef = 0;
+
+	if (bCameraInsideLightGeometry)
+	{
+		if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched && bLMSStencilOptimization)
+		{
+			// no depth test or writes, Test stencil for 0xff.
+			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
 				false, CF_Always,
 				true, CF_NotEqual, SO_Keep, SO_Keep, SO_Keep,
 				false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
 				0x80, 0x80 // Mask the highest bit
-			>::GetRHI()
-			:TStaticDepthStencilState<false, CF_Always>::GetRHI())
-		: TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI();
+			>::GetRHI();
+			StencilRef = 0x80;
+		}
+		else
+		{
+			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+		}
+	}
+	else
+	{
+		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI();
+	}
 }
 
 template <bool bRadialAttenuation>
@@ -1145,7 +1154,8 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 
 			TShaderMapRef<TDeferredLightVS<true> > VertexShader(View.ShaderMap);
 
-			SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds);
+			uint32 StencilRef;
+			SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds, StencilRef);
 
 			if (bRenderOverlap)
 			{
@@ -1155,6 +1165,7 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
 
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+
 				PixelShader->SetParameters(RHICmdList, View, LightSceneInfo);
 			}
 			else
@@ -1182,6 +1193,7 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 					}
 				}
 			}
+			RHICmdList.SetStencilRef(StencilRef);
 
 			VertexShader->SetParameters(RHICmdList, View, LightSceneInfo);
 
@@ -1277,7 +1289,8 @@ void FDeferredShadingSceneRenderer::RenderSimpleLightsStandardDeferred(FRHIComma
 
 			TShaderMapRef<TDeferredLightVS<true> > VertexShader(View.ShaderMap);
 
-			SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds);
+			uint32 StencilRef;
+			SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds, StencilRef);
 
 			if (SimpleLight.Exponent == 0)
 			{
@@ -1289,6 +1302,7 @@ void FDeferredShadingSceneRenderer::RenderSimpleLightsStandardDeferred(FRHIComma
 				// light's exponent, not inverse squared
 				SetShaderTemplLightingSimple<false, true, false>(RHICmdList, GraphicsPSOInit, View, *VertexShader, SimpleLight, SimpleLightPerViewData);
 			}
+			RHICmdList.SetStencilRef(StencilRef);
 
 			VertexShader->SetSimpleLightParameters(RHICmdList, View, LightBounds);
 

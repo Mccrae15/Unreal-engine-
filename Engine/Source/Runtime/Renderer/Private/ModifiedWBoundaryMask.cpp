@@ -74,7 +74,7 @@ public:
 IMPLEMENT_SHADER_TYPE(, FModifiedWBoundaryMaskFGS, TEXT("ModifiedWBoundaryMask"), TEXT("FGSMain"), SF_Geometry);
 
 // rendering the mask itself, should call before depth prepass and any scene rendering
-void FSceneRenderer::RenderModifiedWBoundaryMask(FRHICommandListImmediate& RHICmdList, FGraphicsPipelineStateInitializer &GraphicsPSOInit)
+void FSceneRenderer::RenderModifiedWBoundaryMask(FRHICommandListImmediate& RHICmdList, FGraphicsPipelineStateInitializer &GraphicsPSOInit, uint32 StencilRef)
 {
 	// since we only render to the depth buffer, no pixel shader required
 	const auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
@@ -85,6 +85,7 @@ void FSceneRenderer::RenderModifiedWBoundaryMask(FRHICommandListImmediate& RHICm
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 	GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(*GeometryShader);
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	RHICmdList.SetStencilRef(StencilRef);
 
 	// no vertex buffer needed as we compute it in VS
 	RHICmdList.SetStreamSource(0, NULL, 0, 0);

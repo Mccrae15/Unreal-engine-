@@ -123,5 +123,5 @@ private:
 	FStencilingGeometryShaderParameters StencilingGeometryParameters;
 };
 
-extern void SetBoundingGeometryRasterizerAndDepthState(FGraphicsPipelineStateInitializer& GraphicsPSOInit, const FViewInfo& View, const FSphere& LightBounds);
+extern void SetBoundingGeometryRasterizerAndDepthState(FGraphicsPipelineStateInitializer& GraphicsPSOInit, const FViewInfo& View, const FSphere& LightBounds, uint32& StencilRef);
 
