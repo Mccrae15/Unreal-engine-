@@ -2673,6 +2673,8 @@ void FSceneView::SetupVRProjection(int32 ViewportGap)
 
 	bVRProjectEnabled = MultiResLevel > 0 || LensMatchedShadingLevel > 0;
 
+	static const auto EnableMultiGPUVRCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MGPU"));
+
 	if (bVRProjectEnabled)
 	{
 		if (LensMatchedShadingLevel > 0) // Select ModifiedW over MultiRes if they are enabled at the same time.
@@ -2782,17 +2784,40 @@ void FSceneView::SetupVRProjection(int32 ViewportGap)
 	{
 		// Set up the lens matched shading configuration: viewport split positions and relative pixel densities
 		// Hard-coded for now!
-		if (LensMatchedShadingLevel == 1)
+		if (EnableMultiGPUVRCVar->GetValueOnGameThread() != 0)
 		{
-			LensMatchedShadingConf = FLensMatchedShading::Configuration_Vive_Quality;
-		}
-		else if (LensMatchedShadingLevel == 2)
-		{
-			LensMatchedShadingConf = FLensMatchedShading::Configuration_Vive_Conservative;
+			// Set up the lens matched shading configuration: viewport split positions and relative pixel densities
+			// In VR SLI the w-warp parameters have to be identical for left and right eye, so
+			// the symmetrical values need to be used.
+			if (LensMatchedShadingLevel == 1)
+			{
+				LensMatchedShadingConf = FLensMatchedShading::Configuration_Symmetrical_Quality;
+			}
+			else if (LensMatchedShadingLevel == 2)
+			{
+				LensMatchedShadingConf = FLensMatchedShading::Configuration_Symmetrical_Conservative;
+			}
+			else
+			{
+				LensMatchedShadingConf = FLensMatchedShading::Configuration_Symmetrical_Aggressive;
+			}
 		}
 		else
 		{
-			LensMatchedShadingConf = FLensMatchedShading::Configuration_Vive_Aggressive;
+			// Set up the lens matched shading configuration: viewport split positions and relative pixel densities
+			// Hard-coded for now!
+			if (LensMatchedShadingLevel == 1)
+			{
+				LensMatchedShadingConf = FLensMatchedShading::Configuration_Vive_Quality;
+			}
+			else if (LensMatchedShadingLevel == 2)
+			{
+				LensMatchedShadingConf = FLensMatchedShading::Configuration_Vive_Conservative;
+			}
+			else
+			{
+				LensMatchedShadingConf = FLensMatchedShading::Configuration_Vive_Aggressive;
+			}
 		}
 
 		const float ResolutionScale = CVarLensMatchedShadingResScaling.GetValueOnGameThread();

@@ -265,6 +265,10 @@ struct FLensMatchedShading : public FVRProjection
 	static CORE_API const Configuration Configuration_Vive_Conservative;
 	static CORE_API const Configuration Configuration_Vive_Aggressive;
 
+	static CORE_API const Configuration Configuration_Symmetrical_Quality;
+	static CORE_API const Configuration Configuration_Symmetrical_Conservative;
+	static CORE_API const Configuration Configuration_Symmetrical_Aggressive;
+
 	static CORE_API void CalculateMirroredConfig(const Configuration* Conf, Configuration* RefConfMirrored);
 
 	// Calculate a stereo configuration that is mirrored on the centerline

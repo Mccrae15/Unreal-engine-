@@ -652,6 +652,33 @@ CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configura
 	0.345f, 0.341f
 };
 
+CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configuration_Symmetrical_Quality =
+{
+	0.51f, 0.51f,
+	0.59f, 0.62f,
+
+	0.474f, 0.474f, // Relative to HTC recommended render target size for one eye, 1512 x 1680
+	0.442f, 0.438f
+};
+
+CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configuration_Symmetrical_Conservative =
+{
+	0.785f, 0.785f,
+	0.88f, 0.91f,
+
+	0.426f, 0.426f, // Relative to HTC recommended render target size for one eye, 1512 x 1680
+	0.395f, 0.391f
+};
+
+CORE_API const FLensMatchedShading::Configuration FLensMatchedShading::Configuration_Symmetrical_Aggressive =
+{
+	0.88, 0.88,
+	0.98f, 1.01f,
+
+	0.37f, 0.37f, // Relative to HTC recommended render target size for one eye, 1512 x 1680
+	0.345f, 0.341f
+};
+
 // Merge two lens matched shading viewports into stereo lens matched shading viewports
 FLensMatchedShading::StereoViewports FLensMatchedShading::Viewports::Merge(const FLensMatchedShading::Viewports& InLeft, const FLensMatchedShading::Viewports& InRight)
 {
