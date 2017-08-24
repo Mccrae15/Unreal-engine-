@@ -436,10 +436,13 @@ void FShadowMapPendingTexture::FinishCachingTextures(UWorld* InWorld)
 
 static TArray<FShadowMapAllocationGroup> PendingShadowMaps;
 static uint32 PendingShadowMapSize;
-/** If true, update the status when encoding light maps */
-bool FShadowMap2D::bUpdateStatus = true;
 
 #endif 
+
+#if WITH_EDITOR
+/** If true, update the status when encoding light maps */
+bool FShadowMap2D::bUpdateStatus = true;
+#endif
 
 TRefCountPtr<FShadowMap2D> FShadowMap2D::AllocateShadowMap(
 	UObject* LightMapOuter, 

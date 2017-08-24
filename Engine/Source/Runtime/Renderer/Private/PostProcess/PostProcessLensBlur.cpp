@@ -178,10 +178,16 @@ void FRCPassPostProcessLensBlur::Process(FRenderingCompositePassContext& Context
 
 	FIntPoint TexSize = InputDesc->Extent;
 
-	// usually 1, 2, 4 or 8
-	uint32 ScaleToFullRes = FSceneRenderTargets::Get(Context.RHICmdList).GetBufferSizeXY().X / TexSize.X;
+	// Lens blur always happesn in linear space with vr projection enabled to avoid aliasing
+	int32 BufferX = View.bVRProjectEnabled ? FSceneRenderTargets::Get(Context.RHICmdList).GetLinearBufferSizeXY().X : FSceneRenderTargets::Get(Context.RHICmdList).GetBufferSizeXY().X;
+	FIntRect ViewRect = View.bVRProjectEnabled ? View.NonVRProjectViewRect : View.ViewRect;
 
-	FIntRect ViewRect = FIntRect::DivideAndRoundUp(View.ViewRect, ScaleToFullRes);
+	// usually 1, 2, 4 or 8
+	uint32 ScaleToFullRes = FMath::DivideAndRoundUp(BufferX, TexSize.X);
+
+	ViewRect = FIntRect::DivideAndRoundUp(ViewRect, ScaleToFullRes);
+
+
 	FIntPoint ViewSize = ViewRect.Size();
 
 	const FSceneRenderTargetItem& DestRenderTarget = PassOutputs[0].RequestSurface(Context);
@@ -224,7 +230,7 @@ void FRCPassPostProcessLensBlur::Process(FRenderingCompositePassContext& Context
 	int32 QuadsPerInstance = 4;
 
 	Context.RHICmdList.DrawPrimitive(PT_TriangleList, 0, 2, FMath::DivideAndRoundUp(TileCount.X * TileCount.Y, QuadsPerInstance));
-
+	
 	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
 }
 

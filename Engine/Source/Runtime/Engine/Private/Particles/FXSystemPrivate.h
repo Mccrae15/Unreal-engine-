@@ -190,6 +190,7 @@ public:
 
 	void PrepareGPUSimulation(FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef SceneDepthTexture = nullptr);
 	void FinalizeGPUSimulation(FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef SceneDepthTexture = nullptr);
+	void CopyGPUSimulationMGPU(FRHICommandListImmediate& RHICmdList, EParticleSimulatePhase::Type Phase);
 
 private:
 

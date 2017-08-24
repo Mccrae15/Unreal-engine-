@@ -338,6 +338,7 @@ protected:
 
 		InstancedEyeIndexParameter.Bind(Initializer.ParameterMap, TEXT("InstancedEyeIndex"));
 		IsInstancedStereoParameter.Bind(Initializer.ParameterMap, TEXT("bIsInstancedStereo"));
+		IsSinglePassStereoParameter.Bind(Initializer.ParameterMap, TEXT("bIsSinglePassStereo"));
 	}
 
 public:
@@ -359,6 +360,7 @@ public:
 		Ar << SkipOutputVelocityParameter;
 		Ar << InstancedEyeIndexParameter;
 		Ar << IsInstancedStereoParameter;
+		Ar << IsSinglePassStereoParameter;
 		return bShaderHasOutdatedParameters;
 	}
 
@@ -370,7 +372,8 @@ public:
 		const FViewInfo& View,
 		ESceneRenderTargetsMode::Type TextureMode, 
 		bool bIsInstancedStereo,
-		bool bUseDownsampledTranslucencyViewUniformBuffer
+		bool bUseDownsampledTranslucencyViewUniformBuffer,
+		bool bIsSinglePassStereo
 		)
 	{
 		checkSlow(!bUseDownsampledTranslucencyViewUniformBuffer || View.DownsampledTranslucencyViewUniformBuffer);
@@ -380,16 +383,16 @@ public:
 		HeightFogParameters.Set(RHICmdList, GetVertexShader(), &View);
 
 		TranslucentLightingVolumeParameters.Set(RHICmdList, GetVertexShader());
-		ForwardLightingParameters.Set(RHICmdList, GetVertexShader(), View, bIsInstancedStereo);
+		ForwardLightingParameters.Set(RHICmdList, GetVertexShader(), View, bIsInstancedStereo || bIsSinglePassStereo);
 
 		if (IsInstancedStereoParameter.IsBound())
 		{
 			SetShaderValue(RHICmdList, GetVertexShader(), IsInstancedStereoParameter, bIsInstancedStereo);
 		}
 
-		if (InstancedEyeIndexParameter.IsBound())
+		if (IsSinglePassStereoParameter.IsBound())
 		{
-			SetShaderValue(RHICmdList, GetVertexShader(), InstancedEyeIndexParameter, 0);
+			SetShaderValue(RHICmdList, GetVertexShader(), IsSinglePassStereoParameter, bIsSinglePassStereo);
 		}
 	}
 
@@ -408,6 +411,7 @@ private:
 	FShaderParameter SkipOutputVelocityParameter;
 	FShaderParameter InstancedEyeIndexParameter;
 	FShaderParameter IsInstancedStereoParameter;
+	FShaderParameter IsSinglePassStereoParameter;
 };
 
 
@@ -477,6 +481,93 @@ public:
 	{
 		Super::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("BASEPASS_ATMOSPHERIC_FOG"), bEnableAtmosphericFog);
+	}
+};
+
+/**
+* The base shader type for fast geometry shaders.
+*/
+
+template<typename VertexParametersType>
+class TBasePassFastGeometryShaderPolicyParamType : public FMeshMaterialShader //, public VertexParametersType
+{
+
+protected:
+
+	TBasePassFastGeometryShaderPolicyParamType() {}
+	TBasePassFastGeometryShaderPolicyParamType(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer) :
+		FMeshMaterialShader(Initializer)
+	{
+	}
+
+public:
+
+	virtual bool Serialize(FArchive& Ar)
+	{
+		bool bShaderHasOutdatedParameters = FMeshMaterialShader::Serialize(Ar);
+		return bShaderHasOutdatedParameters;
+	}
+
+	void SetParameters(
+		FRHICommandList& RHICmdList,
+		const FMaterialRenderProxy* MaterialRenderProxy,
+		const FVertexFactory* VertexFactory,
+		const FMaterial& InMaterialResource,
+		const FSceneView& View,
+		ESceneRenderTargetsMode::Type TextureMode
+		)
+	{
+		FMeshMaterialShader::SetParameters(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), MaterialRenderProxy, InMaterialResource, View, View.ViewUniformBuffer, TextureMode);
+	}
+
+	void SetMesh(FRHICommandList& RHICmdList, const FVertexFactory* VertexFactory, const FSceneView& View, const FPrimitiveSceneProxy* Proxy, const FMeshBatch& Mesh, const FMeshBatchElement& BatchElement, const FDrawingPolicyRenderState& DrawRenderState)
+	{
+		FMeshMaterialShader::SetMesh(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), VertexFactory, View, Proxy, BatchElement, DrawRenderState);
+	}
+
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
+};
+
+
+template<typename LightMapPolicyType>
+class TBasePassFastGS : public TBasePassFastGeometryShaderPolicyParamType<typename LightMapPolicyType::VertexParametersType>
+{
+	DECLARE_SHADER_TYPE(TBasePassFastGS, MeshMaterial);
+	typedef TBasePassFastGeometryShaderPolicyParamType<typename LightMapPolicyType::VertexParametersType> Super;
+
+protected:
+
+	TBasePassFastGS() {}
+	TBasePassFastGS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer) :
+		Super(Initializer)
+	{
+	}
+
+public:
+	static bool ShouldCache(EShaderPlatform Platform, const FMaterial* Material, const FVertexFactoryType* VertexFactoryType)
+	{
+		// Re-use vertex shader gating
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && TBasePassVS<LightMapPolicyType, false>::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+	}
+
+	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		// Re-use vertex shader compilation environment
+		TBasePassVS<LightMapPolicyType, false>::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
+	}
+
+	virtual bool Serialize(FArchive& Ar)
+	{
+		bool bShaderHasOutdatedParameters = FMeshMaterialShader::Serialize(Ar);
+		return bShaderHasOutdatedParameters;
+	}
+
+	static bool IsFastGeometryShader()
+	{
+		return true;
 	}
 };
 
@@ -754,7 +845,8 @@ public:
 		bool bEnableEditorPrimitveDepthTest,
 		ESceneRenderTargetsMode::Type TextureMode,
 		bool bIsInstancedStereo,
-		bool bUseDownsampledTranslucencyViewUniformBuffer)
+		bool bUseDownsampledTranslucencyViewUniformBuffer,
+		bool bIsSinglePassStereo)
 	{
 		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
 
@@ -772,7 +864,7 @@ public:
 		
 		EditorCompositeParams.SetParameters(RHICmdList, MaterialResource, View, bEnableEditorPrimitveDepthTest, GetPixelShader());
 
-		ForwardLightingParameters.Set(RHICmdList, ShaderRHI, *View, bIsInstancedStereo);
+		ForwardLightingParameters.Set(RHICmdList, ShaderRHI, *View, bIsInstancedStereo || bIsSinglePassStereo);
 	}
 
 	void SetMesh(FRHICommandList& RHICmdList, const FVertexFactory* VertexFactory,const FSceneView& View,const FPrimitiveSceneProxy* Proxy,const FMeshBatchElement& BatchElement, const FDrawingPolicyRenderState& DrawRenderState, EBlendMode BlendMode);
@@ -885,6 +977,7 @@ void GetBasePassShaders(
 	bool bEnableSkyLight,
 	FBaseHS*& HullShader,
 	FBaseDS*& DomainShader,
+	TBasePassFastGeometryShaderPolicyParamType<typename LightMapPolicyType::VertexParametersType>*& FastGeometryShader,
 	TBasePassVertexShaderPolicyParamType<typename LightMapPolicyType::VertexParametersType>*& VertexShader,
 	TBasePassPixelShaderPolicyParamType<typename LightMapPolicyType::PixelParametersType>*& PixelShader
 	)
@@ -903,6 +996,10 @@ void GetBasePassShaders(
 			HullShader = Material.GetShader<TBasePassHS<LightMapPolicyType, false > >(VertexFactoryType);
 		}
 	}
+
+	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[Material.GetFeatureLevel()]) && IsFastGSNeeded();
+
+	FastGeometryShader = bMultiRes ? Material.GetShader<TBasePassFastGS<LightMapPolicyType> >(VertexFactoryType) : nullptr;
 
 	if (bEnableAtmosphericFog)
 	{
@@ -932,6 +1029,7 @@ void GetBasePassShaders<FUniformLightMapPolicy>(
 	bool bEnableSkyLight,
 	FBaseHS*& HullShader,
 	FBaseDS*& DomainShader,
+	TBasePassFastGeometryShaderPolicyParamType<FUniformLightMapPolicyShaderParametersType>*& FastGeometryShader,
 	TBasePassVertexShaderPolicyParamType<FUniformLightMapPolicyShaderParametersType>*& VertexShader,
 	TBasePassPixelShaderPolicyParamType<FUniformLightMapPolicyShaderParametersType>*& PixelShader
 	);
@@ -1026,6 +1124,7 @@ public:
 			bEnableSkyLight,
 			HullShader,
 			DomainShader,
+			FastGeometryShader,
 			VertexShader,
 			PixelShader
 			);
@@ -1043,9 +1142,11 @@ public:
 
 	FDrawingPolicyMatchResult Matches(const TBasePassDrawingPolicy& Other) const
 	{
+
 		DRAWING_POLICY_MATCH_BEGIN
 			DRAWING_POLICY_MATCH(FMeshDrawingPolicy::Matches(Other)) &&
 			DRAWING_POLICY_MATCH(VertexShader == Other.VertexShader) &&
+			DRAWING_POLICY_MATCH(FastGeometryShader == Other.FastGeometryShader) &&
 			DRAWING_POLICY_MATCH(PixelShader == Other.PixelShader) &&
 			DRAWING_POLICY_MATCH(HullShader == Other.HullShader) &&
 			DRAWING_POLICY_MATCH(DomainShader == Other.DomainShader) &&
@@ -1128,7 +1229,12 @@ public:
 			// Set the light-map policy.
 			LightMapPolicy.Set(RHICmdList, VertexShader, !UseDebugViewPS() ? PixelShader : nullptr, VertexShader, PixelShader, VertexFactory, MaterialRenderProxy, View);
 
-			VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, VertexFactory, *MaterialResource, *View, SceneTextureMode, PolicyContext.bIsInstancedStereo, bUseDownsampledTranslucencyViewUniformBuffer);
+			VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, VertexFactory, *MaterialResource, *View, SceneTextureMode, PolicyContext.bIsInstancedStereo, bUseDownsampledTranslucencyViewUniformBuffer, PolicyContext.bIsSinglePassStereo);
+
+			if (View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo)
+			{
+				FastGeometryShader->SetParameters(RHICmdList, MaterialRenderProxy, VertexFactory, *MaterialResource, *View, SceneTextureMode);
+			}
 
 			if(HullShader)
 			{
@@ -1137,7 +1243,7 @@ public:
 
 			if (DomainShader)
 			{
-				DomainShader->SetParameters(RHICmdList, MaterialRenderProxy, *View);
+				DomainShader->SetParameters(RHICmdList, MaterialRenderProxy, *View, false, PolicyContext.bIsSinglePassStereo);
 			}
 		}
 
@@ -1147,7 +1253,7 @@ public:
 		}
 		else
 		{
-			PixelShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, View, BlendMode, bEnableEditorPrimitiveDepthTest, SceneTextureMode, PolicyContext.bIsInstancedStereo, bUseDownsampledTranslucencyViewUniformBuffer);
+			PixelShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, View, BlendMode, bEnableEditorPrimitiveDepthTest, SceneTextureMode, PolicyContext.bIsInstancedStereo, bUseDownsampledTranslucencyViewUniformBuffer, PolicyContext.bIsSinglePassStereo);
 		}
 	}
 
@@ -1162,7 +1268,7 @@ public:
 	* @param DynamicStride - optional stride for dynamic vertex data
 	* @return new bound shader state object
 	*/
-	FBoundShaderStateInput GetBoundShaderStateInput(ERHIFeatureLevel::Type InFeatureLevel) const
+	FBoundShaderStateInput GetBoundShaderStateInput(ERHIFeatureLevel::Type InFeatureLevel, bool bMultiRes = false)
 	{
 		FBoundShaderStateInput BoundShaderStateInput(
 			FMeshDrawingPolicy::GetVertexDeclaration(), 
@@ -1170,7 +1276,7 @@ public:
 			GETSAFERHISHADER_HULL(HullShader), 
 			GETSAFERHISHADER_DOMAIN(DomainShader), 
 			PixelShader->GetPixelShader(),
-			FGeometryShaderRHIRef()
+			(bMultiRes ? GetMultiResFastGS() : FGeometryShaderRHIRef())
 			);
 
 		if (UseDebugViewPS())
@@ -1178,6 +1284,11 @@ public:
 			FDebugViewMode::PatchBoundShaderState(BoundShaderStateInput, MaterialResource, VertexFactory, InFeatureLevel, GetDebugViewShaderMode());
 		}
 		return BoundShaderStateInput;
+	}
+
+	FGeometryShaderRHIRef GetMultiResFastGS()
+	{
+		return GETSAFERHISHADER_GEOMETRY(FastGeometryShader);
 	}
 
 	void SetMeshRenderState(
@@ -1214,6 +1325,9 @@ public:
 				ElementData.LightMapElementData);
 
 			VertexShader->SetMesh(RHICmdList, VertexFactory,View,PrimitiveSceneProxy, Mesh,BatchElement,DrawRenderState);
+
+			if (View.bVRProjectEnabled)
+				FastGeometryShader->SetMesh(RHICmdList, VertexFactory, View, PrimitiveSceneProxy, Mesh, BatchElement, DrawRenderState);
 		
 			if(HullShader && DomainShader)
 			{
@@ -1237,6 +1351,7 @@ public:
 	friend int32 CompareDrawingPolicy(const TBasePassDrawingPolicy& A,const TBasePassDrawingPolicy& B)
 	{
 		COMPAREDRAWINGPOLICYMEMBERS(VertexShader);
+		COMPAREDRAWINGPOLICYMEMBERS(FastGeometryShader);
 		COMPAREDRAWINGPOLICYMEMBERS(PixelShader);
 		COMPAREDRAWINGPOLICYMEMBERS(HullShader);
 		COMPAREDRAWINGPOLICYMEMBERS(DomainShader);
@@ -1254,6 +1369,7 @@ protected:
 	// Here we don't store the most derived type of shaders, for instance TBasePassVertexShaderBaseType<LightMapPolicyType>.
 	// This is to allow any shader using the same parameters to be used, and is required to allow FUniformLightMapPolicy to use shaders derived from TUniformLightMapPolicy.
 	TBasePassVertexShaderPolicyParamType<typename LightMapPolicyType::VertexParametersType>* VertexShader;
+	TBasePassFastGeometryShaderPolicyParamType<typename LightMapPolicyType::VertexParametersType>* FastGeometryShader;
 	FBaseHS* HullShader; // Does not depend on LightMapPolicyType
 	FBaseDS* DomainShader; // Does not depend on LightMapPolicyType
 	TBasePassPixelShaderPolicyParamType<typename LightMapPolicyType::PixelParametersType>* PixelShader;
@@ -1300,7 +1416,8 @@ public:
 		const FDrawingPolicyRenderState& DrawRenderState,
 		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 		FHitProxyId HitProxyId, 
-		const bool bIsInstancedStereo = false
+		const bool bIsInstancedStereo = false,
+		const bool bIsSinglePassStereo = false
 		);
 };
 
@@ -1322,6 +1439,7 @@ public:
 	ERHIFeatureLevel::Type FeatureLevel;
 	const bool bIsInstancedStereo;
 	const bool bUseMobileMultiViewMask;
+	const bool bIsSinglePassStereo;
 
 	/** Initialization constructor. */
 	FProcessBasePassMeshParameters(
@@ -1333,7 +1451,8 @@ public:
 		ESceneRenderTargetsMode::Type InTextureMode,
 		ERHIFeatureLevel::Type InFeatureLevel,
 		const bool InbIsInstancedStereo = false,
-		const bool InbUseMobileMultiViewMask = false
+		const bool InbUseMobileMultiViewMask = false,
+		const bool InbIsSinglePassStereo = false
 		):
 		Mesh(InMesh),
 		BatchElementMask(Mesh.Elements.Num()==1 ? 1 : (1<<Mesh.Elements.Num())-1), // 1 bit set for each mesh element
@@ -1346,7 +1465,8 @@ public:
 		TextureMode(InTextureMode),
 		FeatureLevel(InFeatureLevel), 
 		bIsInstancedStereo(InbIsInstancedStereo), 
-		bUseMobileMultiViewMask(InbUseMobileMultiViewMask)
+		bUseMobileMultiViewMask(InbUseMobileMultiViewMask),
+		bIsSinglePassStereo(InbIsSinglePassStereo)
 	{
 	}
 
@@ -1361,7 +1481,8 @@ public:
 		ESceneRenderTargetsMode::Type InTextureMode,
 		ERHIFeatureLevel::Type InFeatureLevel, 
 		bool InbIsInstancedStereo = false, 
-		bool InbUseMobileMultiViewMask = false
+		bool InbUseMobileMultiViewMask = false,
+		bool InbIsSinglePassStereo = false
 		) :
 		Mesh(InMesh),
 		BatchElementMask(InBatchElementMask),
@@ -1374,7 +1495,8 @@ public:
 		TextureMode(InTextureMode),
 		FeatureLevel(InFeatureLevel),
 		bIsInstancedStereo(InbIsInstancedStereo), 
-		bUseMobileMultiViewMask(InbUseMobileMultiViewMask)
+		bUseMobileMultiViewMask(InbUseMobileMultiViewMask),
+		bIsSinglePassStereo(InbIsSinglePassStereo)
 	{
 	}
 };

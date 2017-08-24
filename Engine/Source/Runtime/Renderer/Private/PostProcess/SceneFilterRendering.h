@@ -19,6 +19,7 @@ BEGIN_UNIFORM_BUFFER_STRUCT( FDrawRectangleParameters,)
 	DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER( FVector4, PosScaleBias )
 	DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER( FVector4, UVScaleBias )
 	DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER( FVector4, InvTargetSizeAndTextureSize )
+	DECLARE_UNIFORM_BUFFER_STRUCT_MEMBER( uint32, bDisableRemap )
 END_UNIFORM_BUFFER_STRUCT( FDrawRectangleParameters )
 
 /**
@@ -51,7 +52,8 @@ extern void DrawRectangle(
 	FIntPoint TextureSize,
 	class FShader* VertexShader,
 	EDrawRectangleFlags Flags = EDRF_Default,
-	uint32 InstanceCount = 1
+	uint32 InstanceCount = 1,
+	bool bForceNoRemap = false
 	);
 
 extern void DrawTransformedRectangle(
@@ -101,7 +103,8 @@ extern void DrawPostProcessPass(
 	class FShader* VertexShader,
 	EStereoscopicPass StereoView,
 	bool bHasCustomMesh,
-	EDrawRectangleFlags Flags = EDRF_Default
+	EDrawRectangleFlags Flags = EDRF_Default,
+	bool bForceNoRemap = false
 	);
 
 extern TGlobalResource<FFilterVertexDeclaration> GFilterVertexDeclaration;

@@ -332,7 +332,10 @@ void CollideWithDepthBuffer(
 	float3 CollisionPosition = InPosition + CollisionOffset;
 	float4 SamplePosition = float4(CollisionPosition + View.PreViewTranslation,1);
 	float4 ClipPosition = mul(SamplePosition, View.TranslatedWorldToClip);
-	float2 ScreenPosition = ClipPosition.xy / ClipPosition.w;
+	float2 LinearScreenPosition = ClipPosition.xy / ClipPosition.w;
+
+	// compensate for possibly warped space
+	float2 ScreenPosition = VRProjMapNDCLinearToVRProj(LinearScreenPosition);
 
 	// Don't try to collide if the particle falls outside the view.
 	if (all(abs(ScreenPosition.xy) <= float2(1,1)))
@@ -355,12 +358,12 @@ void CollideWithDepthBuffer(
 			}
 #endif
 			// Reconstruct world position.
-			float3 WorldPosition = WorldPositionFromSceneDepth(ScreenPosition.xy, SceneDepth);
+			float3 WorldPosition = WorldPositionFromSceneDepth(LinearScreenPosition.xy, SceneDepth);
 			
 #if FORWARD_SHADING && FORWARD_SHADING_ACCURATE_NORMAL
 			// Compute normal using the two additional neighbooring pixel depth buffer fetches.
-			float3 WorldPosition0 = WorldPositionFromSceneDepth(ScreenPosition.xy + float2(2 * View.ViewSizeAndInvSize.z, 0.0), SceneDepth0);
-			float3 WorldPosition1 = WorldPositionFromSceneDepth(ScreenPosition.xy - float2(0.0, 2 * View.ViewSizeAndInvSize.w), SceneDepth1);
+			float3 WorldPosition0 = WorldPositionFromSceneDepth(VRProjMapNDCVRProjToLinear(ScreenPosition.xy + float2(2 * View.ViewSizeAndInvSize.z, 0.0)), SceneDepth0);
+			float3 WorldPosition1 = WorldPositionFromSceneDepth(VRProjMapNDCVRProjToLinear(ScreenPosition.xy - float2(0.0, 2 * View.ViewSizeAndInvSize.w)), SceneDepth1);
 			float3 WorldNormal = normalize(cross(WorldPosition0 - WorldPosition, WorldPosition1 - WorldPosition));
 #elif FORWARD_SHADING // && !FORWARD_SHADING_ACCURATE_NORMAL
 			// Compute normal using a ddx/ddy hack, hopefully the neighbooring particules will be close enough...
@@ -368,6 +371,7 @@ void CollideWithDepthBuffer(
 			WorldNormal *= sign(dot(View.WorldCameraOrigin - NewPosition, WorldNormal));
 #else //!FORWARD_SHADING
 			// Sample the normal buffer to create a plane to collide against.
+			// NV_MSCHOTT the offsets  might need to be tweaked for the VR projection
 			float3 WorldNormal = Texture2DSampleLevel(GBufferATexture, GBufferATextureSampler, ScreenUV, 0).xyz * 2.0 - 1.0;
 #endif
 			float4 CollisionPlane = float4(WorldNormal, dot(WorldPosition.xyz,WorldNormal));

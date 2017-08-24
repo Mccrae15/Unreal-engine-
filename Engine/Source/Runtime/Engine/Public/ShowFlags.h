@@ -387,6 +387,9 @@ private:
 		SetRequiredTextureResolution(false);
 		SetMotionBlur(InitMode != ESFIM_Editor);
 		SetBones(false);
+		SetVisualizeVRWarp(false);
+		SetVisualizeVRWarpDivisions(false);
+		SetVisualizeVRWarpRate(false);
 	}
 
 

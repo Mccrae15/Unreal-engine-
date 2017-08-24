@@ -320,5 +320,11 @@ SHOWFLAG_FIXED_IN_SHIPPING(0, RequiredTextureResolution, SFG_Hidden, LOCTEXT("Re
 SHOWFLAG_ALWAYS_ACCESSIBLE(WidgetComponents, SFG_Normal, LOCTEXT("WidgetComponentsSF", "Widget Components"))
 /** Draw the bones of all skeletal meshes */
 SHOWFLAG_FIXED_IN_SHIPPING(0, Bones, SFG_Developer, LOCTEXT("BoneSF", "Bones"))
+/** Visualize the VRProjection warp */
+SHOWFLAG_ALWAYS_ACCESSIBLE(VisualizeVRWarp, SFG_Visualize, LOCTEXT("VisualizeVRWarp", "VR Warp"))
+/** Visualize the VRProjection warp divisions*/
+SHOWFLAG_ALWAYS_ACCESSIBLE(VisualizeVRWarpDivisions, SFG_Visualize, LOCTEXT("VisualizeVRWarpDivisions", "VR Warp Divisions"))
+/** Visualize the VRProjection warp */
+SHOWFLAG_ALWAYS_ACCESSIBLE(VisualizeVRWarpRate, SFG_Visualize, LOCTEXT("VisualizeVRWarpRate", "VR Warp Rate"))
 #undef SHOWFLAG_ALWAYS_ACCESSIBLE
 #undef SHOWFLAG_FIXED_IN_SHIPPING
