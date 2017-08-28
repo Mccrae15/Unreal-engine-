@@ -5,29 +5,14 @@
 =============================================================================*/
 #include "common.ush"
 
-// BOUNDARY defines the boundary of the mask. If <1.0, it will be visible on the final render (useful for debugging)
-#define BOUNDARY 1.f
-
-// We generate the vertices in the VS rather than passing in through a vertex buffer
-static const float2 MaskVerts[4] = {
-	{ -BOUNDARY, BOUNDARY },
-	{ BOUNDARY, BOUNDARY },
-	{ BOUNDARY, -BOUNDARY },
-	{ -BOUNDARY, -BOUNDARY },
-};
-
-// The mask itself is composed of two triangles forming a fullscreen quad, which will turn into an octagon once going through the ModifiedW pipeline
-static const int MaskInds[6] = {
-	0, 2, 1,
-	0, 3, 2
-};
-
 // The draw call itself will be two triangles, so simply look up values in the vertex/index constant arrays
 void VSMain(in uint InVertexId : SV_VertexID,
 	out float4 OutPosition : SV_Position)
 {
-	float2 CurrentVertex = MaskVerts[MaskInds[InVertexId]];
-	OutPosition = float4(CurrentVertex.xy, 0, 1); // depth=0 maps to near plane
+	int x = InVertexId &  1;
+	int y = InVertexId >> 1;
+
+	OutPosition = float4(x * 2 - 1, y * 2 - 1, 0, 1);
 }
 
 // Simple FastGS to just broadcast to all viewports
