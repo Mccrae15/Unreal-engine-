@@ -260,11 +260,6 @@ private:
 		{
 			return sizeof(*this) + CompactElements.GetAllocatedSize() + Elements.GetAllocatedSize();
 		}
-
-		void ReleaseBoundShaderState()
-		{
-			BoundShaderState.SafeRelease();
-		}
 	};
 
 	/** Functions to extract the drawing policy from FDrawingPolicyLink as a key for TSet. */

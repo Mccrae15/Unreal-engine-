@@ -7,6 +7,7 @@
 #include "ShaderParameters.h"
 #include "Shader.h"
 #include "GlobalShader.h"
+#include "SceneView.h"
 
 /**
  * Vertex shader for rendering a single, constant color.
