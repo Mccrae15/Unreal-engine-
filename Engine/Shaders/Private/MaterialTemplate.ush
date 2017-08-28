@@ -4,6 +4,7 @@
  * MaterialTemplate.usf: Filled in by FHLSLMaterialTranslator::GetMaterialShaderCode for each material being compiled.
  */
 
+#pragma once
 #include "/Engine/Private/Random.ush"
 #include "/Engine/Private/MonteCarlo.ush"
 #include "/Engine/Generated/UniformBuffers/Material.ush"

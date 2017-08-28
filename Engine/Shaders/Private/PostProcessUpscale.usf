@@ -120,7 +120,7 @@ float2 VRProjGetDistanceFromBoundaries(float2 UV)
 }
 
 // Jonah's red-blue heatmap scheme
-static const float gHeatmapPoints = 5;
+static const int gHeatmapPoints = 5;
 
 static const float4 gHeatmap[] = {
 	float4(0.25,	1, 0, 0),
@@ -143,7 +143,7 @@ float3 ShadingRateHeatmap(float Value)
 		if (Left.x <= Value && Value <= Right.x)
 		{
 			float f = (Value - Left.x) / (Right.x - Left.x);
-			return lerp(Left.yzw, Right.yzw, f);
+			return lerp(Left.yzw, Right.yzw, f).xyz;
 		}
 	}
 
