@@ -3,6 +3,7 @@ NVIDIA Unreal Engine 4 Fork
 
 Welcome to NVIDIA's Unreal Engine 4 GitHub fork.  This fork contains many branches with [GameWorks and VRWorks integrations](https://developer.nvidia.com/nvidia-gameworks-and-ue4):
 
+* [Blast](https://developer.nvidia.com/blast) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/Blast)
 * [CataclysmDemo](https://developer.nvidia.com/cataclysm-flip-solver-gpu-particles) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/CataclysmDemo-4.15)
 * [FleX](https://developer.nvidia.com/flex) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/FleX-4.16.0)
 * [Flow](https://developer.nvidia.com/nvidia-flow) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/NvFlow-4.17)
