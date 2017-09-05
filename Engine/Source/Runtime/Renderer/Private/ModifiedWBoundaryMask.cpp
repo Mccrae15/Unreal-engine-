@@ -91,7 +91,7 @@ void FSceneRenderer::RenderModifiedWBoundaryMask(FRHICommandListImmediate& RHICm
 	RHICmdList.SetStreamSource(0, NULL, 0, 0);
 
 	// mask is two triangles covering the screen which will be warped into octagon shape
-	RHICmdList.DrawPrimitive(PT_TriangleList,
+	RHICmdList.DrawPrimitive(PT_TriangleStrip,
 		/*BaseVertexIndex=*/ 0,
 		/*NumPrimitives=*/ 2,
 		/*NumInstances=*/ 1
