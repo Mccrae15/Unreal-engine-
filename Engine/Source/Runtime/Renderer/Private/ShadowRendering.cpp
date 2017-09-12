@@ -1093,10 +1093,10 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 	}
 	else
 	{
-		static const auto CVarLMSStencilOpt = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LMSStencilOptimization"));
+		static const auto CVarLMSStencilOpt = IConsoleManager::Get().FindConsoleVariable(TEXT("vr.LMSStencilOptimization"));
 
 		// Clear the stencil buffer to 0.
-		if (!(GStencilOptimization || (View->bVRProjectEnabled && View->VRProjMode == FSceneView::EVRProjectMode::LensMatched && CVarLMSStencilOpt->GetValueOnRenderThread())))
+		if (!(GStencilOptimization || (View->bVRProjectEnabled && View->VRProjMode == FSceneView::EVRProjectMode::LensMatched && CVarLMSStencilOpt->GetInt())))
 		{
 			DrawClearQuad(RHICmdList, false, FLinearColor::Transparent, false, 0, true, 1);
 		}
