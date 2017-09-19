@@ -15,6 +15,7 @@
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
 #include "StereoRendering.h"
+#include "HeadMountedDisplay.h"
 
 static TAutoConsoleVariable<float> CVarUpscaleSoftness(
 	TEXT("r.Upscale.Softness"),
@@ -328,10 +329,17 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 	{
 		DestRect = View.NonVRProjectViewRect;
 
-		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		// HACK!
+		// In the Oculus backend view rects are calculated internally in the OVRPlugin and so have correct extents
+		// SteamVR (and likely other HMD plugins) scales only render target extent so we must upscale view rects here
+		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched
+			&& GEngine->HMDDevice->GetHMDDeviceType() != EHMDDeviceType::DT_OculusRift)
 		{
-			DestRect = DestRect.Scale(1.5f);
-			FullClearRect = FullClearRect.Scale(1.5f);
+			static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
+			const float UpscaleScale = CVarLensMatchedShadingUnwarpScale->GetValueOnRenderThread();
+
+			DestRect = DestRect.Scale(UpscaleScale);
+			FullClearRect = FullClearRect.Scale(UpscaleScale);
 		}
 	}
 
@@ -354,19 +362,8 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 		{
 			if (View.StereoPass == eSSP_RIGHT_EYE)
 			{
-				if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
-				{
-					static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
-					float Scale = CVarLensMatchedShadingUnwarpScale->GetValueOnRenderThread();
-
-					DestRect.Min.X += 2 * ViewportGap * Scale;
-					DestRect.Max.X += 2 * ViewportGap * Scale;
-				}
-				else
-				{
-					DestRect.Min.X += 2 * ViewportGap;
-					DestRect.Max.X += 2 * ViewportGap;
-				}
+				DestRect.Min.X += 2 * ViewportGap;
+				DestRect.Max.X += 2 * ViewportGap;
 			}
 		}
 	}
@@ -389,7 +386,6 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 	{
 		Context.SetViewportAndCallRHI(ViewportGap > 0.0 ? FullClearRect : DestRect);
 		DrawClearQuad(Context.RHICmdList, true, FLinearColor::Black, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, ExcludeRect);
-		// NVCHANGE_YY, this is the function used in UE4.14 here ---> Context.RHICmdList.ClearColorTexture(DestRenderTarget.TargetableTexture, FLinearColor::Black, ExcludeRect);
 	}
 	Context.SetViewportAndCallRHI(DestRect);
 
