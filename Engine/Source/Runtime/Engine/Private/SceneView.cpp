@@ -2503,6 +2503,10 @@ void FSceneViewFamily::ComputeFamilySize()
 		{
 			MaxFamilyX = FMath::Max(MaxFamilyX, static_cast<float>(View->ResolutionOverrideRect.Max.X));
 			MaxFamilyY = FMath::Max(MaxFamilyY, static_cast<float>(View->ResolutionOverrideRect.Max.Y));
+
+			MaxFamilyLinearX = FMath::Max(MaxFamilyLinearX, static_cast<float>(View->ResolutionOverrideRect.Max.X));
+			MaxFamilyLinearY = FMath::Max(MaxFamilyLinearY, static_cast<float>(View->ResolutionOverrideRect.Max.Y));
+
 			bInitializedExtents = true;
 		}
 		else
