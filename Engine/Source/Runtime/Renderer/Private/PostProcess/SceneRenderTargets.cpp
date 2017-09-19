@@ -1363,7 +1363,12 @@ void FSceneRenderTargets::BeginRenderingTranslucency(FRHICommandList& RHICmdList
 	{
 		// Clear the stencil buffer for ResponsiveAA
 		const FTexture2DRHIRef& DepthSurface = GetSceneDepthSurface();
-		DrawClearQuad(RHICmdList, false, FLinearColor(), false, 0, true, 0, FIntPoint(DepthSurface->GetSizeX(), DepthSurface->GetSizeY()), View.ViewRect);
+		// NVIDIA: possible Unreal bug!
+		// The clear function below actually excludes the view rect which is not what method's looking for.
+		// Also bFirstTimeThisFrame in the original sources equals to ViewIndex == 0 meaning that only
+		// the view 0 will be cleared, however for stereo rendering we need BOTH views
+		// to be cleared. Removing the exclude rect and clear the entire surface.
+		DrawClearQuad(RHICmdList, false, FLinearColor(), false, 0, true, 0, FIntPoint(DepthSurface->GetSizeX(), DepthSurface->GetSizeY()), true ? FIntRect() : View.ViewRect);
 	}
 		
 	if (View.bVRProjectEnabled)
