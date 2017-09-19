@@ -107,7 +107,12 @@ void Main(
 		#endif
 	}
 #if INSTANCED_STEREO
-	Output.PackedEyeIndex = PackEyeIndex(EyeIndex, bIsInstancedStereo);
+	//Shadow Stencil Mask render pass renders each eye separately, however in
+	//the instanced stereo + multires regime the viewport layout is shared between L/R views
+	//so that this regime requires the instanced stereo emulated flag in GS to produce proper viewport masks.
+	//All other regimes have per-eye viewport layout and the flag does not need to be promoted.
+	const bool bIsInstancedStereoEmulatedFGS = MultiResIsActive() ? bIsInstancedStereoEmulated : false;
+	Output.PackedEyeIndex = PackEyeIndex(EyeIndex, bIsInstancedStereo || bIsInstancedStereoEmulatedFGS);
 #endif
 
 #if USE_GLOBAL_CLIP_PLANE

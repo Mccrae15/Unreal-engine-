@@ -606,7 +606,18 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 		// EHartNV : ToDo - follow-up on Nathan's optimization issue
 		// @todo: restrict rendering to the light's screen-space rectangle (as in LightSceneInfo->Proxy->SetScissorRect).
 		// Would need to map the scissor rect to multi-res coordinates, then intersect it with the vr projection scissors.
-		View->BeginVRProjectionStates(RHICmdList);
+		if ((bPreShadow || bSelfShadowOnly) && View->bIsInstancedStereoEnabled && View->VRProjMode == FSceneView::EVRProjectMode::MultiRes)
+		{
+			//for preshadow and selfshadow in multires+instanced stereo regime we need to setup shared stereo viewports
+			//grab shared viewports from the left view since only the left view has ones
+			const FSceneView* LeftView = View->Family->Views[0];
+			RHICmdList.SetMultipleViewports(LeftView->StereoVRProjectViewportArray.Num(), LeftView->StereoVRProjectViewportArray.GetData());
+			RHICmdList.SetMultipleScissorRects(true, LeftView->StereoVRProjectScissorArray.Num(), LeftView->StereoVRProjectScissorArray.GetData());
+		}
+		else
+		{
+			View->BeginVRProjectionStates(RHICmdList);
+		}
 	}
 
 	// If this is a preshadow, mask the projection by the receiver primitives.
@@ -616,7 +627,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 
 		// If instanced stereo is enabled, we need to render each view of the stereo pair using the instanced stereo transform to avoid bias issues.
 		const bool bIsInstancedStereoEmulated = View->bIsInstancedStereoEnabled && !View->bIsMultiViewEnabled && View->StereoPass != eSSP_FULL && !View->bAllowSinglePassStereo;
-		if (bIsInstancedStereoEmulated)
+		if (bIsInstancedStereoEmulated && !View->bVRProjectEnabled)
 		{
 			RHICmdList.SetViewport(0, 0, 0, View->Family->InstancedStereoWidth, View->ViewRect.Max.Y, 1);
 		}
@@ -710,7 +721,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 		}
 
 		// Restore viewport
-		if (bIsInstancedStereoEmulated)
+		if (bIsInstancedStereoEmulated && !View->bVRProjectEnabled)
 		{
 			RHICmdList.SetViewport(View->ViewRect.Min.X, View->ViewRect.Min.Y, 0.0f, View->ViewRect.Max.X, View->ViewRect.Max.Y, 1.0f);
 		}
@@ -930,15 +941,13 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 	{
 		SetupProjectionStencilMask(RHICmdList, View, FrustumVertices, bMobileModulatedProjections, bCameraInsideShadowFrustum);
 	}
-	else
+
+	if (View->bVRProjectEnabled)
 	{
-		if (View->bVRProjectEnabled)
-		{
-			// EHartNV : ToDo - follow-up on Nathan's optimization issue
-			// @todo: restrict rendering to the light's screen-space rectangle (as in LightSceneInfo->Proxy->SetScissorRect).
-			// Would need to map the scissor rect to multi-res coordinates, then intersect it with the vr projection scissors.
-			View->BeginVRProjectionStates(RHICmdList);
-		}
+		// EHartNV : ToDo - follow-up on Nathan's optimization issue
+		// @todo: restrict rendering to the light's screen-space rectangle (as in LightSceneInfo->Proxy->SetScissorRect).
+		// Would need to map the scissor rect to multi-res coordinates, then intersect it with the vr projection scissors.
+		View->BeginVRProjectionStates(RHICmdList);
 	}
 
 	// solid rasterization w/ back-face culling.
