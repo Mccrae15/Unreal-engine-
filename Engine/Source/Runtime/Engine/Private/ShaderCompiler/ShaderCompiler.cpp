@@ -2684,6 +2684,8 @@ void GlobalBeginCompileShader(
 	// #defines get stripped out by the preprocessor without this. We can override with this
 	Input.Environment.SetDefine(TEXT("COMPILER_DEFINE"), TEXT("#define"));
 
+	bool bDisallowUnusedInterpolatorsRemoval = false;
+
 	// Set VR definitions
 	{
 		static const auto CVarInstancedStereo = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.InstancedStereo"));
@@ -2728,6 +2730,8 @@ void GlobalBeginCompileShader(
 		{
 			UE_LOG(LogShaderCompilers, Warning, TEXT("MultiRes rendering is not supported on this platform."));
 		}
+
+		bDisallowUnusedInterpolatorsRemoval |= bIsMultiRes;
 	}
 
 	// Set lens matched shading define
@@ -2743,6 +2747,8 @@ void GlobalBeginCompileShader(
 		{
 			UE_LOG(LogShaderCompilers, Warning, TEXT("Lens Matched Shading rendering is not supported on this platform."));
 		}
+
+		bDisallowUnusedInterpolatorsRemoval |= bIsLensMatched;
 	}
 
 	// Set SinglePassStereo define
@@ -2758,6 +2764,8 @@ void GlobalBeginCompileShader(
 		{
 			UE_LOG(LogShaderCompilers, Warning, TEXT("SinglePassStereo is not supported on this platform."));
 		}
+
+		bDisallowUnusedInterpolatorsRemoval |= bIsSinglePassStereo;
 	}
 
 	ShaderType->AddReferencedUniformBufferIncludes(Input.Environment, Input.SourceFilePrefix, (EShaderPlatform)Target.Platform);
@@ -2799,7 +2807,7 @@ void GlobalBeginCompileShader(
 		}
 	}
 
-	if (IsD3DPlatform((EShaderPlatform)Target.Platform, false))
+	if (IsD3DPlatform((EShaderPlatform)Target.Platform, false) && !bDisallowUnusedInterpolatorsRemoval)
 	{
 		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.D3D.RemoveUnusedInterpolators"));
 		if (CVar && CVar->GetInt() != 0)
