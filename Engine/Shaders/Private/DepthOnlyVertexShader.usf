@@ -229,10 +229,15 @@ void Main(
 	Output.FactoryInterpolants = VertexFactoryGetInterpolants(Input, VFIntermediates, VertexParameters);
 
 #if INSTANCED_STEREO
+	//Shadow Stencil Mask render pass renders each eye separately, however in
+	//the instanced stereo + multires regime the viewport layout is shared between L/R views
+	//so that this regime requires the instanced stereo emulated flag in GS to produce proper viewport masks.
+	//All other regimes have per-eye viewport layout and the flag does not need to be promoted.
+	const bool bIsInstancedStereoEmulatedFGS = MultiResIsActive() ? bIsInstancedStereoEmulated : false;
 	#if USING_TESSELLATION	
-		Output.FactoryInterpolants.InterpolantsVSToPS.PackedEyeIndex = PackEyeIndex(EyeIndex, bIsInstancedStereo);
+		Output.FactoryInterpolants.InterpolantsVSToPS.PackedEyeIndex = PackEyeIndex(EyeIndex, bIsInstancedStereo || bIsInstancedStereoEmulatedFGS);
 	#else
-		Output.FactoryInterpolants.PackedEyeIndex = PackEyeIndex(EyeIndex, bIsInstancedStereo);
+		Output.FactoryInterpolants.PackedEyeIndex = PackEyeIndex(EyeIndex, bIsInstancedStereo || bIsInstancedStereoEmulatedFGS);
 	#endif
 #endif
 
