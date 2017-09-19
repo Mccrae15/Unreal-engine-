@@ -84,6 +84,8 @@ void FSceneRenderer::RenderModifiedWBoundaryMask(FRHICommandListImmediate& RHICm
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 	GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(*GeometryShader);
+	GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
+
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 	RHICmdList.SetStencilRef(StencilRef);
 
