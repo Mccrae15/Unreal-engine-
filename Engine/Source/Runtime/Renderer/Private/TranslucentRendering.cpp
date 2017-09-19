@@ -1237,6 +1237,9 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 			View.ViewState->TranslucencyTimer.Begin(RHICmdList);
 		}
 #endif
+		// For MGPU we need to clear both views because RTs live on different GPUs.
+		static const auto EnableMultiGPUVRCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MGPU"));
+		const bool bFirstTimeThisFrame = (EnableMultiGPUVRCVar->GetValueOnRenderThread() > 0) ? true : ViewIndex == 0;
 
 		FDrawingPolicyRenderState DrawRenderState(View);
 
@@ -1254,7 +1257,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 			{
 				BeginTimingSeparateTranslucencyPass(RHICmdList, View);
 			}
-			SceneContext.BeginRenderingSeparateTranslucency(RHICmdList, View, ViewIndex == 0);
+			SceneContext.BeginRenderingSeparateTranslucency(RHICmdList, View, bFirstTimeThisFrame);
 
 			// Draw only translucent prims that are in the SeparateTranslucency pass
 			DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
@@ -1287,7 +1290,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 		}
 		else
 		{
-			SceneContext.BeginRenderingTranslucency(RHICmdList, View, ViewIndex == 0);
+			SceneContext.BeginRenderingTranslucency(RHICmdList, View, bFirstTimeThisFrame);
 			DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
 	
 			if (bUseParallel)
