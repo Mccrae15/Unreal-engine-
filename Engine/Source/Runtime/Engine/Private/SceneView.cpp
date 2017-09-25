@@ -2501,8 +2501,11 @@ void FSceneViewFamily::ComputeFamilySize()
 
 		if (View->ResolutionOverrideRect.Area() > 0)
 		{
-			MaxFamilyX = FMath::Max(MaxFamilyX, static_cast<float>(View->ResolutionOverrideRect.Max.X));
-			MaxFamilyY = FMath::Max(MaxFamilyY, static_cast<float>(View->ResolutionOverrideRect.Max.Y));
+			const float XScale = (float)View->ViewRect.Max.X/(float)View->NonVRProjectViewRect.Max.X;
+			const float YScale = (float)View->ViewRect.Max.Y/(float)View->NonVRProjectViewRect.Max.Y;
+
+			MaxFamilyX = FMath::Max(MaxFamilyX, static_cast<float>(View->ResolutionOverrideRect.Max.X)*XScale);
+			MaxFamilyY = FMath::Max(MaxFamilyY, static_cast<float>(View->ResolutionOverrideRect.Max.Y)*YScale);
 
 			MaxFamilyLinearX = FMath::Max(MaxFamilyLinearX, static_cast<float>(View->ResolutionOverrideRect.Max.X));
 			MaxFamilyLinearY = FMath::Max(MaxFamilyLinearY, static_cast<float>(View->ResolutionOverrideRect.Max.Y));

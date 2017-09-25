@@ -11,6 +11,7 @@
 
 namespace OculusHMD
 {
+extern float GetLMSUnwarpScale();
 
 //-------------------------------------------------------------------------------------------------
 // FOvrpLayer
@@ -90,6 +91,24 @@ void FLayer::SetEyeLayerDesc(const ovrpLayerDesc_EyeFov& InEyeLayerDesc, const o
 	for(int eye = 0; eye < ovrpEye_Count; eye++)
 	{
 		OvrpLayerSubmit.ViewportRect[eye] = InViewportRect[eye];
+	}
+
+	// override eye layer RT and submit params
+	if (Id == 0)
+	{
+		const float Scale = GetLMSUnwarpScale();
+
+		OvrpLayerDesc.EyeFov.TextureSize.w *= Scale;
+		OvrpLayerDesc.EyeFov.TextureSize.h *= Scale;
+
+		for (int eye = 0; eye < ovrpEye_Count; eye++)
+		{
+			OvrpLayerSubmit.ViewportRect[eye].Pos.x *= Scale;
+			OvrpLayerSubmit.ViewportRect[eye].Pos.y *= Scale;
+
+			OvrpLayerSubmit.ViewportRect[eye].Size.w *= Scale;
+			OvrpLayerSubmit.ViewportRect[eye].Size.h *= Scale;
+		}
 	}
 }
 
