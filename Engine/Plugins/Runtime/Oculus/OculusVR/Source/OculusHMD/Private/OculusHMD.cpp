@@ -63,7 +63,7 @@ namespace OculusHMD
 	}
 #endif // !UE_BUILD_SHIPPING
 
-	static float GetLMSUnwarpScale()
+	float GetLMSUnwarpScale()
 	{
 		static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
 		static const auto CVarLensMatchedShadingRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingRendering"));
@@ -263,8 +263,10 @@ namespace OculusHMD
 			return;
 		}
 
-		InOutSizeX = Settings->RenderTargetSize.X;
-		InOutSizeY = Settings->RenderTargetSize.Y;
+		const float Scale = GetLMSUnwarpScale();
+
+		InOutSizeX = Settings->RenderTargetSize.X*Scale;
+		InOutSizeY = Settings->RenderTargetSize.Y*Scale;
 
 		check(InOutSizeX != 0 && InOutSizeY != 0);
 	}
@@ -2542,7 +2544,7 @@ namespace OculusHMD
 		ovrpLayerDesc_EyeFov EyeLayerDesc;
 		if (OVRP_SUCCESS(ovrp_CalculateEyeLayerDesc(
 			Layout,
-			(Settings->bPixelDensityAdaptive ? Settings->PixelDensityMax : Settings->PixelDensity)*GetLMSUnwarpScale(),
+			Settings->bPixelDensityAdaptive ? Settings->PixelDensityMax : Settings->PixelDensity,
 			Settings->Flags.bHQDistortion ? 0 : 1,
 			1, // UNDONE
 			CustomPresent->GetOvrpTextureFormat(CustomPresent->GetDefaultPixelFormat(), true),
@@ -2561,7 +2563,9 @@ namespace OculusHMD
 
 			EyeLayer->SetEyeLayerDesc(EyeLayerDesc, vpRect);
 
-			Settings->RenderTargetSize = FIntPoint(rtSize.w, rtSize.h);
+			const float Scale = GetLMSUnwarpScale();
+
+			Settings->RenderTargetSize = FIntPoint(rtSize.w*Scale, rtSize.h*Scale);
 			Settings->EyeRenderViewport[0].Min = FIntPoint(vpRect[0].Pos.x, vpRect[0].Pos.y);
 			Settings->EyeRenderViewport[0].Max = Settings->EyeRenderViewport[0].Min + FIntPoint(vpRect[0].Size.w, vpRect[0].Size.h);
 			Settings->EyeRenderViewport[1].Min = FIntPoint(vpRect[1].Pos.x, vpRect[1].Pos.y);

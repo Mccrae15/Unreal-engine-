@@ -329,11 +329,7 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 	{
 		DestRect = View.NonVRProjectViewRect;
 
-		// HACK!
-		// In the Oculus backend view rects are calculated internally in the OVRPlugin and so have correct extents
-		// SteamVR (and likely other HMD plugins) scales only render target extent so we must upscale view rects here
-		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched
-			&& GEngine->HMDDevice->GetHMDDeviceType() != EHMDDeviceType::DT_OculusRift)
+		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
 		{
 			static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
 			const float UpscaleScale = CVarLensMatchedShadingUnwarpScale->GetValueOnRenderThread();
@@ -362,8 +358,19 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 		{
 			if (View.StereoPass == eSSP_RIGHT_EYE)
 			{
-				DestRect.Min.X += 2 * ViewportGap;
-				DestRect.Max.X += 2 * ViewportGap;
+				if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+				{
+					static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
+					float Scale = CVarLensMatchedShadingUnwarpScale->GetValueOnRenderThread();
+
+					DestRect.Min.X += 2 * ViewportGap * Scale;
+					DestRect.Max.X += 2 * ViewportGap * Scale;
+				}
+				else
+				{
+					DestRect.Min.X += 2 * ViewportGap;
+					DestRect.Max.X += 2 * ViewportGap;
+				}
 			}
 		}
 	}
