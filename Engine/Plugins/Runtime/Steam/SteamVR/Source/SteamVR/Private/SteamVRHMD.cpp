@@ -1218,6 +1218,28 @@ FMatrix FSteamVRHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass Ster
 	float Left, Right, Top, Bottom;
 
 	VRSystem->GetProjectionRaw(HmdEye, &Right, &Left, &Top, &Bottom);
+
+	//NVIDIA SPS WAR! For SPS we need to align right eye's vertical fov with left eye's vertical fov since we only support horizontal shift
+	//TODO: disable this code for n-view!
+	static const auto CVarSPS = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereo"));
+	static const auto CVarSPSRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereoRendering"));
+	if (CVarSPS->GetValueOnAnyThread() > 0 && CVarSPSRendering->GetValueOnAnyThread() > 0)
+	{
+		#define SPS_VFOV_AVERAGE 0
+		#if !SPS_VFOV_AVERAGE
+		//this way only the non-SPS passes will be affected and SPS passes will be rendered in the way they were rendered before the fix
+		float Dummy;
+		VRSystem->GetProjectionRaw(vr::Eye_Left, &Dummy, &Dummy, &Top, &Bottom);
+		#else
+		//this way both eye' fovs will be affected and the final image will be different from the image we had before the fix
+		float Dummy, LTop, LBottom, RTop, RBottom;
+		VRSystem->GetProjectionRaw(vr::Eye_Left, &Dummy, &Dummy, &LTop, &LBottom);
+		VRSystem->GetProjectionRaw(vr::Eye_Right, &Dummy, &Dummy, &RTop, &RBottom);
+		Top = (LTop + RTop) / 2.f;
+		Bottom = (LBottom + RBottom) / 2.f;
+		#endif
+	}
+
 	Bottom *= -1.0f;
 	Top *= -1.0f;
 	Right *= -1.0f;
