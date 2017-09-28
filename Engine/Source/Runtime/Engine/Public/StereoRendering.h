@@ -47,6 +47,14 @@ public:
 	virtual int32 GetViewportGap() const { return 0; }
 
 	/**
+	* Returns the top halfview and bottom halfview scale coefficients to compensate the vertical FOV change that can be introduced by stereo rendering method
+	*/
+	virtual void GetTopBottomScaleCoefficients(const enum EStereoscopicPass StereoPassType, float& OutTopScale, float& OutBottomScale) const
+	{
+		OutTopScale = OutBottomScale = 1.f;
+	}
+
+	/**
 	 * Gets the percentage bounds of the safe region to draw in.  This allows things like stat rendering to appear within the readable portion of the stereo view.
 	 * @return	The centered percentage of the view that is safe to draw readable text in
 	 */

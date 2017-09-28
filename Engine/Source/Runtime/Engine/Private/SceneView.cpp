@@ -2627,6 +2627,23 @@ void FSceneView::SetupVRProjection(int32 ViewportGap)
 
 	bVRProjectEnabled = MultiResLevel > 0 || LensMatchedShadingLevel > 0;
 
+	static const auto CVarSPS = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereo"));
+	static const auto CVarSPSRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereoRendering"));
+	if (GEngine->StereoRenderingDevice.IsValid() && GSupportsSinglePassStereo
+		&& CVarSPS->GetValueOnAnyThread() > 0 && CVarSPSRendering->GetValueOnAnyThread() > 0)
+	{
+		float TopScale, BottomScale;
+		GEngine->StereoRenderingDevice->GetTopBottomScaleCoefficients(StereoPass, TopScale, BottomScale);
+
+		const int32 HalfViewHeight = ViewRect.Height() / 2;
+
+		const float TopHalfViewHeightHMD = HalfViewHeight*TopScale;
+		const float BottomHalfViewHeightHMD = HalfViewHeight*BottomScale;
+
+		ViewRect.Min.Y = FMath::FloorToInt(HalfViewHeight - TopHalfViewHeightHMD);
+		ViewRect.Max.Y = FMath::FloorToInt(HalfViewHeight + BottomHalfViewHeightHMD); //should be ceil but it gives worse visual results
+	}
+
 	if (bVRProjectEnabled)
 	{
 		if (LensMatchedShadingLevel > 0) // Select ModifiedW over MultiRes if they are enabled at the same time.
