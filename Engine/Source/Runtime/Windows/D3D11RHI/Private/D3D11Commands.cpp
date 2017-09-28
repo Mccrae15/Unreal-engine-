@@ -231,11 +231,14 @@ void FD3D11DynamicRHI::RHIDispatchIndirectComputeShader(FVertexBufferRHIParamRef
 	StateCache.SetComputeShader(nullptr);
 }
 
-void FD3D11DynamicRHI::RHISetViewport(uint32 MinX,uint32 MinY,float MinZ,uint32 MaxX,uint32 MaxY,float MaxZ)
+void FD3D11DynamicRHI::RHISetViewport(uint32 InMinX,uint32 InMinY,float MinZ,uint32 MaxX,uint32 MaxY,float MaxZ)
 {
+	int32 MinX = (int32)(InMinX);
+	int32 MinY = (int32)(InMinY);
+
 	// These are the maximum viewport extents for D3D11. Exceeding them leads to badness.
-	check(MinX <= (uint32)D3D11_VIEWPORT_BOUNDS_MAX);
-	check(MinY <= (uint32)D3D11_VIEWPORT_BOUNDS_MAX);
+	check(MinX >= (int32)D3D11_VIEWPORT_BOUNDS_MIN);
+	check(MinY >= (int32)D3D11_VIEWPORT_BOUNDS_MIN);
 	check(MaxX <= (uint32)D3D11_VIEWPORT_BOUNDS_MAX);
 	check(MaxY <= (uint32)D3D11_VIEWPORT_BOUNDS_MAX);
 
