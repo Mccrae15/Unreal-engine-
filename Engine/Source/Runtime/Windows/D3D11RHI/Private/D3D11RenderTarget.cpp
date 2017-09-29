@@ -10,6 +10,7 @@
 #include "RHIStaticStates.h"
 #include "ResolveShader.h"
 #include "PipelineStateCache.h"
+#include "VRWorks.h"
 
 static inline DXGI_FORMAT ConvertTypelessToUnorm(DXGI_FORMAT Format)
 {
@@ -382,7 +383,7 @@ void FD3D11DynamicRHI::RHICopyToResolveTarget(FTextureRHIParamRef SourceTextureR
 
 void FD3D11DynamicRHI::RHICopyResourceToGPU(FTextureRHIParamRef SourceTextureRHI, FTextureRHIParamRef DestTextureRHI, uint32 DestGPUIndex, uint32 SrcGPUIndex, const FResolveParams& ResolveParams)
 {
-	if (MultiGPUDevice && GRHISupportsMultipleGPUStereo)
+	if (MultiGPUDevice && FVRWorks::IsVRSLIEnabled())
 	{
 		if (!SourceTextureRHI || !DestTextureRHI)
 		{

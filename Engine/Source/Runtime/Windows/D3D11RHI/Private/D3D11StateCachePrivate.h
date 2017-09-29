@@ -4,6 +4,7 @@
 //	thread performance by removing redundant device context calls.
 
 #pragma once
+#include "VRWorks.h"
 
 //-----------------------------------------------------------------------------
 //	Configuration
@@ -365,7 +366,7 @@ public:
 		if (Direct3DDeviceMultiGPU)
 		{
 			// Ignore GD3D11SkipStateCaching, since GPUMask always applies to all GPUs.
-			if (GPUMask != State && (GRHISupportsMultipleGPUStereo || State == 0))
+			if (GPUMask != State && (FVRWorks::IsVRSLIEnabled() || State == 0))
 			{
 				GPUMask = State;
 				Direct3DDeviceMultiGPU->SetGPUMask(State);

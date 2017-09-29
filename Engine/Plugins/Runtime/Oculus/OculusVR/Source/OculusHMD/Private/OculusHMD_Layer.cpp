@@ -11,7 +11,6 @@
 
 namespace OculusHMD
 {
-extern float GetLMSUnwarpScale();
 
 //-------------------------------------------------------------------------------------------------
 // FOvrpLayer
@@ -96,7 +95,7 @@ void FLayer::SetEyeLayerDesc(const ovrpLayerDesc_EyeFov& InEyeLayerDesc, const o
 	// override eye layer RT and submit params
 	if (Id == 0)
 	{
-		const float Scale = GetLMSUnwarpScale();
+		const float Scale = FVRWorks::GetLensMatchedShadingUnwarpScale();
 
 		OvrpLayerDesc.EyeFov.TextureSize.w *= Scale;
 		OvrpLayerDesc.EyeFov.TextureSize.h *= Scale;

@@ -10,6 +10,7 @@
 #include "DecalRenderingShared.h"
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
+#include "VRWorks.h"
 
 
 static TAutoConsoleVariable<int32> CVarGenerateDecalRTWriteMaskTexture(
@@ -684,7 +685,7 @@ void FRCPassPostProcessDeferredDecals::Process(FRenderingCompositePassContext& C
 
 			// we assume views are non overlapping, then we need to clear only once in the beginning, otherwise we would need to set scissor rects
 			// and don't get FastClear any more.
-			bool bFirstView = Context.View.Family->Views[0] == &Context.View || GRHISupportsMultipleGPUStereo;
+			bool bFirstView = Context.View.Family->Views[0] == &Context.View || FVRWorks::IsVRSLIEnabled();
 
 			if (bFirstView)
 			{

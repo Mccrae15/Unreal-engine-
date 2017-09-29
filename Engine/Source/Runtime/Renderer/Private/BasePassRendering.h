@@ -27,6 +27,7 @@
 #include "EditorCompositeParams.h"
 #include "PlanarReflectionRendering.h"
 #include "UnrealEngine.h"
+#include "VRWorks.h"
 
 class FScene;
 
@@ -550,7 +551,7 @@ public:
 	static bool ShouldCache(EShaderPlatform Platform, const FMaterial* Material, const FVertexFactoryType* VertexFactoryType)
 	{
 		// Re-use vertex shader gating
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && TBasePassVS<LightMapPolicyType, false>::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && TBasePassVS<LightMapPolicyType, false>::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
 	}
 
 	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
@@ -997,7 +998,7 @@ void GetBasePassShaders(
 		}
 	}
 
-	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[Material.GetFeatureLevel()]) && IsFastGSNeeded();
+	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[Material.GetFeatureLevel()]) && FVRWorks::IsFastGSNeeded();
 
 	FastGeometryShader = bMultiRes ? Material.GetShader<TBasePassFastGS<LightMapPolicyType> >(VertexFactoryType) : nullptr;
 

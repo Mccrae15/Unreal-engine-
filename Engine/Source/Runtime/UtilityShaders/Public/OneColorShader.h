@@ -8,6 +8,7 @@
 #include "Shader.h"
 #include "GlobalShader.h"
 #include "SceneView.h"
+#include "VRWorks.h"
 
 /**
  * Vertex shader for rendering a single, constant color.
@@ -79,7 +80,7 @@ public:
 
 	static bool ShouldCache(EShaderPlatform Platform)
 	{
-		return  RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+		return  RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
 	}
 
 	static const TCHAR* GetSourceFilename()

@@ -1238,8 +1238,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 		}
 #endif
 		// For MGPU we need to clear both views because RTs live on different GPUs.
-		static const auto EnableMultiGPUVRCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MGPU"));
-		const bool bFirstTimeThisFrame = (EnableMultiGPUVRCVar->GetValueOnRenderThread() > 0) ? true : ViewIndex == 0;
+		const bool bFirstTimeThisFrame = FVRWorks::IsVRSLIEnabled() ? true : ViewIndex == 0;
 
 		FDrawingPolicyRenderState DrawRenderState(View);
 

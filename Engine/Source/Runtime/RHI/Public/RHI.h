@@ -386,9 +386,6 @@ extern RHI_API EPixelFormat GRHIHDRDisplayOutputFormat;
 /** True if the RHI supports pascal features */
 extern RHI_API bool GSupportsSinglePassStereo;
 
-/** True if the RHI supports multiple GPUs for stereo rendering. **/
-extern RHI_API bool GRHISupportsMultipleGPUStereo;
-
 /** Called once per frame only from within an RHI. */
 extern RHI_API void RHIPrivateBeginFrame();
 

@@ -26,6 +26,7 @@
 #include "Materials/Material.h"
 #include "PipelineStateCache.h"
 #include "ScenePrivate.h"
+#include "VRWorks.h"
 
 DECLARE_FLOAT_COUNTER_STAT(TEXT("Distortion"), Stat_GPU_Distortion, STATGROUP_GPU);
 
@@ -345,7 +346,7 @@ protected:
 	static bool ShouldCache(EShaderPlatform Platform, const FMaterial* Material, const FVertexFactoryType* VertexFactoryType)
 	{
 		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5)
-			&& DistortMeshPolicy::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+			&& DistortMeshPolicy::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
 	}
 
 	static bool IsFastGeometryShader()
@@ -561,7 +562,7 @@ TDistortionMeshDrawingPolicy<DistortMeshPolicy>::TDistortionMeshDrawingPolicy(
 
 	VertexShader = InMaterialResource.GetShader<TDistortionMeshVS<DistortMeshPolicy> >(InVertexFactory->GetType());
 
-	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && IsFastGSNeeded();
+	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && FVRWorks::IsFastGSNeeded();
 	FastGeometryShader = bMultiRes ? InMaterialResource.GetShader<TDistortionMeshFastGS<DistortMeshPolicy> >(InVertexFactory->GetType()) : nullptr;
 
 	if (bInitializeOffsets)

@@ -13,6 +13,7 @@
 #include "DebugViewModeRendering.h"
 #include "ScenePrivate.h"
 #include "PipelineStateCache.h"
+#include "VRWorks.h"
 
 static TAutoConsoleVariable<float> CVarDecalFadeScreenSizeMultiplier(
 	TEXT("r.Decal.FadeScreenSizeMult"),
@@ -100,7 +101,7 @@ class FDeferredDecalFastGS : public FGlobalShader
 public:
 	static bool ShouldCache(EShaderPlatform Platform)
 	{
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
 	}
 
 	FDeferredDecalFastGS() {}

@@ -24,6 +24,7 @@
 #include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/PostProcessing.h"
 #include "PipelineStateCache.h"
+#include "VRWorks.h"
 
 
 enum class EVisualisePSType
@@ -248,11 +249,6 @@ template<EVisualisePSType TextureType> void VisualizeTextureForTextureType(FRHIC
 	PixelShader->SetParameters(RHICmdList, Data);
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 
-	static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
-	static const auto CVarLensMatchedShadingRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingRendering"));
-	bool bLensMatchedShadeEnabled = GSupportsFastGeometryShader && GSupportsModifiedW &&
-		CVarLensMatchedShading && CVarLensMatchedShading->GetValueOnRenderThread() && CVarLensMatchedShadingRendering && CVarLensMatchedShadingRendering->GetValueOnRenderThread() > 0;
-
 	DrawRectangle(
 		RHICmdList,
 		// XY
@@ -268,7 +264,7 @@ template<EVisualisePSType TextureType> void VisualizeTextureForTextureType(FRHIC
 		// TextureSize
 		FIntPoint(1, 1),
 		*VertexShader,
-		bLensMatchedShadeEnabled ? EDRF_Default : EDRF_UseTriangleOptimization,
+		FVRWorks::GetLensMatchedShadingLevel() ? EDRF_Default : EDRF_UseTriangleOptimization,
 		1,
 		true);
 }
