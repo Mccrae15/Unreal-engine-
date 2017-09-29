@@ -408,7 +408,8 @@ void FRCPassPostProcessDownsample::Process(FRenderingCompositePassContext& Conte
 			*VertexShader,
 			View.StereoPass,
 			false, // This pass is input for passes that can't use the hmd mask, so we need to disable it to ensure valid input data
-			EDRF_UseTriangleOptimization);
+			EDRF_UseTriangleOptimization,
+			OverrideToLinear);
 
 		Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
 	}
