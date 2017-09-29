@@ -9,6 +9,7 @@ ModifiedWBoundaryMask.cpp: Shaders and code for rendering ModifiedW boundary mas
 #include "RHIStaticStates.h"
 #include "DeferredShadingRenderer.h"
 #include "PipelineStateCache.h"
+#include "VRWorks.h"
 
 /**
 * ModifiedW will cause scene objects that were originally outside of the viewing frustum to become visible due to the W component
@@ -49,10 +50,8 @@ class FModifiedWBoundaryMaskFGS : public FGlobalShader
 public:
 	static bool ShouldCache(EShaderPlatform Platform)
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
-		static const bool bLMSShaders = CVar->GetValueOnAnyThread() != 0;
-
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && bLMSShaders;
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform)
+			&& FVRWorks::IsLensMatchedShadingSupportEnabled();
 	}
 
 	FModifiedWBoundaryMaskFGS()

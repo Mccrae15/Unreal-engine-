@@ -9,6 +9,7 @@
 #include "DeferredShadingRenderer.h"
 #include "DynamicPrimitiveDrawing.h"
 #include "ScenePrivate.h"
+#include "VRWorks.h"
 
 // Changing this causes a full shader recompile
 static TAutoConsoleVariable<int32> CVarSelectiveBasePassOutputs(
@@ -769,7 +770,7 @@ void GetUniformBasePassShaders(
 
 	const FMeshMaterialShaderMap* MaterialMeshShaderMap = Material.GetRenderingThreadShaderMap()->GetMeshShaderMap(VertexFactoryType);
 	const bool bNeedsFastGS = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[Material.GetFeatureLevel()]) &&
-								IsFastGSNeeded() &&
+								FVRWorks::IsFastGSNeeded() &&
 								MaterialMeshShaderMap->HasShader(&TBasePassFastGS<TUniformLightMapPolicy<Policy> >::StaticType);
 	if (bNeedsFastGS)
 	{
@@ -855,7 +856,7 @@ void GetBasePassShaders<FUniformLightMapPolicy>(
 
 static void SetupPassViewScissorAndMaskBasePass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
 {
-	if (GRHISupportsMultipleGPUStereo && View.StereoPass != eSSP_FULL)
+	if (FVRWorks::IsVRSLIEnabled() && View.StereoPass != eSSP_FULL)
 	{
 		// note: we need to be sure the scissor rect is not enabled downstream. 
 		RHICmdList.SetGPUMask(View.StereoPass);

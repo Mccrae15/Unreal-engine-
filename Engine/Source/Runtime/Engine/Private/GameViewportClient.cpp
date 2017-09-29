@@ -54,6 +54,7 @@
 #include "ActorEditorUtils.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "Framework/Application/HardwareCursor.h"
+#include "VRWorks.h"
 
 #define LOCTEXT_NAMESPACE "GameViewport"
 
@@ -1459,8 +1460,12 @@ void UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 			bShowUI = true;
 		}
 
+		static const auto CVarScreenPercentage = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.ScreenPercentage"));
+		const float ViewportScale = CVarScreenPercentage->GetValueOnGameThread()*FVRWorks::GetLensMatchedShadingUnwarpScale() / 100.f;
+
 		bool bScreenshotSuccessful = false;
-		FIntVector Size(InViewport->GetSizeXY().X, InViewport->GetSizeXY().Y, 0);
+		const FIntRect ViewportRect = FIntRect(FIntPoint(0, 0), InViewport->GetSizeXY()).Scale(ViewportScale);
+		FIntVector Size(ViewportRect.Width(), ViewportRect.Height(), 0);
 		if( bShowUI && FSlateApplication::IsInitialized() )
 		{
 			TSharedRef<SWidget> WindowRef = WindowPtr.ToSharedRef();
@@ -1470,7 +1475,7 @@ void UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 		}
 		else
 		{
-			bScreenshotSuccessful = GetViewportScreenShot(InViewport, Bitmap);
+			bScreenshotSuccessful = GetViewportScreenShot(InViewport, Bitmap, ViewportRect);
 		}
 
 		if (bScreenshotSuccessful)

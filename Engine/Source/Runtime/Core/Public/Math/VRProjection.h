@@ -284,5 +284,3 @@ struct FLensMatchedShading : public FVRProjection
 
 	static CORE_API void CalculateRemapCBData(const Configuration*	Conf, const Viewports* Viewports, RemapCBData* RefCBData);
 };
-
-extern CORE_API bool IsFastGSNeeded();

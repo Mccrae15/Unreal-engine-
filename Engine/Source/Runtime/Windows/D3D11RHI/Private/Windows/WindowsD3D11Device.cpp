@@ -627,15 +627,6 @@ static uint32 CountAdapterOutputs(TRefCountPtr<IDXGIAdapter>& Adapter)
 	return OutputCount;
 }
 
-static void SetMultipleGPUVRHandler()
-{
-	static const auto EnableMultiGPUVRCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MGPU"));
-
-	GRHISupportsMultipleGPUStereo = EnableMultiGPUVRCVar->GetValueOnGameThread() != 0 && (GNumExplicitGPUsForRendering > 1);
-}
-
-FAutoConsoleVariableSink CVarSetClockRateSink(FConsoleCommandDelegate::CreateStatic(&SetMultipleGPUVRHandler));
-
 void FD3D11DynamicRHIModule::FindAdapter()
 {
 	// Once we chosen one we don't need to do it again.
@@ -1084,8 +1075,6 @@ void FD3D11DynamicRHI::InitD3DDevice()
 				MultiGPUCaps.nSLIGPUs));
 
 			GNumExplicitGPUsForRendering = MultiGPUCaps.nSLIGPUs;
-
-			SetMultipleGPUVRHandler();
 		}
 		else
 		{

@@ -16,6 +16,7 @@
 #include "PipelineStateCache.h"
 #include "StereoRendering.h"
 #include "HeadMountedDisplay.h"
+#include "VRWorks.h"
 
 static TAutoConsoleVariable<float> CVarUpscaleSoftness(
 	TEXT("r.Upscale.Softness"),
@@ -331,11 +332,10 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 
 		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
 		{
-			static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
-			const float UpscaleScale = CVarLensMatchedShadingUnwarpScale->GetValueOnRenderThread();
+			const float UnwarpScale = FVRWorks::GetLensMatchedShadingUnwarpScale();
 
-			DestRect = DestRect.Scale(UpscaleScale);
-			FullClearRect = FullClearRect.Scale(UpscaleScale);
+			DestRect = DestRect.Scale(UnwarpScale);
+			FullClearRect = FullClearRect.Scale(UnwarpScale);
 		}
 	}
 
@@ -360,8 +360,7 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 			{
 				if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
 				{
-					static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
-					float Scale = CVarLensMatchedShadingUnwarpScale->GetValueOnRenderThread();
+					const float Scale = FVRWorks::GetLensMatchedShadingUnwarpScale();
 
 					DestRect.Min.X += 2 * ViewportGap * Scale;
 					DestRect.Max.X += 2 * ViewportGap * Scale;

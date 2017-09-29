@@ -20,6 +20,7 @@
 
 #include "EngineAnalytics.h"
 #include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+#include "VRWorks.h"
 
 #if WITH_EDITOR
 #include "Editor/UnrealEd/Classes/Editor/EditorEngine.h"
@@ -1393,30 +1394,12 @@ void FSteamVRHMD::CalculateRenderTargetSize(const class FViewport& Viewport, uin
 //	if (Flags.bScreenPercentageEnabled)
 	{
 		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.ScreenPercentage"));
-		float value = CVar->GetValueOnGameThread();
+		const float Scale = CVar->GetValueOnGameThread()*FVRWorks::GetLensMatchedShadingUnwarpScale();
 
-		static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
-		static const auto CVarLensMatchedShadingRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingRendering"));
-		bool bLensMatchedShadeEnabled = GSupportsFastGeometryShader && GSupportsModifiedW &&
-			CVarLensMatchedShading && CVarLensMatchedShading->GetValueOnGameThread() && CVarLensMatchedShadingRendering->GetValueOnGameThread() > 0;
-
-		if (bLensMatchedShadeEnabled)
+		if (Scale > 0.0f)
 		{
-			static const auto CVarLensMatchedShadingResScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingResolutionScaling"));
-			float LensMatchedShadeResScale = CVarLensMatchedShadingResScale->GetValueOnGameThread();
-
-			value *= LensMatchedShadeResScale;
-
-			static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
-			float Scale = CVarLensMatchedShadingUnwarpScale->GetValueOnGameThread();
-
-			value *= Scale; // Enlarge the buffer to keep the upsampled view center sharp
-		}
-
-		if (value > 0.0f)
-		{
-			InOutSizeX = FMath::CeilToInt(InOutSizeX * value / 100.f);
-			InOutSizeY = FMath::CeilToInt(InOutSizeY * value / 100.f);
+			InOutSizeX = FMath::CeilToInt(InOutSizeX * Scale / 100.f);
+			InOutSizeY = FMath::CeilToInt(InOutSizeY * Scale / 100.f);
 		}
 	}
 }

@@ -35,6 +35,7 @@
 #endif
 #include "Runtime/UtilityShaders/Public/OculusShaders.h"
 #include "PipelineStateCache.h"
+#include "VRWorks.h"
 
 #if WITH_EDITOR
 #include "Editor/UnrealEd/Classes/Editor/EditorEngine.h"
@@ -62,22 +63,6 @@ namespace OculusHMD
 		GLog->Logf(TEXT("OCULUS:%s %s"), levelStr, *tbuf);
 	}
 #endif // !UE_BUILD_SHIPPING
-
-	float GetLMSUnwarpScale()
-	{
-		static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
-		static const auto CVarLensMatchedShadingRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingRendering"));
-		bool bLensMatchedShadeEnabled = GSupportsFastGeometryShader && GSupportsModifiedW &&
-			CVarLensMatchedShading && CVarLensMatchedShading->GetValueOnGameThread() && CVarLensMatchedShadingRendering->GetValueOnGameThread() > 0;
-
-		if (bLensMatchedShadeEnabled)
-		{
-			static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
-			return CVarLensMatchedShadingUnwarpScale->GetValueOnGameThread();
-		}
-
-		return 1.f;
-	}
 
 	//-------------------------------------------------------------------------------------------------
 	// FOculusHMD
@@ -263,7 +248,7 @@ namespace OculusHMD
 			return;
 		}
 
-		const float Scale = GetLMSUnwarpScale();
+		const float Scale = FVRWorks::GetLensMatchedShadingUnwarpScale();
 
 		InOutSizeX = Settings->RenderTargetSize.X*Scale;
 		InOutSizeY = Settings->RenderTargetSize.Y*Scale;
@@ -2563,7 +2548,7 @@ namespace OculusHMD
 
 			EyeLayer->SetEyeLayerDesc(EyeLayerDesc, vpRect);
 
-			const float Scale = GetLMSUnwarpScale();
+			const float Scale = FVRWorks::GetLensMatchedShadingUnwarpScale();
 
 			Settings->RenderTargetSize = FIntPoint(rtSize.w*Scale, rtSize.h*Scale);
 			Settings->EyeRenderViewport[0].Min = FIntPoint(vpRect[0].Pos.x, vpRect[0].Pos.y);

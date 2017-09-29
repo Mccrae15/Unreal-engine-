@@ -11,8 +11,6 @@
 
 namespace OculusHMD
 {
-	extern float GetLMSUnwarpScale();
-
 	// 
 	class FOculusRiftSpectatorScreenController : public FDefaultSpectatorScreenController
 	{
@@ -41,7 +39,7 @@ namespace OculusHMD
 			FIntRect DestRect(0, 0, TargetTexture->GetSizeX() / 2, TargetTexture->GetSizeY());
 			for (int i = 0; i < 2; ++i)
 			{
-				const FIntRect SrcRect = Settings->EyeRenderViewport[i].Scale(GetLMSUnwarpScale());
+				const FIntRect SrcRect = Settings->EyeRenderViewport[i].Scale(FVRWorks::GetLensMatchedShadingUnwarpScale());
 
 				OculusHMDDevice->CopyTexture_RenderThread(RHICmdList, EyeTexture, SrcRect, TargetTexture, DestRect, false);
 				DestRect.Min.X += TargetTexture->GetSizeX() / 2;
@@ -66,7 +64,7 @@ namespace OculusHMD
 		{
 			FSettings* Settings = OculusHMDDevice->GetSettings_RenderThread();
 			check(Settings);
-			const FIntRect SrcRect= Settings->EyeRenderViewport[0].Scale(GetLMSUnwarpScale());
+			const FIntRect SrcRect= Settings->EyeRenderViewport[0].Scale(FVRWorks::GetLensMatchedShadingUnwarpScale());
 			const FIntRect DstRect(0, 0, TargetTexture->GetSizeX(), TargetTexture->GetSizeY());
 
 			OculusHMDDevice->CopyTexture_RenderThread(RHICmdList, EyeTexture, SrcRect, TargetTexture, DstRect, false);
@@ -107,7 +105,7 @@ namespace OculusHMD
 	{
 		check(IsInRenderingThread());
 		// Rift does this differently than other platforms, it already has an idea of what rectangle it wants to use stored.
-		const FIntRect EyeRect = Settings_RenderThread->EyeRenderViewport[0].Scale(GetLMSUnwarpScale());
+		const FIntRect EyeRect = Settings_RenderThread->EyeRenderViewport[0].Scale(FVRWorks::GetLensMatchedShadingUnwarpScale());
 
 		// But the rectangle rift specifies has corners cut off, so we will crop a little more.
 		static FVector2D SrcNormRectMin(0.05f, 0.0f);

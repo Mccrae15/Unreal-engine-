@@ -28,6 +28,7 @@
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
 #include "GPUSkinCache.h"
+#include "VRWorks.h"
 
 static TAutoConsoleVariable<int32> CVarRHICmdPrePassDeferredContexts(
 	TEXT("r.RHICmdPrePassDeferredContexts"),
@@ -188,7 +189,7 @@ public:
 
 	static bool ShouldCache(EShaderPlatform Platform, const FMaterial* Material, const FVertexFactoryType* VertexFactoryType)
 	{
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && TDepthOnlyVS<bUsePositionOnlyStream>::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && TDepthOnlyVS<bUsePositionOnlyStream>::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
 	}
 
 	void SetParameters(FRHICommandList& RHICmdList, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& MaterialResource, const FSceneView& View)
@@ -388,7 +389,7 @@ FDepthDrawingPolicy::FDepthDrawingPolicy(
 	}
 
 	// EHartNV ToDo : Need to support shader pipelines?
-	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && IsFastGSNeeded();
+	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && FVRWorks::IsFastGSNeeded();
 	FastGeometryShader = bMultiRes ? InMaterialResource.GetShader<TDepthOnlyFastGS<false> >(InVertexFactory->GetType()) : nullptr;
 }
 
@@ -564,7 +565,7 @@ FPositionOnlyDepthDrawingPolicy::FPositionOnlyDepthDrawingPolicy(
 		: InMaterialResource.GetShader<TDepthOnlyVS<true> >(InVertexFactory->GetType());
 	bUsePositionOnlyVS = true;
 
-	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && IsFastGSNeeded();
+	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && FVRWorks::IsFastGSNeeded();
 	FastGeometryShader = bMultiRes ? InMaterialResource.GetShader<TDepthOnlyFastGS<true> >(InVertexFactory->GetType()) : nullptr;
 }
 
@@ -1438,7 +1439,7 @@ void FDeferredShadingSceneRenderer::RenderPrePassEditorPrimitives(FRHICommandLis
 
 static void SetupPassViewScissorAndMaskPrePass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
 {
-	if (GRHISupportsMultipleGPUStereo && View.StereoPass != eSSP_FULL)
+	if (FVRWorks::IsVRSLIEnabled() && View.StereoPass != eSSP_FULL)
 	{
 		// note: we need to be sure the scissor rect is not enabled downstream. 
 		RHICmdList.SetGPUMask(View.StereoPass);

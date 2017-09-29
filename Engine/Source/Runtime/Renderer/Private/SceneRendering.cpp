@@ -122,32 +122,6 @@ static TAutoConsoleVariable<int32> CVarMonoscopicFarFieldMode(
 	TEXT(", 4 mono far field only"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
-static TAutoConsoleVariable<int32> CVarMultiRes(
-	TEXT("vr.MultiRes"),
-	0,
-	TEXT("0 to disable MultiRes support, 1 to enable."),
-	ECVF_ReadOnly | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarLensMatchedShading(
-	TEXT("vr.LensMatchedShading"),
-	0,
-	TEXT("0 to disable ModifiedW support, 1 to enable."),
-	ECVF_ReadOnly | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarSinglePassStereo(
-	TEXT("vr.SinglePassStereo"),
-	0,
-	TEXT("0 to disable SinglePassStereo support, 1 to enable."),
-	ECVF_ReadOnly | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarEnableVRSLI(
-	TEXT("vr.MGPU"),
-	0,
-	TEXT("Toggles VR SLI support.\n")
-	TEXT("0: off (default)\n")
-	TEXT("1: on (requires NVAPI support for SetGPUMask)\n"),
-	ECVF_RenderThreadSafe);
-
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 static TAutoConsoleVariable<float> CVarGeneralPurposeTweak(
 	TEXT("r.GeneralPurposeTweak"),

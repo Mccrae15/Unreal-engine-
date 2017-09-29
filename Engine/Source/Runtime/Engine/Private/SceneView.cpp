@@ -23,6 +23,7 @@
 #include "HighResScreenshot.h"
 #include "Slate/SceneViewport.h"
 #include "RenderUtils.h"
+#include "VRWorks.h"
 
 DEFINE_LOG_CATEGORY(LogBufferVisualization);
 
@@ -319,72 +320,6 @@ static TAutoConsoleVariable<int32> CVarAllowTranslucencyAfterDOF(
 	TEXT(" 0: off (translucency is affected by depth of field)\n")
 	TEXT(" 1: on costs GPU performance and memory but keeps translucency unaffected by Depth of Field. (default)"),
 	ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarMultiResRendering(
-	TEXT("vr.MultiResRendering"),
-	0,
-	TEXT("Multi-resolution rendering level:\n")
-	TEXT("0: off (default)\n")
-	TEXT("1: conservative (saves 28% pixels)\n")
-	TEXT("2: balanced (saves 42% pixels)\n")
-	TEXT("3: aggressive (saves 60% pixels)\n")
-	TEXT("Press Numpad0 to cycle between settings."),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarLensMatchedShadingRendering(
-	TEXT("vr.LensMatchedShadingRendering"),
-	0,
-	TEXT("Lens Matched Shading rendering toggle:\n")
-	TEXT("0: off (default)\n")
-	TEXT("1: quality\n")
-	TEXT("2: conservative\n")
-	TEXT("3: aggressive\n"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<float> CVarLensMatchedShadingResScaling(
-	TEXT("vr.LensMatchedShadingResolutionScaling"),
-	1.0f,
-	TEXT("Lens Matched Shading resolution scale:\n")
-	TEXT("This variable is deprecated now, please use vr.LensMatchedShadingRendering 1/2/3 to adjust LMS shading rate instead,\n")
-	TEXT("which're pre-calculated to better match the lens profile.\n")
-	TEXT("1.0f (default)\n"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<float> CVarLensMatchedShadingUnwarpScale(
-	TEXT("vr.LensMatchedShadingUnwarpScale"),
-	1.5f,
-	TEXT("Since Lens matched shading super samples the center region compared with the original resolution,\n")
-	TEXT("It's preferred to perform unwarp to a larger render target so the super sampled information is preserved.\n")
-	TEXT("The default value is 1.5. It's a conservative estimate of increased shading rate. The default value should be used for most of the times.\n"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarLensMatchedShadingDrawRectangleOptimization(
-	TEXT("vr.LensMatchedShadingRectangleOptimization"),
-	1,
-	TEXT("Lens Matched Shading rectangle optimization replaces the full screen rectangle to an octagon:\n")
-	TEXT("1.0f (default)\n"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-
-static void ToggleMultiResLevel()
-{
-	int32 Value = CVarMultiResRendering.GetValueOnAnyThread();
-	Value = (Value + 1) % 3;
-	CVarMultiResRendering.AsVariable()->Set(Value, ECVF_SetByConsole);
-}
-
-static FAutoConsoleCommand ToggleMultiResLevelCmd(
-	TEXT("ToggleMultiResLevel"),
-	TEXT("Cycle through levels of multires."),
-	FConsoleCommandDelegate::CreateStatic(ToggleMultiResLevel)
-	);
-
-static TAutoConsoleVariable<int32> CVarSinglePassStereoRendering(
-	TEXT("vr.SinglePassStereoRendering"),
-	0,
-	TEXT("Enable SinglePassStereo\n")
-	TEXT("0: off (default)\n")
-	TEXT("1: on"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 /** Global vertex color view mode setting when SHOW_VertexColors show flag is set */
 EVertexColorViewMode::Type GVertexColorViewMode = EVertexColorViewMode::Color;
@@ -1883,17 +1818,6 @@ void FSceneView::EndFinalPostprocessSettings(const FSceneViewInitOptions& ViewIn
 		if(Value >= 0.0)
 		{
 			FinalPostProcessSettings.ScreenPercentage *= Value / 100.0f;
-
-			static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
-			bool bLensMatchedShadeEnabled = GSupportsFastGeometryShader && GSupportsModifiedW &&
-				CVarLensMatchedShading && CVarLensMatchedShading->GetValueOnGameThread() && CVarLensMatchedShadingRendering.GetValueOnGameThread() > 0;
-
-			if (bLensMatchedShadeEnabled)
-			{
-				float LensMatchedShadeResScale = CVarLensMatchedShadingResScaling.GetValueOnGameThread();
-
-				FinalPostProcessSettings.ScreenPercentage *= LensMatchedShadeResScale;
-			}
 		}
 	}
 
@@ -2695,23 +2619,13 @@ bool FSceneViewFamily::AllowTranslucencyAfterDOF() const
 
 void FSceneView::SetupVRProjection(int32 ViewportGap)
 {
-	// Decide whether multi-res is enabled
-	static const auto CVarMRes = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
-
 	// MultiRes has to be supported and enabled to work presently
-	int MultiResLevel = GSupportsFastGeometryShader && CVarMRes && CVarMRes->GetValueOnGameThread() ? CVarMultiResRendering.GetValueOnGameThread() : 0;
+	const int MultiResLevel = FVRWorks::GetMultiResRenderingLevel();
 
 	// Decide whether Lens MatchedShading is enabled
-	static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
-	int LensMatchedShadingLevel = GSupportsFastGeometryShader &&
-		GSupportsModifiedW &&
-		CVarLensMatchedShading &&
-		CVarLensMatchedShading->GetValueOnGameThread() ?
-		CVarLensMatchedShadingRendering.GetValueOnGameThread() : 0;
+	const int LensMatchedShadingLevel = FVRWorks::GetLensMatchedShadingLevel();
 
 	bVRProjectEnabled = MultiResLevel > 0 || LensMatchedShadingLevel > 0;
-
-	static const auto EnableMultiGPUVRCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MGPU"));
 
 	if (bVRProjectEnabled)
 	{
@@ -2742,7 +2656,7 @@ void FSceneView::SetupVRProjection(int32 ViewportGap)
 	{
 		// Disable SPS if MultiRes is enabled
 		bAllowSinglePassStereo = false;
-		CVarSinglePassStereoRendering.AsVariable()->Set(0, ECVF_SetByConsole);
+		FVRWorks::DisableSinglePassStereoRendering();
 
 		// Set up the multi-res configuration: viewport split positions and relative pixel densities
 		// Hard-coded for now!
@@ -2822,7 +2736,7 @@ void FSceneView::SetupVRProjection(int32 ViewportGap)
 	{
 		// Set up the lens matched shading configuration: viewport split positions and relative pixel densities
 		// Hard-coded for now!
-		if (EnableMultiGPUVRCVar->GetValueOnGameThread() != 0)
+		if (FVRWorks::IsVRSLIEnabled())
 		{
 			// Set up the lens matched shading configuration: viewport split positions and relative pixel densities
 			// In VR SLI the w-warp parameters have to be identical for left and right eye, so
@@ -2856,15 +2770,6 @@ void FSceneView::SetupVRProjection(int32 ViewportGap)
 			{
 				LensMatchedShadingConf = FLensMatchedShading::Configuration_Vive_Aggressive;
 			}
-		}
-
-		const float ResolutionScale = CVarLensMatchedShadingResScaling.GetValueOnGameThread();
-		if (ResolutionScale != 1.f)
-		{
-			LensMatchedShadingConf.WarpLeft = (1.f + LensMatchedShadingConf.WarpLeft) / ResolutionScale - 1.f;
-			LensMatchedShadingConf.WarpRight = (1.f + LensMatchedShadingConf.WarpRight) / ResolutionScale - 1.f;
-			LensMatchedShadingConf.WarpUp = (1.f + LensMatchedShadingConf.WarpUp) / ResolutionScale - 1.f;
-			LensMatchedShadingConf.WarpDown = (1.f + LensMatchedShadingConf.WarpDown) / ResolutionScale - 1.f;
 		}
 
 		// round locations before mirroring
@@ -2950,12 +2855,8 @@ void FSceneView::EndVRProjectionStates(FRHICommandList& RHICmdList) const
 
 void FSceneView::CheckSinglePassStereo()
 {
-	// Decide whether SinglePassStereo is enabled
-	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereo"));
-
 	// SinglePassStereo has to be supported and enabled to work presently
-	int AllowSinglePassStereo = CVar && CVar->GetValueOnGameThread() ? CVarSinglePassStereoRendering.GetValueOnGameThread() : 0;
-	bAllowSinglePassStereo = (AllowSinglePassStereo > 0) && StereoPass != eSSP_FULL && GSupportsSinglePassStereo;
+	bAllowSinglePassStereo = FVRWorks::IsSinglePassStereoRenderingEnabled() && StereoPass != eSSP_FULL;
 }
 
 void FSceneView::SetupSinglePassStereo()

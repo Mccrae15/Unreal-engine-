@@ -29,6 +29,7 @@
 #include "PostProcess/SceneRenderTargets.h"
 #include "SceneRenderTargetParameters.h"
 #include "ShaderParameterUtils.h"
+#include "VRWorks.h"
 
 class FPrimitiveSceneInfo;
 class FPrimitiveSceneProxy;
@@ -2064,7 +2065,7 @@ class FShadowProjectionMultiResGS : public FShadowProjectionGeometryShaderInterf
 public:
 	static bool ShouldCache(EShaderPlatform Platform)
 	{
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
 	}
 
 	FShadowProjectionMultiResGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :

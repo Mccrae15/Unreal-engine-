@@ -17,6 +17,7 @@
 #include "DeferredShadingRenderer.h"
 #include "ScenePrivate.h"
 #include "PostProcess/ScreenSpaceReflections.h"
+#include "VRWorks.h"
 
 // Changing this causes a full shader recompile
 static TAutoConsoleVariable<int32> CVarBasePassOutputsVelocity(
@@ -226,7 +227,7 @@ public:
 	static bool ShouldCache(EShaderPlatform Platform, const FMaterial* Material, const FVertexFactoryType* VertexFactoryType)
 	{
 		// Same rules as VS
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && FVelocityVS::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && FVelocityVS::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
 	}
 
 	void SetParameters(FRHICommandList& RHICmdList, const FVertexFactory* VertexFactory, const FMaterialRenderProxy* MaterialRenderProxy, const FViewInfo& View)
@@ -883,7 +884,7 @@ static TAutoConsoleVariable<int32> CVarRHICmdFlushRenderThreadTasksVelocityPass(
 
 static void SetupPassViewScissorAndMaskVelocityPass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
 {
-	if (GRHISupportsMultipleGPUStereo && View.StereoPass != eSSP_FULL)
+	if (FVRWorks::IsVRSLIEnabled() && View.StereoPass != eSSP_FULL)
 	{
 		// note: we need to be sure the scissor rect is not enabled downstream. 
 		RHICmdList.SetGPUMask(View.StereoPass);

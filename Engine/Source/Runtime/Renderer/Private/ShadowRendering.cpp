@@ -13,6 +13,7 @@
 #include "ScenePrivate.h"
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
+#include "VRWorks.h"
 
 static TAutoConsoleVariable<float> CVarCSMShadowDepthBias(
 	TEXT("r.Shadow.CSMDepthBias"),
@@ -759,7 +760,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 		// vrworks todo. The original MaskBoundShaderState[0],[1] usage needed?
-		const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[View->GetFeatureLevel()]) && IsFastGSNeeded();
+		const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[View->GetFeatureLevel()]) && FVRWorks::IsFastGSNeeded();
 		if (View->bVRProjectEnabled && bMultiRes)
 		{
 			TOptionalShaderMapRef<FShadowProjectionMultiResGS> MultiResGeometryShader(View->ShaderMap);
@@ -846,7 +847,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-		const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[View->GetFeatureLevel()]) && IsFastGSNeeded();
+		const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[View->GetFeatureLevel()]) && FVRWorks::IsFastGSNeeded();
 		if (View->bVRProjectEnabled && bMultiRes)
 		{
 			TOptionalShaderMapRef<FShadowProjectionMultiResGS> MultiResGeometryShader(View->ShaderMap);

@@ -252,14 +252,9 @@ void DrawRectangle(
 
 	DoDrawRectangleFlagOverride(Flags);
 
-	static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
-	static const auto CVarLensMatchedShadingRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingRendering"));
-	bool bLensMatchedShadeEnabled = GSupportsFastGeometryShader && GSupportsModifiedW &&
-		CVarLensMatchedShading && CVarLensMatchedShading->GetValueOnRenderThread() && CVarLensMatchedShadingRendering && CVarLensMatchedShadingRendering->GetValueOnRenderThread() > 0;
-
-	// We draw an octagon instead of a FS triangle if LMS is enabled. We purposely only do it for triangles so that disabling triangle optimization from console also disables octagons.
-	static const auto CVarLMSDrawRectangleOptimization = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingRectangleOptimization"));
-	bool bDrawOctagon = (CVarLMSDrawRectangleOptimization->GetValueOnRenderThread() && !bForceNoRemap && bLensMatchedShadeEnabled && Flags == EDRF_UseTriangleOptimization);
+	// We draw an octagon instead of a FS triangle if LMS is enabled.
+	// We purposely only do it for triangles so that disabling triangle optimization from console also disables octagons.
+	const bool bDrawOctagon = FVRWorks::IsOctagonOptimizationEnabled() && !bForceNoRemap && Flags == EDRF_UseTriangleOptimization;
 	// triangle if extending to left and top of the given rectangle, if it's not left top of the viewport it can cause artifacts
 	if (!bDrawOctagon && (X > 0.0f || Y > 0.0f))
 	{

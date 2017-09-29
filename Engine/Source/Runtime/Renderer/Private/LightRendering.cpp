@@ -12,6 +12,7 @@
 #include "PostProcess/SceneFilterRendering.h"
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
+#include "VRWorks.h"
 
 DECLARE_FLOAT_COUNTER_STAT(TEXT("Lights"), Stat_GPU_Lights, STATGROUP_GPU);
 
@@ -54,7 +55,7 @@ class FDeferredLightFastGS : public FGlobalShader
 public:
 	static bool ShouldCache(EShaderPlatform Platform)
 	{
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
 	}
 
 	FDeferredLightFastGS() {}

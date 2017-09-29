@@ -6,6 +6,7 @@
 #include "Shader.h"
 #include "GlobalShader.h"
 #include "ShadowRendering.h"
+#include "VRWorks.h"
 
 /*=============================================================================
 	SceneOcclusion.h
@@ -71,7 +72,7 @@ class FOcclusionQueryMultiResGS : public FGlobalShader
 public:
 	static bool ShouldCache(EShaderPlatform Platform)
 	{
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
 	}
 
 	FOcclusionQueryMultiResGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :

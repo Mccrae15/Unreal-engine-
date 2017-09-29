@@ -44,6 +44,7 @@
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "SceneInterface.h"
+#include "VRWorks.h"
 
 DEFINE_LOG_CATEGORY(LogShaderCompilers);
 
@@ -2719,14 +2720,12 @@ void GlobalBeginCompileShader(
 
 	// Set multires define
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
 		const EShaderPlatform ShaderPlatform = static_cast<EShaderPlatform>(Target.Platform);
-		const bool bIsMultiResCVar = CVar ? (CVar->GetValueOnGameThread() != false) : false;
-		const bool bIsMultiRes = bIsMultiResCVar && (ShaderPlatform == EShaderPlatform::SP_PCD3D_SM5);
+		const bool bIsMultiRes = FVRWorks::IsMultiResSupportEnabled() && (ShaderPlatform == EShaderPlatform::SP_PCD3D_SM5);
 		Input.Environment.SetDefine(TEXT("MULTIRES"), bIsMultiRes ? 1 : 0);
 
 		// Throw a warning if we are silently disabling MultiRes due to missing platform support.
-		if (bIsMultiResCVar && !bIsMultiRes)
+		if (FVRWorks::IsMultiResSupportEnabled() && !bIsMultiRes)
 		{
 			UE_LOG(LogShaderCompilers, Warning, TEXT("MultiRes rendering is not supported on this platform."));
 		}
@@ -2736,14 +2735,12 @@ void GlobalBeginCompileShader(
 
 	// Set lens matched shading define
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
 		const EShaderPlatform ShaderPlatform = static_cast<EShaderPlatform>(Target.Platform);
-		const bool bIsLensMatchedCVar = CVar ? (CVar->GetValueOnGameThread() != false) : false;
-		const bool bIsLensMatched = bIsLensMatchedCVar && (ShaderPlatform == EShaderPlatform::SP_PCD3D_SM5);
+		const bool bIsLensMatched = FVRWorks::IsLensMatchedShadingSupportEnabled() && (ShaderPlatform == EShaderPlatform::SP_PCD3D_SM5);
 		Input.Environment.SetDefine(TEXT("LENS_MATCHED"), bIsLensMatched ? 1 : 0);
 
 		// Throw a warning if we are silently disabling lens matched shading due to missing platform support.
-		if (bIsLensMatchedCVar && !bIsLensMatched)
+		if (FVRWorks::IsLensMatchedShadingSupportEnabled() && !bIsLensMatched)
 		{
 			UE_LOG(LogShaderCompilers, Warning, TEXT("Lens Matched Shading rendering is not supported on this platform."));
 		}
@@ -2753,14 +2750,12 @@ void GlobalBeginCompileShader(
 
 	// Set SinglePassStereo define
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereo"));
 		const EShaderPlatform ShaderPlatform = static_cast<EShaderPlatform>(Target.Platform);
-		const bool bIsSinglePassStereoCVar = CVar ? (CVar->GetValueOnGameThread() != false) : false;
-		const bool bIsSinglePassStereo = bIsSinglePassStereoCVar && (ShaderPlatform == EShaderPlatform::SP_PCD3D_SM5);
+		const bool bIsSinglePassStereo = FVRWorks::IsSinglePassStereoSupportEnabled() && (ShaderPlatform == EShaderPlatform::SP_PCD3D_SM5);
 		Input.Environment.SetDefine(TEXT("SINGLE_PASS_STEREO"), bIsSinglePassStereo ? 1 : 0);
 
 		// Throw a warning if we are silently disabling single pass stereo due to missing platform support.
-		if (bIsSinglePassStereoCVar && !bIsSinglePassStereo)
+		if (FVRWorks::IsSinglePassStereoSupportEnabled() && !bIsSinglePassStereo)
 		{
 			UE_LOG(LogShaderCompilers, Warning, TEXT("SinglePassStereo is not supported on this platform."));
 		}

@@ -318,7 +318,6 @@ EPixelFormat GRHIHDRDisplayOutputFormat = PF_FloatRGBA;
 bool GSupportsSinglePassStereo = false;
 
 bool GSupportsExplicitMGPU = false;
-bool GRHISupportsMultipleGPUStereo = false;
 
 /** Whether we are profiling GPU hitches. */
 bool GTriggerGPUHitchProfile = false;
