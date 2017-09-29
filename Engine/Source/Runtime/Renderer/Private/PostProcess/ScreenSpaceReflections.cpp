@@ -373,10 +373,11 @@ void FRCPassPostProcessScreenSpaceReflections::Process(FRenderingCompositePassCo
 		
 		// bind the dest render target and the depth stencil render target
 		SetRenderTarget(RHICmdList, DestRenderTarget.TargetableTexture, SceneContext.GetSceneDepthSurface(), ESimpleRenderTargetMode::EUninitializedColorAndDepth, FExclusiveDepthStencil::DepthRead_StencilWrite);
-		Context.SetViewportAndCallRHI(View.ViewRect);
 
 		// Clear stencil to 0
 		DrawClearQuad(RHICmdList, false, FLinearColor(), false, 0, true, 0, PassOutputs[0].RenderTargetDesc.Extent, View.ViewRect);
+
+		Context.SetViewportAndCallRHI(View.ViewRect);
 	
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
 		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -440,13 +441,13 @@ void FRCPassPostProcessScreenSpaceReflections::Process(FRenderingCompositePassCo
 				SetRenderTarget(RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIRef());
 				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 			}
-
-			Context.SetViewportAndCallRHI(View.ViewRect);
 		}
 		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 		// clear DestRenderTarget only outside of the view's rectangle
 		DrawClearQuad(RHICmdList, true, FLinearColor::Black, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, View.ViewRect);
+
+		Context.SetViewportAndCallRHI(View.ViewRect);
 
 		// set the state
 		GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
