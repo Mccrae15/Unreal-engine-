@@ -24,6 +24,7 @@
 #include "GPUSkinCache.h"
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
+#include "VRWorks.h"
 
 TAutoConsoleVariable<int32> CVarEarlyZPass(
 	TEXT("r.EarlyZPass"),
@@ -1334,12 +1335,18 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	if (Views.Num() == 2)
 	{
-		FResolveParams Params;
-		Params.Rect.X2 = ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeX();
-		Params.Rect.Y2 = ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeY();
+		FIntRect Rect = Views[1].NonVRProjectViewRect;
 
-		Params.Rect.X1 = Params.Rect.X2 / 2;
-		Params.Rect.Y1 = 0;
+		if (Views[0].VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		{
+			Rect = Rect.Scale(FVRWorks::GetLensMatchedShadingUnwarpScale());
+		}
+
+		FResolveParams Params;
+		Params.Rect.X1 = Rect.Min.X;
+		Params.Rect.Y1 = Rect.Min.Y;
+		Params.Rect.X2 = Rect.Max.X;
+		Params.Rect.Y2 = Rect.Max.Y;
 
 		RHICmdList.CopyResourceToGPU(ViewFamily.RenderTarget->GetRenderTargetTexture(), ViewFamily.RenderTarget->GetRenderTargetTexture(), 0, 1, Params);
 	}
