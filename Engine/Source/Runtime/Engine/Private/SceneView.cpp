@@ -2627,10 +2627,7 @@ void FSceneView::SetupVRProjection(int32 ViewportGap)
 
 	bVRProjectEnabled = MultiResLevel > 0 || LensMatchedShadingLevel > 0;
 
-	static const auto CVarSPS = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereo"));
-	static const auto CVarSPSRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereoRendering"));
-	if (GEngine->StereoRenderingDevice.IsValid() && GSupportsSinglePassStereo
-		&& CVarSPS->GetValueOnAnyThread() > 0 && CVarSPSRendering->GetValueOnAnyThread() > 0)
+	if (GEngine->StereoRenderingDevice.IsValid() && FVRWorks::IsSinglePassStereoRenderingEnabled())
 	{
 		float TopScale, BottomScale;
 		GEngine->StereoRenderingDevice->GetTopBottomScaleCoefficients(StereoPass, TopScale, BottomScale);
