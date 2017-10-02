@@ -1210,20 +1210,13 @@ void FSteamVRHMD::CalculateStereoViewOffset(const enum EStereoscopicPass StereoP
 	}
 }
 
-static bool IsSPSEnabled()
-{
-	static const auto CVarSPS = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereo"));
-	static const auto CVarSPSRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereoRendering"));
-	return GSupportsSinglePassStereo && CVarSPS->GetValueOnAnyThread() > 0 && CVarSPSRendering->GetValueOnAnyThread() > 0;
-}
-
 #define SPS_VFOV_AVERAGE 0
 
 void FSteamVRHMD::GetTopBottomScaleCoefficients(const enum EStereoscopicPass StereoPassType, float& OutTopScale, float& OutBottomScale) const
 {
 	OutTopScale = OutBottomScale = 1.f;
 
-	if (IsSPSEnabled())
+	if (FVRWorks::IsSinglePassStereoRenderingEnabled())
 	{
 #if !SPS_VFOV_AVERAGE
 		//only the right eye
@@ -1270,7 +1263,7 @@ FMatrix FSteamVRHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass Ster
 
 	//NVIDIA SPS WAR! For SPS we need to align right eye's vertical fov with left eye's vertical fov since we only support horizontal shift
 	//TODO: disable this code for n-view!
-	if (IsSPSEnabled())
+	if (FVRWorks::IsSinglePassStereoRenderingEnabled())
 	{
 #if !SPS_VFOV_AVERAGE
 		//this way only the non-SPS passes will be affected and SPS passes will be rendered in the way they were rendered before the fix
