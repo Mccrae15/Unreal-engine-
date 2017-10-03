@@ -25,6 +25,7 @@
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
 #include "VRWorks.h"
+#include "StereoRendering.h"
 
 TAutoConsoleVariable<int32> CVarEarlyZPass(
 	TEXT("r.EarlyZPass"),
@@ -1333,20 +1334,31 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		SceneContext.AdjustGBufferRefCount(RHICmdList, -1);
 	}
 
-	if (Views.Num() == 2)
+	if (FVRWorks::IsVRSLIEnabled() && Views.Num() == 2)
 	{
-		FIntRect Rect = Views[1].NonVRProjectViewRect;
+		FIntRect Rect = Views[0].StereoPass == eSSP_RIGHT_EYE ? Views[0].NonVRProjectViewRect : Views[1].NonVRProjectViewRect;
 
-		if (Views[0].VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		if (Views[0].bVRProjectEnabled)
 		{
-			Rect = Rect.Scale(FVRWorks::GetLensMatchedShadingUnwarpScale());
+			// Need to account for viewport gap
+			// When VR-projecton is enabled the view rect is adjusted so that the viewport gap is removed
+			// See SceneView.cpp, around line 2711
+			const int32 ViewportGap = GEngine->StereoRenderingDevice->GetViewportGap();
+
+			Rect.Min.X += ViewportGap * 2;
+			Rect.Max.X += ViewportGap * 2;
+
+			if (Views[0].VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+			{
+				Rect = Rect.Scale(FVRWorks::GetLensMatchedShadingUnwarpScale());
+			}
 		}
 
 		FResolveParams Params;
-		Params.Rect.X1 = Rect.Min.X;
-		Params.Rect.Y1 = Rect.Min.Y;
-		Params.Rect.X2 = Rect.Max.X;
-		Params.Rect.Y2 = Rect.Max.Y;
+		Params.Rect.X1 = FMath::Max(0, Rect.Min.X);
+		Params.Rect.Y1 = FMath::Max(0, Rect.Min.Y);
+		Params.Rect.X2 = FMath::Min((int32)ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeX(), Rect.Max.X);
+		Params.Rect.Y2 = FMath::Min((int32)ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeY(), Rect.Max.Y);
 
 		RHICmdList.CopyResourceToGPU(ViewFamily.RenderTarget->GetRenderTargetTexture(), ViewFamily.RenderTarget->GetRenderTargetTexture(), 0, 1, Params);
 	}
