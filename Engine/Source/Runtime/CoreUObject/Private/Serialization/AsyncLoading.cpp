@@ -334,6 +334,11 @@ void FAsyncLoadingThread::InitializeAsyncThread()
 
 void FAsyncLoadingThread::CancelAsyncLoadingInternal()
 {
+	// Cancel is not thread safe because the loaded delegates expect to be called on the game thread
+	// EDL does not support this function, but for backward compatible reasons we are letting it run on the async loading thread
+	// If this is enabled for EDL it must be made properly thread safe
+	UE_CLOG(GEventDrivenLoaderEnabled && !IsInGameThread(), LogStreaming, Fatal, TEXT("CancelAsyncLoadingInternal is not thread safe! This must be fixed before being enabled for EDL"));
+
 	{
 		// Packages we haven't yet started processing.
 #if THREADSAFE_UOBJECTS
@@ -342,7 +347,11 @@ void FAsyncLoadingThread::CancelAsyncLoadingInternal()
 		const EAsyncLoadingResult::Type Result = EAsyncLoadingResult::Canceled;
 		for (FAsyncPackageDesc* PackageDesc : QueuedPackages)
 		{
-			PackageDesc->PackageLoadedDelegate.ExecuteIfBound(PackageDesc->Name, nullptr, Result);
+			if (PackageDesc->PackageLoadedDelegate.IsValid())
+			{
+				PackageDesc->PackageLoadedDelegate->ExecuteIfBound(PackageDesc->Name, nullptr, Result);
+			}
+
 			delete PackageDesc;
 		}
 		QueuedPackages.Reset();
@@ -408,14 +417,14 @@ void FAsyncLoadingThread::CancelAsyncLoadingInternal()
 	CancelLoadingEvent->Trigger();
 }
 
-void FAsyncLoadingThread::QueuePackage(const FAsyncPackageDesc& Package)
+void FAsyncLoadingThread::QueuePackage(FAsyncPackageDesc& Package)
 {
 	{
 #if THREADSAFE_UOBJECTS
 		FScopeLock QueueLock(&QueueCritical);
 #endif
 		QueuedPackagesCounter.Increment();
-		QueuedPackages.Add(new FAsyncPackageDesc(Package));
+		QueuedPackages.Add(new FAsyncPackageDesc(Package, MoveTemp(Package.PackageLoadedDelegate)));
 	}
 	NotifyAsyncLoadingStateHasMaybeChanged();
 
@@ -439,12 +448,12 @@ FAsyncPackage* FAsyncLoadingThread::FindExistingPackageAndAddCompletionCallback(
 	FAsyncPackage* Result = PackageList.FindRef(PackageRequest->Name);
 	if (Result)
 	{
-		if (PackageRequest->PackageLoadedDelegate.IsBound())
+		if (PackageRequest->PackageLoadedDelegate.IsValid())
 		{
 			const bool bInternalCallback = false;
-			Result->AddCompletionCallback(PackageRequest->PackageLoadedDelegate, bInternalCallback);
+			Result->AddCompletionCallback(MoveTemp(PackageRequest->PackageLoadedDelegate), bInternalCallback);
 		}
-			Result->AddRequestID(PackageRequest->RequestID);
+		Result->AddRequestID(PackageRequest->RequestID);
 		if (FlushTree)
 		{
 			Result->PopulateFlushTree(FlushTree);
@@ -514,10 +523,10 @@ void FAsyncLoadingThread::ProcessAsyncPackageRequest(FAsyncPackageDesc* InReques
 			FGCScopeGuard GCGuard;
 			Package = new FAsyncPackage(*InRequest);
 		}
-		if (InRequest->PackageLoadedDelegate.IsBound())
+		if (InRequest->PackageLoadedDelegate.IsValid())
 		{
 			const bool bInternalCallback = false;
-			Package->AddCompletionCallback(InRequest->PackageLoadedDelegate, bInternalCallback);
+			Package->AddCompletionCallback(MoveTemp(InRequest->PackageLoadedDelegate), bInternalCallback);
 		}
 		Package->SetDependencyRootPackage(InRootPackage);
 		if (FlushTree)
@@ -4567,6 +4576,12 @@ EAsyncPackageState::Type FAsyncLoadingThread::ProcessLoadedPackages(bool bUseTim
 					}
 					else
 					{
+						if (GIsEditor)
+						{
+							// Flush linker cache for all objects loaded with this package.
+							// This may be slow, hence we only do it in the editor
+							Package->FlushObjectLinkerCache();
+						}
 						// Detach linker in mutex scope to make sure that if something requests this package
 						// before it's been deleted does not try to associate the new async package with the old linker
 						// while this async package is still bound to it.
@@ -5168,6 +5183,8 @@ FAsyncPackage::~FAsyncPackage()
 	{
 		for (FCompletionCallback& CompletionCallback : CompletionCallbacks)
 		{
+			checkSlow(CompletionCallback.bIsInternal || IsInGameThread());
+
 			if (!CompletionCallback.bCalled)
 			{
 				check(0);
@@ -5279,10 +5296,23 @@ void FAsyncPackage::DetachLinker()
 {	
 	if (Linker)
 	{
+		Linker->FlushCache();
 		checkf(bLoadHasFinished || bLoadHasFailed, TEXT("FAsyncPackage::DetachLinker called before load finished on package \"%s\""), *this->GetPackageName().ToString());
 		check(Linker->AsyncRoot == this || Linker->AsyncRoot == nullptr);
 		Linker->AsyncRoot = nullptr;
 		Linker = nullptr;
+	}
+}
+
+void FAsyncPackage::FlushObjectLinkerCache()
+{
+	for (UObject* Obj : PackageObjLoaded)
+	{
+		FLinkerLoad* ObjLinker = Obj->GetLinker();
+		if (ObjLinker)
+		{
+			ObjLinker->FlushCache();
+		}
 	}
 }
 
@@ -5773,7 +5803,8 @@ void FAsyncPackage::AddImportDependency(const FName& PendingImport, FFlushTree* 
 		!PackageToStream->bLoadHasFailed)
 	{
 		const bool bInternalCallback = true;
-		PackageToStream->AddCompletionCallback(FLoadPackageAsyncDelegate::CreateRaw(this, &FAsyncPackage::ImportFullyLoadedCallback), bInternalCallback);
+		TUniquePtr<FLoadPackageAsyncDelegate> InternalDelegate(new FLoadPackageAsyncDelegate(FLoadPackageAsyncDelegate::CreateRaw(this, &FAsyncPackage::ImportFullyLoadedCallback)));
+		PackageToStream->AddCompletionCallback(MoveTemp(InternalDelegate), bInternalCallback);
 		PackageToStream->DependencyRefCount.Increment();
 		PendingImportedPackages.Add(PackageToStream);
 		if (FlushTree)
@@ -5947,10 +5978,10 @@ void FAsyncPackage::ImportFullyLoadedCallback(const FName& InPackageName, UPacka
 		int32 Index = ContainsDependencyPackage(PendingImportedPackages, InPackageName);
 		if (Index != INDEX_NONE)
 		{
-		// Keep a reference to this package so that its linker doesn't go away too soon
-		ReferencedImports.Add(PendingImportedPackages[Index]);
-		PendingImportedPackages.RemoveAt(Index);
-	}
+			// Keep a reference to this package so that its linker doesn't go away too soon
+			ReferencedImports.Add(PendingImportedPackages[Index]);
+			PendingImportedPackages.RemoveAt(Index);
+		}
 	}
 }
 
@@ -6468,7 +6499,7 @@ void FAsyncPackage::CallCompletionCallbacks(bool bInternal, EAsyncLoadingResult:
 		if (CompletionCallback.bIsInternal == bInternal && !CompletionCallback.bCalled)
 		{
 			CompletionCallback.bCalled = true;
-			CompletionCallback.Callback.ExecuteIfBound(Desc.Name, LoadedPackage, LoadingResult);
+			CompletionCallback.Callback->ExecuteIfBound(Desc.Name, LoadedPackage, LoadingResult);
 		}
 	}
 }
@@ -6478,14 +6509,11 @@ void FAsyncPackage::Cancel()
 	UE_CLOG(GEventDrivenLoaderEnabled, LogStreaming, Fatal, TEXT("FAsyncPackage::Cancel is not supported with the new loader"));
 
 	// Call any completion callbacks specified.
+	bLoadHasFailed = true;
 	const EAsyncLoadingResult::Type Result = EAsyncLoadingResult::Canceled;
-	for (int32 CallbackIndex = 0; CallbackIndex < CompletionCallbacks.Num(); CallbackIndex++)
-	{
-		if (!CompletionCallbacks[CallbackIndex].bCalled)
-		{
-			CompletionCallbacks[CallbackIndex].Callback.ExecuteIfBound(Desc.Name, nullptr, Result);
-		}
-	}
+	CallCompletionCallbacks(true, Result);
+	CallCompletionCallbacks(false, Result);
+
 	{
 		// Clear load flags from any referenced objects
 		FScopeLock RereferncedObjectsLock(&ReferencedObjectsCritical);
@@ -6498,7 +6526,6 @@ void FAsyncPackage::Cancel()
 		EmptyReferencedObjects();
 	}
 
-	bLoadHasFailed = true;
 	if (LinkerRoot)
 	{
 		if (Linker)
@@ -6514,11 +6541,11 @@ void FAsyncPackage::Cancel()
 	PreLoadSortIndex = 0;
 }
 
-void FAsyncPackage::AddCompletionCallback(const FLoadPackageAsyncDelegate& Callback, bool bInternal)
+void FAsyncPackage::AddCompletionCallback(TUniquePtr<FLoadPackageAsyncDelegate>&& Callback, bool bInternal)
 {
 	// This is to ensure that there is no one trying to subscribe to a already loaded package
 	//check(!bLoadHasFinished && !bLoadHasFailed);
-	CompletionCallbacks.Add(FCompletionCallback(bInternal, Callback));
+	CompletionCallbacks.Emplace(bInternal, MoveTemp(Callback));
 }
 
 void FAsyncPackage::UpdateLoadPercentage()
@@ -6587,8 +6614,16 @@ int32 LoadPackageAsync(const FString& InName, const FGuid* InGuid /*= nullptr*/,
 	// this function, otherwise it would be added when the packages are being processed on the async thread).
 	const int32 RequestID = GPackageRequestID.Increment();
 	FAsyncLoadingThread::Get().AddPendingRequest(RequestID);
+
+	// Allocate delegate on Game Thread, it is not safe to copy delegates by value on other threads
+	TUniquePtr<FLoadPackageAsyncDelegate> CompletionDelegatePtr;
+	if (InCompletionDelegate.IsBound())
+	{
+		CompletionDelegatePtr.Reset(new FLoadPackageAsyncDelegate(InCompletionDelegate));
+	}
+
 	// Add new package request
-	FAsyncPackageDesc PackageDesc(RequestID, *PackageName, *PackageNameToLoad, InGuid ? *InGuid : FGuid(), InCompletionDelegate, InPackageFlags, InPIEInstanceID, InPackagePriority);
+	FAsyncPackageDesc PackageDesc(RequestID, *PackageName, *PackageNameToLoad, InGuid ? *InGuid : FGuid(), MoveTemp(CompletionDelegatePtr), InPackageFlags, InPIEInstanceID, InPackagePriority);
 	FAsyncLoadingThread::Get().QueuePackage(PackageDesc);
 
 	return RequestID;
@@ -6817,6 +6852,58 @@ void NotifyRegistrationComplete()
 	GetGEDLBootNotificationManager().NotifyRegistrationComplete();
 }
 
+#define USE_DETAILED_FARCHIVEASYNC2_MEMORY_TRACKING 0
+
+#if USE_DETAILED_FARCHIVEASYNC2_MEMORY_TRACKING
+class FArchiveAsync2MemTracker
+{
+	TMap<FString, int64> AllocatedMem;
+	FCriticalSection AllocatedMemCritical;
+
+public:
+
+	void Allocate(const FString& Filename, int64 Mem)
+	{
+		FScopeLock AllocatedMemLock(&AllocatedMemCritical);
+		int64& AllocatedMemAmount = AllocatedMem.FindOrAdd(Filename);
+		AllocatedMemAmount += Mem;
+	}
+
+	void Deallocate(const FString& Filename, int64 Mem)
+	{
+		FScopeLock AllocatedMemLock(&AllocatedMemCritical);
+		int64& AllocatedMemAmount = AllocatedMem.FindOrAdd(Filename);
+		AllocatedMemAmount -= Mem;
+		check(AllocatedMemAmount >= 0);
+		if (AllocatedMemAmount == 0)
+		{
+			AllocatedMem.Remove(Filename);
+		}
+	}
+
+	void Dump()
+	{
+		FScopeLock AllocatedMemLock(&AllocatedMemCritical);
+
+		UE_LOG(LogStreaming, Display, TEXT("Dumping FArchiveAsync2 allocated memory (%d)"), AllocatedMem.Num());
+		for (TPair<FString, int64>& ArchiveMem : AllocatedMem)
+		{
+			UE_LOG(LogStreaming, Display, TEXT("  %s %lldb"), *ArchiveMem.Key, ArchiveMem.Value);
+		}
+	}
+} GArchiveAsync2MemTracker;
+
+void DumpArchiveAsync2Mem(const TArray<FString>& Args)
+{
+	GArchiveAsync2MemTracker.Dump();
+}
+
+static FAutoConsoleCommand GDumpSerializeCmd(
+	TEXT("DumpFArchiveAsync2Mem"),
+	TEXT("Debug command to dump the memory allocated by existing FArhiveAsync2."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&DumpArchiveAsync2Mem)
+);
+#endif // USE_DETAILED_FARCHIVEASYNC2_MEMORY_TRACKING
 
 FArchiveAsync2::FArchiveAsync2(const TCHAR* InFileName, TFunction<void()>&& InSummaryReadyCallback)
 	: Handle(nullptr)
@@ -6836,6 +6923,7 @@ FArchiveAsync2::FArchiveAsync2(const TCHAR* InFileName, TFunction<void()>&& InSu
 	, HeaderSize(0)
 	, HeaderSizeWhenReadingExportsFromSplitFile(0)
 	, LoadPhase(ELoadPhase::WaitingForSize)
+	, bCookedForEDLInEditor(false)
 	, FileName(InFileName)
 	, OpenTime(FPlatformTime::Seconds())
 	, SummaryReadTime(0.0)
@@ -6932,7 +7020,7 @@ void FArchiveAsync2::ReadCallback(bool bWasCancelled, IAsyncReadRequest* Request
 			FBufferReader Ar(Mem, FMath::Min<int64>(FAsyncLoadingThread::Get().MaxPackageSummarySize.Value, FileSize),/*bInFreeOnClose=*/ false, /*bIsPersistent=*/ true);
 			FPackageFileSummary Sum;
 			Ar << Sum;
-			if (Ar.IsError() || Sum.TotalHeaderSize > FileSize)
+			if (Ar.IsError() || Sum.TotalHeaderSize > FileSize || Sum.GetFileVersionUE4() < VER_UE4_OLDEST_LOADABLE_PACKAGE)
 			{
 				ArIsError = true;
 			}
@@ -6943,6 +7031,10 @@ void FArchiveAsync2::ReadCallback(bool bWasCancelled, IAsyncReadRequest* Request
 				checkf(Ar.Tell() < FAsyncLoadingThread::Get().MaxPackageSummarySize.Value / 2, 
 					TEXT("The initial read request was too small (%d) compared to package %s header size (%lld). Try increasing s.MaxPackageSummarySize value in DefaultEngine.ini."),
 					FAsyncLoadingThread::Get().MaxPackageSummarySize.Value, *FileName, Ar.Tell());
+				
+				// Support for cooked EDL packages in the editor
+				bCookedForEDLInEditor = !FPlatformProperties::RequiresCookedData() && (Sum.PackageFlags & PKG_FilterEditorOnly) && Sum.PreloadDependencyCount > 0 && Sum.PreloadDependencyOffset > 0;
+
 				HeaderSize = Sum.TotalHeaderSize;
 				LogItem(TEXT("Starting Header"), 0, HeaderSize);
 				PrecacheInternal(0, HeaderSize);
@@ -6968,6 +7060,9 @@ void FArchiveAsync2::FlushPrecacheBlock()
 	{
 		DEC_MEMORY_STAT_BY(STAT_FArchiveAsync2Mem, PrecacheEndPos - PrecacheStartPos);
 		FMemory::Free(PrecacheBuffer);
+#if USE_DETAILED_FARCHIVEASYNC2_MEMORY_TRACKING
+		GArchiveAsync2MemTracker.Deallocate(FileName, PrecacheEndPos - PrecacheStartPos);
+#endif
 	}
 	PrecacheBuffer = nullptr;
 	PrecacheStartPos = 0;
@@ -7044,7 +7139,7 @@ int64 FArchiveAsync2::TotalSize()
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FArchiveAsync2_TotalSize);
 		SizeRequestPtr->WaitCompletion();
-		if (GEventDrivenLoaderEnabled && HeaderSizeWhenReadingExportsFromSplitFile)
+		if ((GEventDrivenLoaderEnabled || bCookedForEDLInEditor) && HeaderSizeWhenReadingExportsFromSplitFile)
 		{
 			FileSize = SizeRequestPtr->GetSizeResults();
 		}
@@ -7135,7 +7230,9 @@ void FArchiveAsync2::CompleteRead()
 			PrecacheEndPos = ReadRequestOffset + ReadRequestSize;
 			INC_MEMORY_STAT_BY(STAT_FArchiveAsync2Mem, PrecacheEndPos - PrecacheStartPos);
 			DEC_MEMORY_STAT_BY(STAT_AsyncFileMemory, ReadRequestSize);
-
+#if USE_DETAILED_FARCHIVEASYNC2_MEMORY_TRACKING
+			GArchiveAsync2MemTracker.Allocate(FileName, PrecacheEndPos - PrecacheStartPos);
+#endif
 			// keeps the last cache block of the header around until we process the first export
 			if (LoadPhase != ELoadPhase::ProcessingExports)
 			{
@@ -7338,7 +7435,7 @@ void FArchiveAsync2::FirstExportStarting()
 	LogItem(TEXT("Exports"));
 	LoadPhase = ELoadPhase::ProcessingExports;
 
-	if (GEventDrivenLoaderEnabled && !EVENT_DRIVEN_ASYNC_LOAD_ACTIVE_AT_RUNTIME)
+	if ((GEventDrivenLoaderEnabled && !EVENT_DRIVEN_ASYNC_LOAD_ACTIVE_AT_RUNTIME) || bCookedForEDLInEditor)
 	{
 		FlushCache();
 		if (Handle)

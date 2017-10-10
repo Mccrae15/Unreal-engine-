@@ -184,9 +184,11 @@ struct FMacApplicationInfo
 		gethostname(MachineName, ARRAY_COUNT(MachineName));
 		
 		FString CrashVideoPath = FPaths::GameLogDir() + TEXT("CrashVideo.avi");
-		
+
+		// The engine mode may be incorrect at this point, as GIsEditor is uninitialized yet. We'll update BranchBaseDir in PostInitUpdate(),
+		// but we initialize it here anyway in case the engine crashes before PostInitUpdate() is called.
 		BranchBaseDir = FString::Printf( TEXT( "%s!%s!%s!%d" ), *FApp::GetBranchName(), FPlatformProcess::BaseDir(), FPlatformMisc::GetEngineMode(), FEngineVersion::Current().GetChangelist() );
-		
+
 		// Get the paths that the files will actually have been saved to
 		FString LogDirectory = FPaths::GameLogDir();
 		TCHAR CommandlineLogFile[MAX_SPRINTF]=TEXT("");
@@ -282,7 +284,12 @@ struct FMacApplicationInfo
 			}
 		}
 	}
-	
+
+	void PostInitUpdate()
+	{
+		BranchBaseDir = FString::Printf(TEXT("%s!%s!%s!%d"), *FApp::GetBranchName(), FPlatformProcess::BaseDir(), FPlatformMisc::GetEngineMode(), FEngineVersion::Current().GetChangelist());
+	}
+
 	~FMacApplicationInfo()
 	{
 		if(GMalloc != CrashMalloc)
@@ -462,6 +469,8 @@ void FMacPlatformMisc::PlatformInit()
 
 void FMacPlatformMisc::PlatformPostInit()
 {
+	GMacAppInfo.PostInitUpdate();
+
 	// Setup the app menu in menu bar
 	const bool bIsBundledApp = [[[NSBundle mainBundle] bundlePath] hasSuffix:@".app"];
 	if (bIsBundledApp)
@@ -1842,8 +1851,8 @@ FString FMacPlatformMisc::GetXcodePath()
 
 bool FMacPlatformMisc::IsSupportedXcodeVersionInstalled()
 {
-	// We need Xcode 8.2 or newer to be able to compile Metal shaders correctly
-	return GMacAppInfo.XcodeVersion.majorVersion > 8 || (GMacAppInfo.XcodeVersion.majorVersion == 8 && GMacAppInfo.XcodeVersion.minorVersion >= 2);
+	// We need Xcode 8.2 or newer (but not Xcode 9 beta) to be able to compile Metal shaders correctly
+	return GMacAppInfo.XcodeVersion.majorVersion == 8 && GMacAppInfo.XcodeVersion.minorVersion >= 2;
 }
 
 float FMacPlatformMisc::GetDPIScaleFactorAtPoint(float X, float Y)
