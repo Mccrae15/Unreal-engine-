@@ -927,6 +927,8 @@ bool FDeferredShadingSceneRenderer::RenderBasePass(FRHICommandListImmediate& RHI
 		}
 	}
 
+	RHICmdList.SetGPUMask(0);
+
 	return bDirty;
 }
 
