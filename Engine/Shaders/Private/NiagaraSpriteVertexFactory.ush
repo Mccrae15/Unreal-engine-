@@ -90,7 +90,7 @@ struct FVertexFactoryInterpolantsVSToPS
 #endif
 
 #if INSTANCED_STEREO
-	nointerpolation uint PackedEyeIndex : PACKED_EYE_INDEX;
+	nointerpolation PACKED_EYE_INDEX_TYPE PackedEyeIndex : PACKED_EYE_INDEX;
 #endif
 };
 

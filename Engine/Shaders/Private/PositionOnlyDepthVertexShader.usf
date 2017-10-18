@@ -15,7 +15,7 @@ struct FPositionOnlyDepthVSToPS
 	float4 NvXRight : NV_X_RIGHT;
 #endif
 #if INSTANCED_STEREO
-	nointerpolation uint PackedEyeIndex : PACKED_EYE_INDEX;
+	nointerpolation PACKED_EYE_INDEX_TYPE PackedEyeIndex : PACKED_EYE_INDEX;
 #endif
 };
 
