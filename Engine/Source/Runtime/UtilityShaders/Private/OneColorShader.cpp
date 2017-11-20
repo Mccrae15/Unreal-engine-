@@ -61,3 +61,6 @@ IMPLEMENT_SHADER_TYPE(template<> UTILITYSHADERS_API,TOneColorPixelShaderMRT<8>,T
 IMPLEMENT_SHADER_TYPE(,FFillTextureCS,TEXT("/Engine/Private/OneColorShader.usf"),TEXT("MainFillTextureCS"),SF_Compute);
 
 IMPLEMENT_SHADER_TYPE(,FLongGPUTaskPS,TEXT("/Engine/Private/OneColorShader.usf"),TEXT("MainLongGPUTask"),SF_Pixel);
+
+IMPLEMENT_SHADER_TYPE2(TOneColorFastGS<false>, SF_Geometry);
+IMPLEMENT_SHADER_TYPE2(TOneColorFastGS<true>, SF_Geometry);

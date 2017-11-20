@@ -10,6 +10,7 @@
 #include "Stats/Stats.h"
 #include "RHIDefinitions.h"
 #include "Containers/StaticArray.h"
+#include "VRProjection.h"
 
 #define INVALID_FENCE_ID (0xffffffffffffffffull)
 
@@ -230,6 +231,12 @@ extern RHI_API bool GSupportsRenderTargetWriteMask;
 /** True if the RHI and current hardware supports efficient AsyncCompute (by default we assume false and later we can enable this for more hardware) */
 extern RHI_API bool GSupportsEfficientAsyncCompute;
 
+/** True if the RHI supports fast geometry shader */
+extern RHI_API bool GSupportsFastGeometryShader;
+
+/** True if the RHI supports modified w */
+extern RHI_API bool GSupportsModifiedW;
+
 /** True if the RHI supports 'GetHDR32bppEncodeModeES2' shader intrinsic. */
 extern RHI_API bool GSupportsHDR32bppEncodeModeIntrinsic;
 
@@ -301,10 +308,12 @@ extern RHI_API class FVertexElementTypeSupportInfo GVertexElementTypeSupport;
 /** When greater than one, indicates that SLI rendering is enabled */
 #if PLATFORM_DESKTOP
 #define WITH_SLI (1)
-extern RHI_API int32 GNumActiveGPUsForRendering;
+extern RHI_API int32 GNumAlternateFrameRenderingGroups;
+extern RHI_API int32 GNumExplicitGPUsForRendering;
 #else
 #define WITH_SLI (0)
-#define GNumActiveGPUsForRendering (1)
+#define GNumAlternateFrameRenderingGroups (1)
+#define GNumExplicitGPUsForRendering (1)
 #endif
 
 /** Whether the next frame should profile the GPU. */
@@ -373,6 +382,12 @@ extern RHI_API bool GRHISupportsHDROutput;
 
 /** Format used for the backbuffer when outputting to a HDR display. */
 extern RHI_API EPixelFormat GRHIHDRDisplayOutputFormat;
+
+/** True if the RHI supports pascal features */
+extern RHI_API bool GSupportsSinglePassStereo;
+
+/** True if the RHI supports multiple GPUs for stereo rendering. **/
+extern RHI_API bool GRHISupportsMultipleGPUStereo;
 
 /** Called once per frame only from within an RHI. */
 extern RHI_API void RHIPrivateBeginFrame();

@@ -221,11 +221,12 @@ private:
 	struct FDrawingPolicyLink
 	{
 		/** The elements array and the compact elements array are always synchronized */
-		TArray<FElementCompact>		 CompactElements;
-		TArray<FElement>			 Elements;
-		DrawingPolicyType		 	 DrawingPolicy;
-		FBoundShaderStateInput		 BoundShaderStateInput;
-		ERHIFeatureLevel::Type		 FeatureLevel;
+		TArray<FElementCompact>		CompactElements;
+		TArray<FElement>			Elements;
+		DrawingPolicyType			DrawingPolicy;
+		FBoundShaderStateInput		BoundShaderStateInput;
+		FBoundShaderStateInput		MultiResBoundShaderStateInput;
+		ERHIFeatureLevel::Type		FeatureLevel;
 
 		/** Used when sorting policy links */
 		FSphere						 CachedBoundingSphere;
@@ -246,11 +247,23 @@ private:
 		{
 			check(IsInRenderingThread());
 			BoundShaderStateInput = DrawingPolicy.GetBoundShaderStateInput(FeatureLevel);
+
+			FGeometryShaderRHIRef VRProjectFastGS = DrawingPolicy.GetMultiResFastGS();
+			if (VRProjectFastGS.IsValid())
+			{
+				MultiResBoundShaderStateInput = BoundShaderStateInput;
+				MultiResBoundShaderStateInput.GeometryShaderRHI = VRProjectFastGS;
+			}
 		}
 
 		SIZE_T GetSizeBytes() const
 		{
 			return sizeof(*this) + CompactElements.GetAllocatedSize() + Elements.GetAllocatedSize();
+		}
+
+		void ReleaseBoundShaderState()
+		{
+			BoundShaderState.SafeRelease();
 		}
 	};
 
@@ -336,7 +349,18 @@ public:
 		//moved out of the inner loop and only modified if bDrawnShared
 		FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 
-		return DrawVisibleInner<InstancedStereoPolicy::Enabled>(RHICmdList, *StereoView.LeftView, typename DrawingPolicyType::ContextDataType(true), DrawRenderStateLocal, nullptr, nullptr, &StereoView, 0, OrderedDrawingPolicies.Num() - 1, false);
+		return DrawVisibleInner<InstancedStereoPolicy::Enabled>(RHICmdList, *StereoView.LeftView, typename DrawingPolicyType::ContextDataType(true, false), DrawRenderStateLocal, nullptr, nullptr, &StereoView, 0, OrderedDrawingPolicies.Num() - 1, false);
+	}
+
+	inline bool DrawVisibleSinglePassStereo(
+		FRHICommandList& RHICmdList,
+		const StereoPair& StereoView,
+		const FDrawingPolicyRenderState& DrawRenderState)
+	{
+		//moved out of the inner loop and only modified if bDrawnShared
+		FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
+
+		return DrawVisibleInner<InstancedStereoPolicy::Disabled>(RHICmdList, *StereoView.LeftView, typename DrawingPolicyType::ContextDataType(false, true), DrawRenderStateLocal, nullptr, nullptr, &StereoView, 0, OrderedDrawingPolicies.Num() - 1, false);
 	}
 
 	/**
@@ -353,7 +377,7 @@ public:
 		//moved out of the inner loop and only modified if bDrawnShared
 		FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 
-		return DrawVisibleInner<InstancedStereoPolicy::MobileMultiView>(RHICmdList, *StereoView.LeftView, typename DrawingPolicyType::ContextDataType(false), DrawRenderStateLocal, nullptr, nullptr, &StereoView, 0, OrderedDrawingPolicies.Num() - 1, false);
+		return DrawVisibleInner<InstancedStereoPolicy::MobileMultiView>(RHICmdList, *StereoView.LeftView, typename DrawingPolicyType::ContextDataType(false, false), DrawRenderStateLocal, nullptr, nullptr, &StereoView, 0, OrderedDrawingPolicies.Num() - 1, false);
 	}
 
 	/**
@@ -398,7 +422,12 @@ public:
 	*/
 	inline void DrawVisibleParallelInstancedStereo(const StereoPair& StereoView, FParallelCommandListSet& ParallelCommandListSet)
 	{
-		DrawVisibleParallelInternal(typename DrawingPolicyType::ContextDataType(true), nullptr, nullptr, &StereoView, ParallelCommandListSet);
+		DrawVisibleParallelInternal(typename DrawingPolicyType::ContextDataType(true, false), nullptr, nullptr, &StereoView, ParallelCommandListSet);
+	}
+
+	inline void DrawVisibleParallelSinglePassStereo(const StereoPair& StereoView, FParallelCommandListSet& ParallelCommandListSet)
+	{
+		DrawVisibleParallelInternal(typename DrawingPolicyType::ContextDataType(false, true), nullptr, nullptr, &StereoView, ParallelCommandListSet);
 	}
 
 	/**
@@ -457,7 +486,7 @@ public:
 		//moved out of the inner loop and only modified if bDrawnShared
 		FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 
-		return DrawVisibleFrontToBackInner<InstancedStereoPolicy::MobileMultiView>(RHICmdList, *StereoView.LeftView, DrawRenderStateLocal, typename DrawingPolicyType::ContextDataType(false), nullptr, nullptr, &StereoView, MaxToDraw);
+		return DrawVisibleFrontToBackInner<InstancedStereoPolicy::MobileMultiView>(RHICmdList, *StereoView.LeftView, DrawRenderStateLocal, typename DrawingPolicyType::ContextDataType(false, false), nullptr, nullptr, &StereoView, MaxToDraw);
 	}
 
 	/**

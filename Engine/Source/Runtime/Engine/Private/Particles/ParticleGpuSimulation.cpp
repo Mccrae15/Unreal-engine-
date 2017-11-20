@@ -4523,6 +4523,38 @@ void FFXSystem::FinalizeGPUSimulation(FRHICommandListImmediate& RHICmdList, FTex
 	}
 }
 
+void FFXSystem::CopyGPUSimulationMGPU(FRHICommandListImmediate& RHICmdList, EParticleSimulatePhase::Type Phase)
+{
+	FParticleStateTextures& CurrentStateTextures = ParticleSimulationResources->GetVisualizeStateTextures();
+
+	verify(CurrentStateTextures.VelocityTextureTargetRHI->GetSizeX() == CurrentStateTextures.PositionTextureTargetRHI->GetSizeX());
+
+	int32 MaxParticles = 0;
+	for (TSparseArray<FParticleSimulationGPU*>::TIterator It(GPUSimulations); It; ++It)
+	{
+		FParticleSimulationGPU* Simulation = *It;
+		if (Simulation->SimulationPhase == Phase && Simulation->TileVertexBuffer.AlignedTileCount > 0)
+		{
+			MaxParticles += Simulation->VertexBuffer.ParticleCount;
+		}
+	}
+
+	int32 ParticlesPerRow = CurrentStateTextures.PositionTextureTargetRHI->GetSizeX();
+	int32 MaxRowCount = FMath::DivideAndRoundUp(MaxParticles, ParticlesPerRow);
+
+	if (MaxRowCount)
+	{
+		FResolveParams Params;
+		Params.Rect.X1 = 0;
+		Params.Rect.Y1 = 0;
+		Params.Rect.X2 = ParticlesPerRow;
+		Params.Rect.Y2 = MaxRowCount;
+
+		RHICmdList.CopyResourceToGPU(CurrentStateTextures.PositionTextureTargetRHI, CurrentStateTextures.PositionTextureTargetRHI, 1, 0, Params);
+		RHICmdList.CopyResourceToGPU(CurrentStateTextures.VelocityTextureTargetRHI, CurrentStateTextures.VelocityTextureTargetRHI, 1, 0, Params);
+	}
+}
+
 void FFXSystem::SimulateGPUParticles(
 	FRHICommandListImmediate& RHICmdList,
 	EParticleSimulatePhase::Type Phase,
@@ -4777,9 +4809,9 @@ void FFXSystem::SimulateGPUParticles(
 			FResolveParams()
 			);
 
-		if (GNumActiveGPUsForRendering > 1 && CVarGPUParticleAFRReinject.GetValueOnRenderThread() == 1)
+		if (GNumAlternateFrameRenderingGroups/*GNumActiveGPUsForRendering*/ > 1 && CVarGPUParticleAFRReinject.GetValueOnRenderThread() == 1)
 		{			
-			ensureMsgf(GNumActiveGPUsForRendering == 2, TEXT("GPU Particles running on an AFR depth > 2 not supported.  Currently: %i"), GNumActiveGPUsForRendering);
+			ensureMsgf(GNumAlternateFrameRenderingGroups/*GNumActiveGPUsForRendering*/ == 2, TEXT("GPU Particles running on an AFR depth > 2 not supported.  Currently: %i"), GNumAlternateFrameRenderingGroups/*GNumActiveGPUsForRendering*/);
 
 			// Place these particles into the multi-gpu update queue
 			LastFrameNewParticles.Append(NewParticles);

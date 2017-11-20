@@ -1600,6 +1600,10 @@ namespace OculusHMD
 		return rv;
 	}
 
+	int32 FOculusHMD::GetViewportGap() const
+	{
+		return 0; // FMath::RoundToInt(GetSettings()->GetTexturePaddingPerEye());
+	}
 
 	bool FOculusHMD::PopulateAnalyticsAttributes(TArray<FAnalyticsEventAttribute>& EventAttributes)
 	{
@@ -2520,6 +2524,21 @@ namespace OculusHMD
 		{
 			// Update viewports
 			float ViewportScale = Settings->bPixelDensityAdaptive ? PixelDensity / Settings->PixelDensityMax : 1.0f;
+
+			//TODO: yomoma verify!
+			{
+				static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
+				static const auto CVarLensMatchedShadingRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingRendering"));
+				bool bLensMatchedShadeEnabled = GSupportsFastGeometryShader && GSupportsModifiedW &&
+					CVarLensMatchedShading && CVarLensMatchedShading->GetValueOnRenderThread() && CVarLensMatchedShadingRendering->GetValueOnRenderThread() > 0;
+
+				if (bLensMatchedShadeEnabled)
+				{
+					static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
+					ViewportScale *= CVarLensMatchedShadingUnwarpScale->GetValueOnRenderThread();
+				}
+			}
+
 			ovrpSizei rtSize = EyeLayerDesc.TextureSize;
 			ovrpSizei vpSizeMax = EyeLayerDesc.MaxViewportSize;
 			ovrpRecti vpRect[3];

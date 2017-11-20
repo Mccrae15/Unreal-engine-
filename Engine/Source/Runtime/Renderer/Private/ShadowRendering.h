@@ -2042,3 +2042,46 @@ struct FCompareFProjectedShadowInfoBySplitIndex
 	}
 };
 
+/**
+* A generic geometry shader for projecting a shadow depth buffer onto the scene.
+*/
+class FShadowProjectionGeometryShaderInterface : public FGlobalShader
+{
+public:
+	FShadowProjectionGeometryShaderInterface() {}
+	FShadowProjectionGeometryShaderInterface(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FGlobalShader(Initializer)
+	{ }
+
+	virtual void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View) = 0;
+};
+
+/** Fast geometry shader for depth-only rendering to multi-res view.
+*/
+class FShadowProjectionMultiResGS : public FShadowProjectionGeometryShaderInterface
+{
+	DECLARE_SHADER_TYPE(FShadowProjectionMultiResGS, Global);
+public:
+	static bool ShouldCache(EShaderPlatform Platform)
+	{
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+	}
+
+	FShadowProjectionMultiResGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
+		FShadowProjectionGeometryShaderInterface(Initializer)
+	{
+	}
+
+	FShadowProjectionMultiResGS() {}
+
+	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View) override
+	{
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View.ViewUniformBuffer);
+	}
+
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
+};
+

@@ -1621,7 +1621,32 @@ void FRCPassPostProcessTonemap::Process(FRenderingCompositePassContext& Context)
 		else
 		{
 			// Set the view family's render target/viewport.
-			SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIParamRef(), ESimpleRenderTargetMode::EUninitializedColorAndDepth);
+			if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched && View.bVRProjectEnabled && !bDoScreenPercentageInTonemapper)
+			{
+				SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, SceneContext.GetSceneDepthTexture(), ESimpleRenderTargetMode::EUninitializedColorExistingDepth, FExclusiveDepthStencil::DepthRead_StencilNop);
+				FGraphicsPipelineStateInitializer GraphicsPSOInit;
+				Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+				TShaderMapRef<FPostProcessTonemapVS> VertexShader(Context.GetShaderMap());
+				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+				GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+				GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNear>::GetRHI();
+				SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
+			}
+			else
+			{
+				SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIParamRef(), ESimpleRenderTargetMode::EUninitializedColorAndDepth);
+				FGraphicsPipelineStateInitializer GraphicsPSOInit;
+				Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+				TShaderMapRef<FPostProcessTonemapVS> VertexShader(Context.GetShaderMap());
+				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+				GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+				GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+				SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
+			}
 
 			if (Context.HasHmdMesh() && View.StereoPass == eSSP_LEFT_EYE)
 			{

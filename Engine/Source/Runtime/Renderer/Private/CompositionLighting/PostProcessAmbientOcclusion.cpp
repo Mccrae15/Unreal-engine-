@@ -479,6 +479,7 @@ class FPostProcessAmbientOcclusionPSandCS : public FGlobalShader
 
 public:
 	FShaderParameter HZBRemapping;
+	FShaderParameter ViewPortRectMinAndInvSize;
 	FPostProcessPassParameters PostprocessParameter;
 	FDeferredPixelShaderParameters DeferredParameters;
 	FScreenSpaceAOParameters ScreenSpaceAOParams;
@@ -496,6 +497,7 @@ public:
 		RandomNormalTexture.Bind(Initializer.ParameterMap, TEXT("RandomNormalTexture"));
 		RandomNormalTextureSampler.Bind(Initializer.ParameterMap, TEXT("RandomNormalTextureSampler"));
 		HZBRemapping.Bind(Initializer.ParameterMap, TEXT("HZBRemapping"));
+		ViewPortRectMinAndInvSize.Bind(Initializer.ParameterMap, TEXT("ViewPortRectMinAndInvSize"));
 		OutTexture.Bind(Initializer.ParameterMap, TEXT("OutTexture"));
 	}
 
@@ -521,6 +523,12 @@ public:
 	{
 		const FViewInfo& View = Context.View;
 		const FVector4 HZBRemappingValue = GetHZBValue(View);				
+		const FIntRect ViewPortRect = Context.GetViewport();
+		const FVector4 ViewPortRectMinAndInvSizeValue(
+			ViewPortRect.Min.X,
+			ViewPortRect.Min.Y,
+			1.f / ViewPortRect.Size().X,
+			1.f / ViewPortRect.Size().Y);
 		const FSceneRenderTargetItem& SSAORandomization = GSystemTextures.SSAORandomization->GetRenderTargetItem();
 
 		const FComputeShaderRHIParamRef ShaderRHI = GetComputeShader();
@@ -534,13 +542,22 @@ public:
 		SetTextureParameter(RHICmdList, ShaderRHI, RandomNormalTexture, RandomNormalTextureSampler, TStaticSamplerState<SF_Point, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI(), SSAORandomization.ShaderResourceTexture);
 		ScreenSpaceAOParams.Set(RHICmdList, View, ShaderRHI, InputTextureSize);
 		SetShaderValue(RHICmdList, ShaderRHI, HZBRemapping, HZBRemappingValue);			
-	}
 
+		SetShaderValue(Context.RHICmdList, ShaderRHI, ViewPortRectMinAndInvSize, ViewPortRectMinAndInvSizeValue);
+	}
 	
 	void SetParametersGfx(FRHICommandList& RHICmdList, const FRenderingCompositePassContext& Context, FIntPoint InputTextureSize, FUnorderedAccessViewRHIParamRef OutUAV)
 	{
 		const FViewInfo& View = Context.View;
 		const FVector4 HZBRemappingValue = GetHZBValue(View);
+
+		const FIntRect ViewPortRect = Context.GetViewport();
+		const FVector4 ViewPortRectMinAndInvSizeValue(
+			ViewPortRect.Min.X,
+			ViewPortRect.Min.Y,
+			1.f / ViewPortRect.Size().X,
+			1.f / ViewPortRect.Size().Y);
+
 		const FSceneRenderTargetItem& SSAORandomization = GSystemTextures.SSAORandomization->GetRenderTargetItem();
 
 		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
@@ -553,6 +570,8 @@ public:
 		SetTextureParameter(RHICmdList, ShaderRHI, RandomNormalTexture, RandomNormalTextureSampler, TStaticSamplerState<SF_Point, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI(), SSAORandomization.ShaderResourceTexture);
 		ScreenSpaceAOParams.Set(RHICmdList, View, ShaderRHI, InputTextureSize);
 		SetShaderValue(RHICmdList, ShaderRHI, HZBRemapping, HZBRemappingValue);
+
+		SetShaderValue(Context.RHICmdList, ShaderRHI, ViewPortRectMinAndInvSize, ViewPortRectMinAndInvSizeValue);
 	}
 
 	template <typename TRHICmdList>
@@ -567,6 +586,7 @@ public:
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
 		Ar << HZBRemapping << PostprocessParameter << DeferredParameters << ScreenSpaceAOParams << RandomNormalTexture << RandomNormalTextureSampler << OutTexture;
+		Ar << ViewPortRectMinAndInvSize;
 		return bShaderHasOutdatedParameters;
 	}
 

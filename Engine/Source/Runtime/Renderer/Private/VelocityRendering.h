@@ -59,7 +59,9 @@ public:
 
 	void SetInstancedEyeIndex(FRHICommandList& RHICmdList, const uint32 EyeIndex) const;
 
-	FBoundShaderStateInput GetBoundShaderStateInput(ERHIFeatureLevel::Type InFeatureLevel) const;
+	FBoundShaderStateInput GetBoundShaderStateInput(ERHIFeatureLevel::Type InFeatureLevel, bool bMultiRes = false) const;
+
+	FGeometryShaderRHIRef GetMultiResFastGS() const;
 
 	friend int32 Compare(const FVelocityDrawingPolicy& A, const FVelocityDrawingPolicy& B);
 
@@ -74,6 +76,7 @@ private:
 	class FVelocityPS* PixelShader;
 	class FVelocityHS* HullShader;
 	class FVelocityDS* DomainShader;
+	class FVelocityFastGS* FastGeometryShader;
 	class FShaderPipeline* ShaderPipeline;
 };
 
@@ -93,7 +96,8 @@ public:
 		const FDrawingPolicyRenderState& DrawRenderState,
 		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 		FHitProxyId HitProxyId, 
-		const bool bIsInstancedStereo = false
+		const bool bIsInstancedStereo = false,
+		const bool bIsSinglePassStereo = false
 		);
 };
 

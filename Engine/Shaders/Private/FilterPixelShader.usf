@@ -21,6 +21,8 @@
 SamplerState FilterTextureSampler;
 Texture2D FilterTexture;
 
+int ForceLinear;
+
 #if COMBINE_ADDITIVE
 // optional texture that is additively blended on top of the many samples from the filter texture
 SamplerState AdditiveTextureSampler;
@@ -42,6 +44,55 @@ void Combine(inout MaterialFloat4 Dest, MaterialFloat4 Src, float4 Weight)
 		Dest = Src;
 	}
 #endif
+}
+
+//vrworks to do.  A lot of merging works to do with UNPACKED_UVS branching.
+float2 GetViewRectUV( float2 InUV)
+{
+	if (VRProjectionIsActive() && ForceLinear == 0)
+	{
+		return VRProjMapRenderTargetToViewRect(InUV);
+	}
+	return InUV;
+}
+
+float4 GetOffsetUVs(float2 ViewRectUV, float4 InterpolatedUV, float4 Offset)
+{
+    if (VRProjectionIsActive() && ForceLinear == 0)
+    {
+		// Remap the center position from multi-res to linear space; add the offset; then remap
+		// back to multi-res space.
+		// @todo This seems pretty expensive.  Also, screwing around with the sample positions
+		// spoils the way filter weights are encoded in the subpixel offsets.  Is it a problem?
+        float2 LinearUV = VRProjMapVRProjToLinear(ViewRectUV);
+        float4 UVUV;
+        UVUV.xy = VRProjMapLinearToVRProj(LinearUV + Offset.xy);
+        UVUV.xy = VRProjMapViewRectToRenderTarget(UVUV.xy);
+
+		// The odd wz swizzle here is consistent with the way offsets are applied in the VS
+        UVUV.wz = VRProjMapLinearToVRProj(LinearUV + Offset.wz);
+        UVUV.wz = VRProjMapViewRectToRenderTarget(UVUV.wz);
+
+        return UVUV;
+    }
+
+	//default to returning the interpolated set
+    return InterpolatedUV;
+}
+
+float2 AddOffsetInLinearSpace(float2 ViewRectUV, float2 Offset)
+{
+	// Remap the center position from multi-res to linear space; add the offset; then remap
+	// back to multi-res space.
+	// @todo This seems pretty expensive.  Also, screwing around with the sample positions
+	// spoils the way filter weights are encoded in the subpixel offsets.  Is it a problem?
+    if (VRProjectionIsActive() && ForceLinear == 0)
+    {
+        float2 UV = VRProjMapVRProjToLinear(ViewRectUV) + Offset;
+        UV = VRProjMapLinearToVRProj(UV);
+        return VRProjMapViewRectToRenderTarget(UV);
+    }
+    return ViewRectUV + Offset;
 }
 
 #if DYNAMIC_NUM_SAMPLES
