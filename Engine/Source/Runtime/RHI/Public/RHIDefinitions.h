@@ -882,6 +882,12 @@ inline bool RHISupportsShaderCompression(const EShaderPlatform Platform)
 	return ( Platform != SP_XBOXONE_D3D12) && ( Platform != SP_XBOXONE_D3D11 ); // Handled automatically with hardware decompress
 }
 
+inline bool RHISupportsFastGeometryShaders(const EShaderPlatform Platform)
+{
+	// Restrict support to PC D3D with SM5
+	return Platform == SP_PCD3D_SM5;
+}
+
 inline bool RHIHasTiledGPU(const EShaderPlatform Platform)
 {
 	return (Platform == SP_METAL_MRT) || Platform == SP_METAL || Platform == SP_OPENGL_ES2_IOS || Platform == SP_OPENGL_ES2_ANDROID || Platform == SP_OPENGL_ES3_1_ANDROID;

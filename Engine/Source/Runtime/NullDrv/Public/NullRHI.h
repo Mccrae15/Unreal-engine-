@@ -72,6 +72,31 @@ public:
 		return new FRHIGeometryShader(); 
 	}
 
+	virtual FGeometryShaderRHIRef RHICreateFastGeometryShader(const TArray<uint8>& Code) final override
+	{
+		return new FRHIGeometryShader();
+	}
+
+	virtual FVertexShaderRHIRef RHICreateVertexShaderWithSinglePassStereo(const TArray<uint8>& Code) final override
+	{
+		return new FRHIVertexShader();
+	}
+
+	virtual FHullShaderRHIRef RHICreateHullShaderWithSinglePassStereo(const TArray<uint8>& Code) final override
+	{
+		return new FRHIHullShader();
+	}
+
+	virtual FDomainShaderRHIRef RHICreateDomainShaderWithSinglePassStereo(const TArray<uint8>& Code) final override
+	{
+		return new FRHIDomainShader();
+	}
+
+	virtual FGeometryShaderRHIRef RHICreateFastGeometryShader_2(const TArray<uint8>& Code, uint32 Usage) final override
+	{
+		return new FRHIGeometryShader();
+	}
+
 	virtual FComputeShaderRHIRef RHICreateComputeShader(const TArray<uint8>& Code) final override
 	{ 
 		return new FRHIComputeShader(); 
@@ -109,6 +134,21 @@ public:
 	}
 
 	virtual void RHISetMultipleViewports(uint32 Count, const FViewportBounds* Data) final override
+	{
+
+	}
+
+	virtual void RHISetMultipleScissorRects(bool bEnable, uint32 Num, const FIntRect* Rects) final override
+	{
+
+	}
+
+	virtual void RHISetModifiedWMode(const FLensMatchedShading::Configuration& Conf, const bool bWarpForward, const bool bEnable) final override
+	{
+
+	}
+
+	virtual void RHISetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& Conf, const bool bWarpForward, const bool bEnable) final override
 	{
 
 	}
@@ -814,6 +854,10 @@ public:
 	{
 
 	}
+	virtual void RHISetSinglePassStereoParameters(bool bEnable, uint32 RenderTargetIndexOffset, uint8 IndependentViewportMaskEnable) final override
+	{
+
+	}
 	virtual void* RHIGetNativeDevice() final override
 	{ 
 		return 0; 
@@ -831,6 +875,12 @@ public:
 	virtual class IRHICommandContextContainer* RHIGetCommandContextContainer(int32 Index, int32 Num) final override
 	{ 
 		return nullptr; 
+	}
+	virtual void RHISetGPUMask(uint32 Mask) final override
+	{
+	}
+	virtual void RHICopyResourceToGPU(FTextureRHIParamRef SourceTextureRHI, FTextureRHIParamRef DestTextureRHI, uint32 DestGPUIndex, uint32 SrcGPUIndex, const FResolveParams& ResolveParams) final override
+	{
 	}
 
 private:

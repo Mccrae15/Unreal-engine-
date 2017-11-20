@@ -308,6 +308,7 @@ bool FDeferredShadingSceneRenderer::RenderLightFunctionForMaterial(
 			SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
 
 			const FViewInfo& View = Views[ViewIndex];
+			RHICmdList.SetGPUMask(View.StereoPass);
 
 			if (View.VisibleLightInfos[LightSceneInfo->Id].bInViewFrustum)
 			{
@@ -383,6 +384,7 @@ bool FDeferredShadingSceneRenderer::RenderLightFunctionForMaterial(
 				}
 			}
 		}
+		RHICmdList.SetGPUMask(0);
 
 		// Restore states.
 		RHICmdList.SetScissorRect(false, 0, 0, 0, 0);

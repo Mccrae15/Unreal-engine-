@@ -328,6 +328,15 @@ void FRCPassPostProcessEyeAdaptation::Process(FRenderingCompositePassContext& Co
 		Context.RHICmdList.EndUpdateMultiFrameResource(DestRenderTarget.ShaderResourceTexture);
 	}
 
+	//vrworks todo. care about the bIsComputePass branch?
+	if (Context.View.StereoPass == eSSP_LEFT_EYE)
+	{
+		Context.RHICmdList.CopyResourceToGPU(
+			EyeAdaptation->GetRenderTargetItem().TargetableTexture,
+			EyeAdaptation->GetRenderTargetItem().TargetableTexture,
+			1, 0, FResolveParams());
+	}
+
 	Context.View.SetValidEyeAdaptation();
 }
 

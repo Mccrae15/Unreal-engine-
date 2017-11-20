@@ -669,35 +669,6 @@ __nvapi_deprecated_function("Do not use this function - it is deprecated in rele
 NVAPI_INTERFACE NvAPI_SetView(NvDisplayHandle hNvDisplay, NV_VIEW_TARGET_INFO *pTargetInfo, NV_TARGET_VIEW_MODE targetView);
 
 
-///////////////////////////////////////////////////////////////////////////////
-//
-// FUNCTION NAME:   NvAPI_SetViewEx
-//
-//!  \fn NvAPI_SetViewEx(NvDisplayHandle hNvDisplay, NV_DISPLAY_PATH_INFO *pPathInfo, NV_TARGET_VIEW_MODE displayView)
-//!  This function lets caller to modify the display arrangement for selected source display handle in any of the nview modes.
-//!  It also allows to modify or extend the source display in dualview mode.
-//!   \note Maps the selected source to the associated target Ids.
-//!   \note Display PATH with this API is limited to single GPU. DUALVIEW across GPUs cannot be enabled with this API. 
-//!
-//! \deprecated  Do not use this function - it is deprecated in release 290. Instead, use NvAPI_DISP_SetDisplayConfig.
-//! SUPPORTED OS:  Windows Vista and higher
-//!
-//!
-//! \since Release: 95
-//!
-//! \param [in]  hNvDisplay   NVIDIA Display selection. #NVAPI_DEFAULT_HANDLE is not allowed, it has to be a handle enumerated with 
-//!                           NvAPI_EnumNVidiaDisplayHandle().
-//! \param [in]  pPathInfo    Pointer to array of NV_VIEW_PATH_INFO, specifying device properties in this view.
-//!                           The first device entry in the array is the physical primary.
-//!                           The device entry with the lowest source id is the desktop primary.
-//! \param [in]  pathCount    Count of paths specified in pPathInfo.
-//! \param [in]  displayView  Display view selected from NV_TARGET_VIEW_MODE.
-//!
-//! \retval  NVAPI_OK                Completed request
-//! \retval  NVAPI_ERROR             Miscellaneous error occurred
-//! \retval  NVAPI_INVALID_ARGUMENT  Invalid input parameter.
-//
-///////////////////////////////////////////////////////////////////////////////
 
 //! \ingroup dispcontrol
 #define NVAPI_MAX_DISPLAY_PATH  NVAPI_MAX_VIEW_TARGET
@@ -1513,7 +1484,6 @@ NVAPI_INTERFACE NvAPI_GPU_GetConnectedSLIOutputs(NvPhysicalGpuHandle hPhysicalGp
 
 
 
-
 //! \ingroup gpu
 typedef enum
 {
@@ -1567,6 +1537,7 @@ typedef struct _NV_GPU_DISPLAYIDS
 #define NV_GPU_DISPLAYIDS_VER2          MAKE_NVAPI_VERSION(NV_GPU_DISPLAYIDS,3)
 
 #define NV_GPU_DISPLAYIDS_VER NV_GPU_DISPLAYIDS_VER2
+
 
 ///////////////////////////////////////////////////////////////////////////////
 //

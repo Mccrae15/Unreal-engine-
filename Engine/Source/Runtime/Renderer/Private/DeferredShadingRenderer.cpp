@@ -299,6 +299,7 @@ void FDeferredShadingSceneRenderer::ClearGBufferAtMaxZ(FRHICommandList& RHICmdLi
 		SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("ClearView%d"), ViewIndex);
 
 		FViewInfo& View = Views[ViewIndex];
+		RHICmdList.SetGPUMask(View.StereoPass);
 
 		// Set viewport for this view
 		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1);
@@ -316,6 +317,7 @@ void FDeferredShadingSceneRenderer::ClearGBufferAtMaxZ(FRHICommandList& RHICmdLi
 		};
 		DrawPrimitiveUP(RHICmdList, PT_TriangleStrip, 2, ClearQuadVertices, sizeof(ClearQuadVertices[0]));
 	}
+	RHICmdList.SetGPUMask(0);
 }
 
 /** Render the TexturePool texture */
@@ -465,13 +467,13 @@ void FDeferredShadingSceneRenderer::RenderOcclusion(FRHICommandListImmediate& RH
 			{
 				FViewInfo& View = Views[ViewIndex];
 				FSceneViewState* ViewState = (FSceneViewState*)View.State;
-				
+				RHICmdList.SetGPUMask(View.StereoPass);
 				const uint32 bSSR = ShouldRenderScreenSpaceReflections(View);
 				const bool bSSAO = ShouldRenderScreenSpaceAmbientOcclusion(View);
 
 				if (bSSAO || bHZBOcclusion || bSSR)
 				{
-					BuildHZB(RHICmdList, Views[ViewIndex]);
+					BuildHZB(RHICmdList, View);
 				}
 
 				if (bHZBOcclusion && ViewState && ViewState->HZBOcclusionTests.GetNum() != 0)
@@ -481,6 +483,8 @@ void FDeferredShadingSceneRenderer::RenderOcclusion(FRHICommandListImmediate& RH
 					SCOPED_DRAW_EVENT(RHICmdList, HZB);
 					ViewState->HZBOcclusionTests.Submit(RHICmdList, View);
 				}
+
+			RHICmdList.SetGPUMask(0);
 			}
 
 			//async ssao only requires HZB and depth as inputs so get started ASAP
@@ -611,6 +615,7 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
+			RHICmdList.SetGPUMask(Views[ViewIndex].StereoPass);
 			Views[ViewIndex].HeightfieldLightingViewInfo.SetupVisibleHeightfields(Views[ViewIndex], RHICmdList);
 
 			if (ShouldPrepareGlobalDistanceField())
@@ -620,6 +625,7 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 				UpdateGlobalDistanceFieldVolume(RHICmdList, Views[ViewIndex], Scene, OcclusionMaxDistance, Views[ViewIndex].GlobalDistanceFieldInfo);
 			}
 		}	
+		RHICmdList.SetGPUMask(0);
 	}
 
 	if (GRHIThread)
@@ -849,9 +855,11 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		for(int32 ViewIndex = 0;ViewIndex < Views.Num();ViewIndex++)
 		{	
 			SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView,Views.Num() > 1, TEXT("View%d"), ViewIndex);
-
+			
+			RHICmdList.SetGPUMask(Views[ViewIndex].StereoPass);
 			GCompositionLighting.ProcessBeforeBasePass(RHICmdList, Views[ViewIndex]);
 		}
+		RHICmdList.SetGPUMask(0);
 		//GBuffer pass will want to write to SceneDepthZ
 		RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, SceneContext.GetSceneDepthTexture());
 		ServiceLocalQueue();
@@ -1017,8 +1025,10 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
 			SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
+			RHICmdList.SetGPUMask(Views[ViewIndex].StereoPass);
 			GCompositionLighting.ProcessAfterBasePass(RHICmdList, Views[ViewIndex]);
 		}
+		RHICmdList.SetGPUMask(0);
 		ServiceLocalQueue();
 	}
 
@@ -1027,17 +1037,32 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	{
 		SCOPED_DRAW_EVENT(RHICmdList, ClearStencilFromBasePass);
 
-		FRHISetRenderTargetsInfo Info(0, NULL, FRHIDepthRenderTargetView(
-			SceneContext.GetSceneDepthSurface(),
-			ERenderTargetLoadAction::ENoAction,
-			ERenderTargetStoreAction::ENoAction,
-			ERenderTargetLoadAction::EClear,
-			ERenderTargetStoreAction::EStore,
-			FExclusiveDepthStencil::DepthNop_StencilWrite));
-
-		// Clear stencil to 0 now that deferred decals are done using what was setup in the base pass
-		// Shadow passes and other users of stencil assume it is cleared to 0 going in
-		RHICmdList.SetRenderTargetsAndClear(Info);
+		if (Views[0].bVRProjectEnabled && Views[0].VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		{
+			FRHISetRenderTargetsInfo Info(0, NULL, FRHIDepthRenderTargetView(
+				SceneContext.GetSceneDepthSurface(),
+				ERenderTargetLoadAction::ELoad,
+				ERenderTargetStoreAction::ENoAction,
+				ERenderTargetLoadAction::EClear,
+				ERenderTargetStoreAction::EStore,
+				FExclusiveDepthStencil::DepthNop_StencilWrite));
+			// Clear stencil to 0 now that deferred decals are done using what was setup in the base pass
+			// Shadow passes and other users of stencil assume it is cleared to 0 going in
+			RHICmdList.SetRenderTargetsAndClear(Info);
+		}
+		else
+		{
+			FRHISetRenderTargetsInfo Info(0, NULL, FRHIDepthRenderTargetView(
+				SceneContext.GetSceneDepthSurface(),
+				ERenderTargetLoadAction::ENoAction,
+				ERenderTargetStoreAction::ENoAction,
+				ERenderTargetLoadAction::EClear,
+				ERenderTargetStoreAction::EStore,
+				FExclusiveDepthStencil::DepthNop_StencilWrite));
+			// Clear stencil to 0 now that deferred decals are done using what was setup in the base pass
+			// Shadow passes and other users of stencil assume it is cleared to 0 going in
+			RHICmdList.SetRenderTargetsAndClear(Info);
+		}
 
 		RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, SceneContext.GetSceneDepthSurface());
 	}
@@ -1088,11 +1113,12 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 			if(IsLpvIndirectPassRequired(View))
 			{
 				SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView,Views.Num() > 1, TEXT("View%d"), ViewIndex);
-
+				RHICmdList.SetGPUMask(Views[ViewIndex].StereoPass);
 				GCompositionLighting.ProcessLpvIndirect(RHICmdList, View);
 				ServiceLocalQueue();
 			}
 		}
+		RHICmdList.SetGPUMask(0);
 
 		RenderDynamicSkyLighting(RHICmdList, VelocityRT, DynamicBentNormalAO);
 		ServiceLocalQueue();
@@ -1168,9 +1194,11 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 		{
 			const FViewInfo& View = Views[ViewIndex];
+			RHICmdList.SetGPUMask(View.StereoPass);
 			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
 			RendererModule.RenderPostOpaqueExtensions(View, RHICmdList, SceneContext);
 		}
+		RHICmdList.SetGPUMask(0);
 	}
 
 	// No longer needed, release
@@ -1213,6 +1241,7 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 	{
 		const FViewInfo& View = Views[ViewIndex];
+		RHICmdList.SetGPUMask(0);
 		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
 		RendererModule.RenderOverlayExtensions(View, RHICmdList, SceneContext);
 	}
@@ -1261,10 +1290,10 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
 			SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
-
+			RHICmdList.SetGPUMask(Views[ViewIndex].StereoPass);
 			GPostProcessing.Process(RHICmdList, Views[ ViewIndex ], VelocityRT);
 		}
-
+		RHICmdList.SetGPUMask(0);
 		// End of frame, we don't need it anymore
 		FSceneRenderTargets::Get(RHICmdList).FreeSeparateTranslucencyDepth();
 
@@ -1275,6 +1304,18 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	{
 		// Release the original reference on the scene render targets
 		SceneContext.AdjustGBufferRefCount(RHICmdList, -1);
+	}
+
+	if (Views.Num() == 2)
+	{
+		FResolveParams Params;
+		Params.Rect.X2 = ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeX();
+		Params.Rect.Y2 = ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeY();
+
+		Params.Rect.X1 = Params.Rect.X2 / 2;
+		Params.Rect.Y1 = 0;
+
+		RHICmdList.CopyResourceToGPU(ViewFamily.RenderTarget->GetRenderTargetTexture(), ViewFamily.RenderTarget->GetRenderTargetTexture(), 0, 1, Params);
 	}
 
 	//grab the new transform out of the proxies for next frame
@@ -1368,8 +1409,11 @@ void FDeferredShadingSceneRenderer::UpdateDownsampledDepthSurface(FRHICommandLis
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
 			const FViewInfo& View = Views[ViewIndex];
+			RHICmdList.SetGPUMask(View.StereoPass);
+
 			DownsampleDepthSurface(RHICmdList, SceneContext.GetSmallDepthSurface(), View, 1.0f / SceneContext.GetSmallColorDepthDownsampleFactor(), true);
 		}
+		RHICmdList.SetGPUMask(0);
 	}
 }
 
@@ -1501,6 +1545,10 @@ void FDeferredShadingSceneRenderer::CopyStencilToLightingChannelTexture(FRHIComm
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
 			const FViewInfo& View = Views[ViewIndex];
+			
+			
+			RHICmdList.SetGPUMask(View.StereoPass);
+
 			// Set shaders and texture
 			TShaderMapRef<FScreenVS> ScreenVertexShader(View.ShaderMap);
 			TShaderMapRef<FCopyStencilToLightingChannelsPS> PixelShader(View.ShaderMap);
@@ -1525,6 +1573,7 @@ void FDeferredShadingSceneRenderer::CopyStencilToLightingChannelTexture(FRHIComm
 				*ScreenVertexShader,
 				EDRF_UseTriangleOptimization);
 		}
+		RHICmdList.SetGPUMask(0);
 
 		FResolveParams ResolveParams;
 

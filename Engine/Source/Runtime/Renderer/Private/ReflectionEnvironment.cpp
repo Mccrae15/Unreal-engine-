@@ -879,6 +879,7 @@ void FDeferredShadingSceneRenderer::RenderReflectionCaptureSpecularBounceForAllV
 	{
 		const FViewInfo& View = Views[ViewIndex];
 
+		RHICmdList.SetGPUMask(View.StereoPass);
 		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
 
 		
@@ -895,6 +896,7 @@ void FDeferredShadingSceneRenderer::RenderReflectionCaptureSpecularBounceForAllV
 			*VertexShader,
 			EDRF_UseTriangleOptimization);
 	}
+	RHICmdList.SetGPUMask(0);
 
 	ResolveSceneColor(RHICmdList);
 }
@@ -1126,6 +1128,8 @@ void FDeferredShadingSceneRenderer::RenderTiledDeferredImageBasedReflections(FRH
 	{
 		FViewInfo& View = Views[ViewIndex];
 
+		RHICmdList.SetGPUMask(View.StereoPass);
+
 		const uint32 bSSR = ShouldRenderScreenSpaceReflections(Views[ViewIndex]);
 
 		TRefCountPtr<IPooledRenderTarget> SSROutput = GSystemTextures.BlackDummy;
@@ -1197,6 +1201,7 @@ void FDeferredShadingSceneRenderer::RenderTiledDeferredImageBasedReflections(FRH
 			RHICmdList.WaitComputeFence(ReflectionEndFence);
 		}
 	}
+	RHICmdList.SetGPUMask(0);
 
 	SceneContext.SetSceneColor(NewSceneColor);
 	check(SceneContext.GetSceneColor());
@@ -1272,6 +1277,8 @@ void FDeferredShadingSceneRenderer::RenderStandardDeferredImageBasedReflections(
 	{
 		FViewInfo& View = Views[ViewIndex];
 		FSceneViewState* ViewState = (FSceneViewState*)View.State;
+
+		RHICmdList.SetGPUMask(View.StereoPass);
 
 		bool bLPV = false;
 		
@@ -1469,6 +1476,7 @@ void FDeferredShadingSceneRenderer::RenderStandardDeferredImageBasedReflections(
 			ResolveSceneColor(RHICmdList);
 		}
 	}
+	RHICmdList.SetGPUMask(0);
 }
 
 void FDeferredShadingSceneRenderer::RenderDeferredReflections(FRHICommandListImmediate& RHICmdList, const TRefCountPtr<IPooledRenderTarget>& DynamicBentNormalAO, TRefCountPtr<IPooledRenderTarget>& VelocityRT)

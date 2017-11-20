@@ -34,7 +34,7 @@ public:
 	{
 		bIsComputePass = bInIsComputePass;
 		bPreferAsyncCompute = false;
-		bPreferAsyncCompute &= (GNumActiveGPUsForRendering == 1); // Can't handle multi-frame updates on async pipe
+		//vrworks todo.bPreferAsyncCompute &= (GNumActiveGPUsForRendering == 1); // Can't handle multi-frame updates on async pipe
 	}
 
 	// interface FRenderingCompositePass ---------
@@ -90,7 +90,7 @@ public:
 	{
 		bIsComputePass = bInIsComputePass;
 		bPreferAsyncCompute = false;
-		bPreferAsyncCompute &= (GNumActiveGPUsForRendering == 1); // Can't handle multi-frame updates on async pipe
+		//vrworks todo.bPreferAsyncCompute &= (GNumActiveGPUsForRendering == 1); // Can't handle multi-frame updates on async pipe
 	}
 
 	// interface FRenderingCompositePass ---------

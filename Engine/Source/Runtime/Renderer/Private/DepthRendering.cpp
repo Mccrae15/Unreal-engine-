@@ -81,6 +81,8 @@ protected:
 		InstancedEyeIndexParameter.Bind(Initializer.ParameterMap, TEXT("InstancedEyeIndex"));
 		IsInstancedStereoParameter.Bind(Initializer.ParameterMap, TEXT("bIsInstancedStereo"));
 		IsInstancedStereoEmulatedParameter.Bind(Initializer.ParameterMap, TEXT("bIsInstancedStereoEmulated"));
+		IsSinglePassStereoParameter.Bind(Initializer.ParameterMap, TEXT("bIsSinglePassStereo"));
+		NeedsSinglePassStereoBiasParameter.Bind(Initializer.ParameterMap, TEXT("bNeedsSinglePassStereoBias"));
 	}
 
 private:
@@ -88,6 +90,8 @@ private:
 	FShaderParameter InstancedEyeIndexParameter;
 	FShaderParameter IsInstancedStereoParameter;
 	FShaderParameter IsInstancedStereoEmulatedParameter;
+	FShaderParameter IsSinglePassStereoParameter;
+	FShaderParameter NeedsSinglePassStereoBiasParameter;
 
 public:
 
@@ -109,6 +113,8 @@ public:
 		Ar << InstancedEyeIndexParameter;
 		Ar << IsInstancedStereoParameter;
 		Ar << IsInstancedStereoEmulatedParameter;
+		Ar << IsSinglePassStereoParameter;
+		Ar << NeedsSinglePassStereoBiasParameter;
 		return result;
 	}
 
@@ -119,7 +125,9 @@ public:
 		const FSceneView& View, 
 		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
 		const bool bIsInstancedStereo, 
-		const bool bIsInstancedStereoEmulated
+		const bool bIsInstancedStereoEmulated,
+		const bool bIsSinglePassStereo,
+		const bool bNeedsSinglePassStereoBias
 		)
 	{
 		FMeshMaterialShader::SetParameters(RHICmdList, GetVertexShader(),MaterialRenderProxy,MaterialResource,View,ViewUniformBuffer,ESceneRenderTargetsMode::DontSet);
@@ -138,6 +146,16 @@ public:
 		{
 			SetShaderValue(RHICmdList, GetVertexShader(), InstancedEyeIndexParameter, 0);
 		}
+
+		if (IsSinglePassStereoParameter.IsBound())
+		{
+			SetShaderValue(RHICmdList, GetVertexShader(), IsSinglePassStereoParameter, bIsSinglePassStereo);
+		}
+
+		if (NeedsSinglePassStereoBiasParameter.IsBound())
+		{
+			SetShaderValue(RHICmdList, GetVertexShader(), NeedsSinglePassStereoBiasParameter, bNeedsSinglePassStereoBias);
+		}
 	}
 
 	void SetMesh(FRHICommandList& RHICmdList, const FVertexFactory* VertexFactory,const FSceneView& View,const FPrimitiveSceneProxy* Proxy,const FMeshBatchElement& BatchElement,const FDrawingPolicyRenderState& DrawRenderState)
@@ -152,6 +170,38 @@ public:
 			SetShaderValue(RHICmdList, GetVertexShader(), InstancedEyeIndexParameter, EyeIndex);
 		}
 	}
+};
+
+// Fast geometry shader for multi-res depth rendering
+template <bool bUsePositionOnlyStream>
+class TDepthOnlyFastGS : public FMeshMaterialShader
+{
+	DECLARE_SHADER_TYPE(TDepthOnlyFastGS, MeshMaterial);
+protected:
+
+	TDepthOnlyFastGS() {}
+	TDepthOnlyFastGS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer) :
+		FMeshMaterialShader(Initializer)
+	{}
+
+public:
+
+	static bool ShouldCache(EShaderPlatform Platform, const FMaterial* Material, const FVertexFactoryType* VertexFactoryType)
+	{
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && TDepthOnlyVS<bUsePositionOnlyStream>::ShouldCache(Platform, Material, VertexFactoryType) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+	}
+
+	void SetParameters(FRHICommandList& RHICmdList, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& MaterialResource, const FSceneView& View)
+	{
+		FMeshMaterialShader::SetParameters(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), MaterialRenderProxy, MaterialResource, View, View.ViewUniformBuffer, ESceneRenderTargetsMode::DontSet);
+	}
+
+	void SetMesh(FRHICommandList& RHICmdList, const FVertexFactory* VertexFactory, const FSceneView& View, const FPrimitiveSceneProxy* Proxy, const FMeshBatchElement& BatchElement, const FDrawingPolicyRenderState&  DrawRenderState)
+	{
+		FMeshMaterialShader::SetMesh(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), VertexFactory, View, Proxy, BatchElement, DrawRenderState);
+	}
+
+	static const bool IsFastGeometryShader = true;
 };
 
 /**
@@ -200,6 +250,9 @@ IMPLEMENT_MATERIAL_SHADER_TYPE(template<>,TDepthOnlyVS<true>,TEXT("PositionOnlyD
 IMPLEMENT_MATERIAL_SHADER_TYPE(template<>,TDepthOnlyVS<false>,TEXT("DepthOnlyVertexShader"),TEXT("Main"),SF_Vertex);
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FDepthOnlyHS,TEXT("DepthOnlyVertexShader"),TEXT("MainHull"),SF_Hull);	
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FDepthOnlyDS,TEXT("DepthOnlyVertexShader"),TEXT("MainDomain"),SF_Domain);
+IMPLEMENT_MATERIAL_SHADER_TYPE(template<>, TDepthOnlyFastGS<true>, TEXT("PositionOnlyDepthVertexShader"), TEXT("VRProjectFastGS"), SF_Geometry);
+IMPLEMENT_MATERIAL_SHADER_TYPE(template<>, TDepthOnlyFastGS<false>, TEXT("DepthOnlyVertexShader"), TEXT("VRProjectFastGS"), SF_Geometry);
+
 
 /**
 * A pixel shader for rendering the depth of a mesh.
@@ -330,6 +383,10 @@ FDepthDrawingPolicy::FDepthDrawingPolicy(
 			}
 		}
 	}
+
+	// EHartNV ToDo : Need to support shader pipelines?
+	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && IsFastGSNeeded();
+	FastGeometryShader = bMultiRes ? InMaterialResource.GetShader<TDepthOnlyFastGS<false> >(InVertexFactory->GetType()) : nullptr;
 }
 
 void ApplyDitheredLODTransitionStateInternal(FDrawingPolicyRenderState& DrawRenderState, const FViewInfo& ViewInfo, const FStaticMesh& Mesh, const bool InAllowStencilDither)
@@ -403,17 +460,24 @@ void FDepthDrawingPolicy::SetInstancedEyeIndex(FRHICommandList& RHICmdList, cons
 
 void FDepthDrawingPolicy::SetSharedState(FRHICommandList& RHICmdList, const FDrawingPolicyRenderState& DrawRenderState, const FSceneView* View, const FDepthDrawingPolicy::ContextDataType PolicyContext) const
 {
+	CommitGraphicsPipelineState(RHICmdList, *this, DrawRenderState, GetBoundShaderStateInput(View->GetFeatureLevel(), View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo));
+
 	// Set the depth-only shader parameters for the material.
-	VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, DrawRenderState.GetViewUniformBuffer(), PolicyContext.bIsInstancedStereo, PolicyContext.bIsInstancedStereoEmulated);
+	VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, DrawRenderState.GetViewUniformBuffer(), PolicyContext.bIsInstancedStereo, PolicyContext.bIsInstancedStereoEmulated, PolicyContext.bIsSinglePassStereo, PolicyContext.bNeedsSinglePassStereoBias);
 	if(HullShader && DomainShader)
 	{
 		HullShader->SetParameters(RHICmdList, MaterialRenderProxy,*View);
-		DomainShader->SetParameters(RHICmdList, MaterialRenderProxy,*View);
-		}
+		DomainShader->SetParameters(RHICmdList, MaterialRenderProxy,*View, PolicyContext.bNeedsSinglePassStereoBias, PolicyContext.bIsSinglePassStereo);
+	}
 
 	if (bNeedsPixelShader)
 	{
 		PixelShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, View, DrawRenderState.GetViewUniformBuffer(), MobileColorValue);
+	}
+
+	if (View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo)
+	{
+		FastGeometryShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View);
 	}
 
 	// Set the shared mesh resources.
@@ -425,7 +489,7 @@ void FDepthDrawingPolicy::SetSharedState(FRHICommandList& RHICmdList, const FDra
 * as well as the shaders needed to draw the mesh
 * @return new bound shader state object
 */
-FBoundShaderStateInput FDepthDrawingPolicy::GetBoundShaderStateInput(ERHIFeatureLevel::Type InFeatureLevel) const
+FBoundShaderStateInput FDepthDrawingPolicy::GetBoundShaderStateInput(ERHIFeatureLevel::Type InFeatureLevel, bool bMultiRes /* = false */) const
 {
 	return FBoundShaderStateInput(
 		FMeshDrawingPolicy::GetVertexDeclaration(), 
@@ -433,7 +497,12 @@ FBoundShaderStateInput FDepthDrawingPolicy::GetBoundShaderStateInput(ERHIFeature
 		GETSAFERHISHADER_HULL(HullShader), 
 		GETSAFERHISHADER_DOMAIN(DomainShader),
 		bNeedsPixelShader ? PixelShader->GetPixelShader() : NULL,
-		NULL);
+		(bMultiRes ? GetMultiResFastGS() : FGeometryShaderRHIRef()));
+}
+
+FGeometryShaderRHIRef FDepthDrawingPolicy::GetMultiResFastGS() const
+{
+	return GETSAFERHISHADER_GEOMETRY(FastGeometryShader);
 }
 
 void FDepthDrawingPolicy::SetMeshRenderState(
@@ -459,12 +528,18 @@ void FDepthDrawingPolicy::SetMeshRenderState(
 	{
 		PixelShader->SetMesh(RHICmdList, VertexFactory,View,PrimitiveSceneProxy,BatchElement,DrawRenderState);
 	}
+
+	if (View.bVRProjectEnabled)
+	{
+		FastGeometryShader->SetMesh(RHICmdList, VertexFactory, View, PrimitiveSceneProxy, BatchElement, DrawRenderState);
+	}
 }
 
 int32 CompareDrawingPolicy(const FDepthDrawingPolicy& A,const FDepthDrawingPolicy& B)
 {
 	COMPAREDRAWINGPOLICYMEMBERS(VertexShader);
 	COMPAREDRAWINGPOLICYMEMBERS(HullShader);
+	COMPAREDRAWINGPOLICYMEMBERS(FastGeometryShader);
 	COMPAREDRAWINGPOLICYMEMBERS(DomainShader);
 	COMPAREDRAWINGPOLICYMEMBERS(bNeedsPixelShader);
 	COMPAREDRAWINGPOLICYMEMBERS(PixelShader);
@@ -487,15 +562,25 @@ FPositionOnlyDepthDrawingPolicy::FPositionOnlyDepthDrawingPolicy(
 		? ShaderPipeline->GetShader<TDepthOnlyVS<true> >()
 		: InMaterialResource.GetShader<TDepthOnlyVS<true> >(InVertexFactory->GetType());
 	bUsePositionOnlyVS = true;
+
+	const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[InMaterialResource.GetFeatureLevel()]) && IsFastGSNeeded();
+	FastGeometryShader = bMultiRes ? InMaterialResource.GetShader<TDepthOnlyFastGS<true> >(InVertexFactory->GetType()) : nullptr;
 }
 
 void FPositionOnlyDepthDrawingPolicy::SetSharedState(FRHICommandList& RHICmdList, const FDrawingPolicyRenderState& DrawRenderState, const FSceneView* View, FPositionOnlyDepthDrawingPolicy::ContextDataType PolicyContext) const
 {
+	CommitGraphicsPipelineState(RHICmdList, *this, DrawRenderState, GetBoundShaderStateInput(View->GetFeatureLevel(), View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo));
+
 	// Set the depth-only shader parameters for the material.
-	VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, View->ViewUniformBuffer, PolicyContext.bIsInstancedStereo, PolicyContext.bIsInstancedStereoEmulated);
+	VertexShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View, View->ViewUniformBuffer, PolicyContext.bIsInstancedStereo, PolicyContext.bIsInstancedStereoEmulated, PolicyContext.bIsSinglePassStereo, PolicyContext.bNeedsSinglePassStereoBias);
 
 	// Set the shared mesh resources.
 	VertexFactory->SetPositionStream(RHICmdList);
+
+	if (View->bVRProjectEnabled || PolicyContext.bIsSinglePassStereo)
+	{
+		FastGeometryShader->SetParameters(RHICmdList, MaterialRenderProxy, *MaterialResource, *View);
+	}
 }
 
 /** 
@@ -503,13 +588,18 @@ void FPositionOnlyDepthDrawingPolicy::SetSharedState(FRHICommandList& RHICmdList
 * as well as the shaders needed to draw the mesh
 * @return new bound shader state object
 */
-FBoundShaderStateInput FPositionOnlyDepthDrawingPolicy::GetBoundShaderStateInput(ERHIFeatureLevel::Type InFeatureLevel) const
+FBoundShaderStateInput FPositionOnlyDepthDrawingPolicy::GetBoundShaderStateInput(ERHIFeatureLevel::Type InFeatureLevel, bool bMultiRes /* = false */) const
 {
 	FVertexDeclarationRHIParamRef VertexDeclaration;
 	VertexDeclaration = VertexFactory->GetPositionDeclaration();
 
 	checkSlow(MaterialRenderProxy->GetMaterial(InFeatureLevel)->GetBlendMode() == BLEND_Opaque);
-	return FBoundShaderStateInput(VertexDeclaration, VertexShader->GetVertexShader(), FHullShaderRHIRef(), FDomainShaderRHIRef(), FPixelShaderRHIRef(), FGeometryShaderRHIRef());
+	return FBoundShaderStateInput(VertexDeclaration, VertexShader->GetVertexShader(), FHullShaderRHIRef(), FDomainShaderRHIRef(), FPixelShaderRHIRef(), (bMultiRes ? GetMultiResFastGS() : FGeometryShaderRHIRef()));
+}
+
+FGeometryShaderRHIRef FPositionOnlyDepthDrawingPolicy::GetMultiResFastGS() const
+{
+	return GETSAFERHISHADER_GEOMETRY(FastGeometryShader);
 }
 
 void FPositionOnlyDepthDrawingPolicy::SetMeshRenderState(
@@ -524,6 +614,11 @@ void FPositionOnlyDepthDrawingPolicy::SetMeshRenderState(
 	) const
 {
 	VertexShader->SetMesh(RHICmdList, VertexFactory, View, PrimitiveSceneProxy, Mesh.Elements[BatchElementIndex], DrawRenderState);
+
+	if (View.bVRProjectEnabled)
+	{
+		FastGeometryShader->SetMesh(RHICmdList, VertexFactory, View, PrimitiveSceneProxy, Mesh.Elements[BatchElementIndex], DrawRenderState);
+	}
 }
 
 void FPositionOnlyDepthDrawingPolicy::SetInstancedEyeIndex(FRHICommandList& RHICmdList, const uint32 EyeIndex) const
@@ -534,6 +629,7 @@ void FPositionOnlyDepthDrawingPolicy::SetInstancedEyeIndex(FRHICommandList& RHIC
 int32 CompareDrawingPolicy(const FPositionOnlyDepthDrawingPolicy& A, const FPositionOnlyDepthDrawingPolicy& B)
 {
 	COMPAREDRAWINGPOLICYMEMBERS(VertexShader);
+	COMPAREDRAWINGPOLICYMEMBERS(FastGeometryShader);
 	COMPAREDRAWINGPOLICYMEMBERS(VertexFactory);
 	COMPAREDRAWINGPOLICYMEMBERS(MaterialRenderProxy);
 	return 0;
@@ -627,7 +723,9 @@ bool FDepthDrawingPolicyFactory::DrawMesh(
 	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 	FHitProxyId HitProxyId, 
 	const bool bIsInstancedStereo, 
-	const bool bIsInstancedStereoEmulated
+	const bool bIsInstancedStereoEmulated,
+	const bool bIsSinglePassStereo,
+	const bool bNeedsSinglePassStereoBias
 	)
 {
 	const FMaterialRenderProxy* MaterialRenderProxy = Mesh.MaterialRenderProxy;
@@ -671,7 +769,7 @@ bool FDepthDrawingPolicyFactory::DrawMesh(
 			FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 			DrawingPolicy.SetupPipelineState(DrawRenderStateLocal, View);
 			CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel()));
-			DrawingPolicy.SetSharedState(RHICmdList, DrawRenderStateLocal, &View, FPositionOnlyDepthDrawingPolicy::ContextDataType(bIsInstancedStereo, bIsInstancedStereoEmulated));
+			DrawingPolicy.SetSharedState(RHICmdList, DrawRenderStateLocal, &View, FPositionOnlyDepthDrawingPolicy::ContextDataType(bIsInstancedStereo, bIsSinglePassStereo, bIsInstancedStereoEmulated, bNeedsSinglePassStereoBias));
 
 			int32 BatchElementIndex = 0;
 			uint64 Mask = BatchElementMask;
@@ -738,7 +836,7 @@ bool FDepthDrawingPolicyFactory::DrawMesh(
 				FDrawingPolicyRenderState DrawRenderStateLocal(DrawRenderState);
 				DrawingPolicy.SetupPipelineState(DrawRenderStateLocal, View);
 				CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderStateLocal, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel()));
-				DrawingPolicy.SetSharedState(RHICmdList, DrawRenderStateLocal, &View, FDepthDrawingPolicy::ContextDataType(bIsInstancedStereo, bIsInstancedStereoEmulated));
+				DrawingPolicy.SetSharedState(RHICmdList, DrawRenderStateLocal, &View, FDepthDrawingPolicy::ContextDataType(bIsInstancedStereo, bIsSinglePassStereo, bIsInstancedStereoEmulated, bNeedsSinglePassStereoBias));
 
 				int32 BatchElementIndex = 0;
 				uint64 Mask = BatchElementMask;
@@ -782,7 +880,9 @@ bool FDepthDrawingPolicyFactory::DrawDynamicMesh(
 	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 	FHitProxyId HitProxyId, 
 	const bool bIsInstancedStereo, 
-	const bool bIsInstancedStereoEmulated
+	const bool bIsInstancedStereoEmulated,
+	const bool bIsSinglePassStereo,
+	const bool bNeedsSinglePassStereoBias
 	)
 {
 	return DrawMesh(
@@ -796,7 +896,9 @@ bool FDepthDrawingPolicyFactory::DrawDynamicMesh(
 		PrimitiveSceneProxy,
 		HitProxyId, 
 		bIsInstancedStereo, 
-		bIsInstancedStereoEmulated
+		bIsInstancedStereoEmulated,
+		bIsSinglePassStereo,
+		bNeedsSinglePassStereoBias
 		);
 }
 
@@ -811,7 +913,8 @@ bool FDepthDrawingPolicyFactory::DrawStaticMesh(
 	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 	FHitProxyId HitProxyId, 
 	const bool bIsInstancedStereo,
-	const bool bIsInstancedStereoEmulated
+	const bool bIsInstancedStereoEmulated,
+	const bool bNeedsSinglePassStereoBias
 	)
 {
 	bool bDirty = false;
@@ -829,7 +932,9 @@ bool FDepthDrawingPolicyFactory::DrawStaticMesh(
 		PrimitiveSceneProxy,
 		HitProxyId, 
 		bIsInstancedStereo, 
-		bIsInstancedStereoEmulated
+		bIsInstancedStereoEmulated,
+		false,
+		bNeedsSinglePassStereoBias
 		);
 
 	return bDirty;
@@ -870,7 +975,7 @@ bool FDeferredShadingSceneRenderer::RenderPrePassViewDynamic(FRHICommandList& RH
 
 			if (bShouldUseAsOccluder)
 			{
-				FDepthDrawingPolicyFactory::DrawDynamicMesh(RHICmdList, View, Context, MeshBatch, true, DrawRenderState, PrimitiveSceneProxy, MeshBatch.BatchHitProxyId, View.IsInstancedStereoPass());
+				FDepthDrawingPolicyFactory::DrawDynamicMesh(RHICmdList, View, Context, MeshBatch, true, DrawRenderState, PrimitiveSceneProxy, MeshBatch.BatchHitProxyId, View.IsInstancedStereoPass(), false, View.IsSinglePassStereoAllowed());
 			}
 		}
 	}
@@ -888,9 +993,39 @@ static void SetupPrePassView(FRHICommandList& RHICmdList, const FViewInfo& View,
 	
 	RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
 
-	if (!View.IsInstancedStereoPass())
+	bool bIsSinglePassStereo = View.IsSinglePassStereoAllowed();
+	if (View.bVRProjectEnabled && !bIsSinglePassStereo)
+	{
+		// Set the true viewports, but leave Context.ViewPortRect alone
+		RHICmdList.SetMultipleViewports(View.StereoVRProjectViewportArray.Num(), View.StereoVRProjectViewportArray.GetData());
+		RHICmdList.SetMultipleScissorRects(true, View.StereoVRProjectScissorArray.Num(), View.StereoVRProjectScissorArray.GetData());
+
+		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		{
+			if (View.IsInstancedStereoPass())
+			{
+				RHICmdList.SetModifiedWModeStereo(View.LensMatchedShadingStereoConf, true, true);
+			}
+			else
+			{
+				RHICmdList.SetModifiedWMode(View.LensMatchedShadingConf, true, true);
+			}
+		}
+	}
+	else if (bIsSinglePassStereo)
+	{
+		RHICmdList.SetSinglePassStereoParameters(true, 0, true);
+		RHICmdList.SetMultipleViewports(View.Family->SPSViewportArray.Num(), View.Family->SPSViewportArray.GetData());
+		RHICmdList.SetMultipleScissorRects(true, View.Family->SPSScissorArray.Num(), View.Family->SPSScissorArray.GetData());
+		if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		{
+			RHICmdList.SetModifiedWModeStereo(View.LensMatchedShadingStereoConf, true, true);
+		}
+	}
+	else if (!View.IsInstancedStereoPass())
 	{
 		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+		RHICmdList.SetGPUMask(View.StereoPass);
 	}
 	else
 	{
@@ -914,12 +1049,22 @@ static void RenderHiddenAreaMaskView(FRHICommandList& RHICmdList, FGraphicsPipel
 	const auto FeatureLevel = GMaxRHIFeatureLevel;
 	const auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
 	TShaderMapRef<TOneColorVS<true> > VertexShader(ShaderMap);
+	TShaderMapRef<TOneColorFastGS<> > GeometryShader(ShaderMap);
 
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	if (View.bVRProjectEnabled)
+	{
+		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(*GeometryShader);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		GeometryShader->SetParameters(RHICmdList, View);
+	}
+	else
+	{
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	}
 
 	GEngine->HMDDevice->DrawHiddenAreaMesh_RenderThread(RHICmdList, View.StereoPass);
 }
@@ -933,7 +1078,7 @@ bool FDeferredShadingSceneRenderer::RenderPrePassView(FRHICommandList& RHICmdLis
 
 	// Draw the static occluder primitives using a depth drawing policy.
 
-	if (!View.IsInstancedStereoPass())
+	if (!View.IsInstancedStereoPass() && !View.IsSinglePassStereoAllowed())
 	{
 		{
 			// Draw opaque occluders which support a separate position-only
@@ -958,19 +1103,39 @@ bool FDeferredShadingSceneRenderer::RenderPrePassView(FRHICommandList& RHICmdLis
 	else
 	{
 		const StereoPair StereoView(Views[0], Views[1], Views[0].StaticMeshOccluderMap, Views[1].StaticMeshOccluderMap, Views[0].StaticMeshBatchVisibility, Views[1].StaticMeshBatchVisibility);
+		if (View.IsSinglePassStereoAllowed())
 		{
-			SCOPED_DRAW_EVENT(RHICmdList, PosOnlyOpaque);
-			bDirty |= Scene->PositionOnlyDepthDrawList.DrawVisibleInstancedStereo(RHICmdList, StereoView, DrawRenderState);
-		}
-		{
-			SCOPED_DRAW_EVENT(RHICmdList, Opaque);
-			bDirty |= Scene->DepthDrawList.DrawVisibleInstancedStereo(RHICmdList, StereoView, DrawRenderState);
-		}
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, PosOnlyOpaque);
+				bDirty |= Scene->PositionOnlyDepthDrawList.DrawVisibleSinglePassStereo(RHICmdList, StereoView, DrawRenderState);
+			}
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, Opaque);
+				bDirty |= Scene->DepthDrawList.DrawVisibleSinglePassStereo(RHICmdList, StereoView, DrawRenderState);
+			}
 
-		if (EarlyZPassMode >= DDM_AllOccluders)
+			if (EarlyZPassMode >= DDM_AllOccluders)
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, Masked);
+				bDirty |= Scene->MaskedDepthDrawList.DrawVisibleSinglePassStereo(RHICmdList, StereoView, DrawRenderState);
+			}
+		}
+		else
 		{
-			SCOPED_DRAW_EVENT(RHICmdList, Masked);
-			bDirty |= Scene->MaskedDepthDrawList.DrawVisibleInstancedStereo(RHICmdList, StereoView, DrawRenderState);
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, PosOnlyOpaque);
+				bDirty |= Scene->PositionOnlyDepthDrawList.DrawVisibleInstancedStereo(RHICmdList, StereoView, DrawRenderState);
+			}
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, Opaque);
+				bDirty |= Scene->DepthDrawList.DrawVisibleInstancedStereo(RHICmdList, StereoView, DrawRenderState);
+			}
+
+			if (EarlyZPassMode >= DDM_AllOccluders)
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, Masked);
+				bDirty |= Scene->MaskedDepthDrawList.DrawVisibleInstancedStereo(RHICmdList, StereoView, DrawRenderState);
+			}
 		}
 	}
 
@@ -978,6 +1143,21 @@ bool FDeferredShadingSceneRenderer::RenderPrePassView(FRHICommandList& RHICmdLis
 		SCOPED_DRAW_EVENT(RHICmdList, Dynamic);
 		bDirty |= RenderPrePassViewDynamic(RHICmdList, View, DrawRenderState);
 	}
+
+
+	if (View.bVRProjectEnabled)
+	{
+		// Reset viewport and scissor after rendering to vr projection view
+		View.EndVRProjectionStates(RHICmdList);
+	}
+
+	if (View.IsSinglePassStereoAllowed())
+	{
+		RHICmdList.SetSinglePassStereoParameters(false, 0, true);
+	}
+
+	RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
+	RHICmdList.SetGPUMask(0);
 
 	return bDirty;
 }
@@ -1034,6 +1214,18 @@ public:
 		// Do not copy-paste. this is a very unusual FParallelCommandListSet because it is a prepass and we want to do some work after starting some tasks
 		SetStateOnCommandList(ParentCmdList);
 		Dispatch(true);
+
+		if (View.bVRProjectEnabled)
+		{
+			// Reset viewport and scissor after rendering to vr projection view
+			View.EndVRProjectionStates(ParentCmdList);
+		}
+
+		if (View.IsSinglePassStereoAllowed())
+		{
+			ParentCmdList.SetSinglePassStereoParameters(false, 0, true);
+			ParentCmdList.SetScissorRect(false, 0, 0, 0, 0);
+		}
 	}
 
 	virtual void SetStateOnCommandList(FRHICommandList& CmdList) override
@@ -1048,10 +1240,10 @@ bool FDeferredShadingSceneRenderer::RenderPrePassViewParallel(const FViewInfo& V
 {
 	bool bDepthWasCleared = false;
 	FPrePassParallelCommandListSet ParallelCommandListSet(View, ParentCmdList,
-		CVarRHICmdPrePassDeferredContexts.GetValueOnRenderThread() > 0, 
-		CVarRHICmdFlushRenderThreadTasksPrePass.GetValueOnRenderThread() == 0  && CVarRHICmdFlushRenderThreadTasks.GetValueOnRenderThread() == 0);
+		CVarRHICmdPrePassDeferredContexts.GetValueOnRenderThread() > 0,
+		CVarRHICmdFlushRenderThreadTasksPrePass.GetValueOnRenderThread() == 0 && CVarRHICmdFlushRenderThreadTasks.GetValueOnRenderThread() == 0);
 
-	if (!View.IsInstancedStereoPass())
+	if (!View.IsInstancedStereoPass() && !View.IsSinglePassStereoAllowed())
 	{
 		// Draw the static occluder primitives using a depth drawing policy.
 		// Draw opaque occluders which support a separate position-only
@@ -1064,20 +1256,32 @@ bool FDeferredShadingSceneRenderer::RenderPrePassViewParallel(const FViewInfo& V
 
 		// Draw opaque occluders with masked materials
 		if (EarlyZPassMode >= DDM_AllOccluders)
-		{			
+		{
 			Scene->MaskedDepthDrawList.DrawVisibleParallel(View.StaticMeshOccluderMap, View.StaticMeshBatchVisibility, ParallelCommandListSet);
 		}
 	}
 	else
 	{
 		const StereoPair StereoView(Views[0], Views[1], Views[0].StaticMeshOccluderMap, Views[1].StaticMeshOccluderMap, Views[0].StaticMeshBatchVisibility, Views[1].StaticMeshBatchVisibility);
-
-		Scene->PositionOnlyDepthDrawList.DrawVisibleParallelInstancedStereo(StereoView, ParallelCommandListSet);
-		Scene->DepthDrawList.DrawVisibleParallelInstancedStereo(StereoView, ParallelCommandListSet);
-
-		if (EarlyZPassMode >= DDM_AllOccluders)
+		if (View.IsSinglePassStereoAllowed())
 		{
-			Scene->MaskedDepthDrawList.DrawVisibleParallelInstancedStereo(StereoView, ParallelCommandListSet);
+			Scene->PositionOnlyDepthDrawList.DrawVisibleParallelSinglePassStereo(StereoView, ParallelCommandListSet);
+			Scene->DepthDrawList.DrawVisibleParallelSinglePassStereo(StereoView, ParallelCommandListSet);
+
+			if (EarlyZPassMode >= DDM_AllOccluders)
+			{
+				Scene->MaskedDepthDrawList.DrawVisibleParallelSinglePassStereo(StereoView, ParallelCommandListSet);
+			}
+		}
+		else
+		{
+			Scene->PositionOnlyDepthDrawList.DrawVisibleParallelInstancedStereo(StereoView, ParallelCommandListSet);
+			Scene->DepthDrawList.DrawVisibleParallelInstancedStereo(StereoView, ParallelCommandListSet);
+
+			if (EarlyZPassMode >= DDM_AllOccluders)
+			{
+				Scene->MaskedDepthDrawList.DrawVisibleParallelInstancedStereo(StereoView, ParallelCommandListSet);
+			}
 		}
 	}
 
@@ -1171,6 +1375,7 @@ bool FDeferredShadingSceneRenderer::PreRenderPrePass(FRHICommandListImmediate& R
 			SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
 
 			FViewInfo& View = Views[ViewIndex];
+			RHICmdList.SetGPUMask(View.StereoPass);
 			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
 
 			// Set shaders, states
@@ -1199,6 +1404,7 @@ bool FDeferredShadingSceneRenderer::PreRenderPrePass(FRHICommandListImmediate& R
 				*ScreenVertexShader,
 				EDRF_UseTriangleOptimization);
 		}
+		RHICmdList.SetGPUMask(0);
 	}
 	return bDepthWasCleared;
 }
@@ -1227,6 +1433,21 @@ void FDeferredShadingSceneRenderer::RenderPrePassEditorPrimitives(FRHICommandLis
 
 		// Draw the view's batched simple elements(lines, sprites, etc).
 		bDirty |= View.TopBatchedViewElements.Draw(RHICmdList, DrawRenderState, FeatureLevel, bNeedToSwitchVerticalAxis, View, false) || bDirty;
+	}
+}
+
+static void SetupPassViewScissorAndMaskPrePass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+{
+	if (GRHISupportsMultipleGPUStereo && View.StereoPass != eSSP_FULL)
+	{
+		// note: we need to be sure the scissor rect is not enabled downstream. 
+		RHICmdList.SetGPUMask(View.StereoPass);
+		RHICmdList.SetScissorRect(true, View.ViewRect.Min.X, View.ViewRect.Min.Y, View.ViewRect.Max.X, View.ViewRect.Max.Y);
+		RHICmdList.SetGPUMask(0);
+	}
+	else
+	{
+		RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
 	}
 }
 
@@ -1259,15 +1480,17 @@ bool FDeferredShadingSceneRenderer::RenderPrePass(FRHICommandListImmediate& RHIC
 	}
 
 	// Draw a depth pass to avoid overdraw in the other passes.
-	if(EarlyZPassMode != DDM_None)
+	if (EarlyZPassMode != DDM_None)
 	{
 		if (bParallel)
 		{
 			FScopedCommandListWaitForTasks Flusher(CVarRHICmdFlushRenderThreadTasksPrePass.GetValueOnRenderThread() > 0 || CVarRHICmdFlushRenderThreadTasks.GetValueOnRenderThread() > 0, RHICmdList);
-			for(int32 ViewIndex = 0;ViewIndex < Views.Num();ViewIndex++)
+			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 			{
 				SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
 				const FViewInfo& View = Views[ViewIndex];
+				SetupPassViewScissorAndMaskPrePass(RHICmdList, View);
+
 				if (View.ShouldRenderView())
 				{
 					bDepthWasCleared = RenderPrePassViewParallel(View, RHICmdList, AfterTasksAreStarted, !bDidPrePre) || bDepthWasCleared;
@@ -1282,12 +1505,17 @@ bool FDeferredShadingSceneRenderer::RenderPrePass(FRHICommandListImmediate& RHIC
 			{
 				SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
 				const FViewInfo& View = Views[ViewIndex];
+				SetupPassViewScissorAndMaskPrePass(RHICmdList, View);
+
 				if (View.ShouldRenderView())
 				{
 					bDirty |= RenderPrePassView(RHICmdList, View);
 				}
 			}
 		}
+
+		RHICmdList.SetGPUMask(0);
+		RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
 	}
 	if (!bDidPrePre)
 	{
@@ -1324,7 +1552,7 @@ static FORCEINLINE bool HasHiddenAreaMask()
 {
 	static const auto* const HiddenAreaMaskCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.HiddenAreaMask"));
 	return (HiddenAreaMaskCVar != nullptr &&
-		HiddenAreaMaskCVar->GetValueOnRenderThread() == 1 &&
+		HiddenAreaMaskCVar->GetValueOnRenderThread() != 0 &&
 		GEngine &&
 		GEngine->HMDDevice.IsValid() &&
 		GEngine->HMDDevice->HasHiddenAreaMesh());
@@ -1332,20 +1560,49 @@ static FORCEINLINE bool HasHiddenAreaMask()
 
 bool FDeferredShadingSceneRenderer::RenderPrePassHMD(FRHICommandListImmediate& RHICmdList)
 {
-	// Early out before we change any state if there's not a mask to render
-	if (!HasHiddenAreaMask())
+	static const auto* const HiddenAreaMaskCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.HiddenAreaMask"));
+	const int32 HiddenAreaMaskVal = HiddenAreaMaskCVar->GetValueOnRenderThread();
+
+	// EHartNV - ToDo
+	//  The HMD PrePass has specialized its setup to where it seems to no longer be compatible with the general
+	//  Need to understand differences and determine safe solution for vr projection setup
+
+	bool IsLMSEnabled = false;
+	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
+	{
+		const FViewInfo& View = Views[ViewIndex];
+		IsLMSEnabled |= (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched);
+	}
+
+	// Early out before we change any state if there's not a mask to render and lens matched shading is off
+	if (!HasHiddenAreaMask() && !IsLMSEnabled)
 	{
 		return false;
 	}
 
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+	// set these before BeginRenderingPrepass to guarantee we get full hardware clear
+	RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, SceneContext.GetBufferSizeXY().X, SceneContext.GetBufferSizeXY().Y, 1.0f);
+	RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
+
 	SceneContext.BeginRenderingPrePass(RHICmdList, true);
+	// since engine defaults to clearing Z to 0, there's no easy way to clear to a custom value through the SceneContext API
+	// it's inefficent, but we will just clear depth again here to get octagon working correctly in the least invasive way possible
+	if (IsLMSEnabled)
+	{
+		FLinearColor ClearColor(0, 0, 0);
+		float ClearDepth = 1.f; // we plan to clear Z to near plane, then overwrite the visible octagon to far plane
+		uint32 ClearStencil = 0;
+		// NV_MSCHOTT render target stuff 
+		DrawClearQuad(RHICmdList, ViewFamily.GetFeatureLevel(), false, ClearColor, true, ClearDepth, true, ClearStencil);
+	}
 
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 	GraphicsPSOInit.BlendState = TStaticBlendState<CW_NONE>::GetRHI();
+	//vrworks todo. why vrworks 4.15 use CF_Always?
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI();
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 
@@ -1354,12 +1611,39 @@ bool FDeferredShadingSceneRenderer::RenderPrePassHMD(FRHICommandListImmediate& R
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 	{
 		const FViewInfo& View = Views[ViewIndex];
-		if (View.StereoPass != eSSP_FULL)
+		RHICmdList.SetGPUMask(View.StereoPass);
+
+		if (View.bVRProjectEnabled)
+		{
+			View.BeginVRProjectionStates(RHICmdList);
+		}
+		else
 		{
 			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+			// vrworks todo. combine all conflicts.
 			RenderHiddenAreaMaskView(RHICmdList, GraphicsPSOInit, View);
 		}
+
+		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		{
+			// always render boundary mask if LMS is on
+			RenderModifiedWBoundaryMask(RHICmdList);
+		}
+		if (View.StereoPass != eSSP_FULL && HasHiddenAreaMask())
+		{
+			RenderHiddenAreaMaskView(RHICmdList, GraphicsPSOInit, View);
+		}
+
+		if (View.bVRProjectEnabled)
+		{
+			View.EndVRProjectionStates(RHICmdList);
+		}
 	}
+	RHICmdList.SetGPUMask(0);
+
+	// return viewport and scissor to normal after multires
+	RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, SceneContext.GetBufferSizeXY().X, SceneContext.GetBufferSizeXY().Y, 1.0f);
+	RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
 
 	SceneContext.FinishRenderingPrePass(RHICmdList);
 

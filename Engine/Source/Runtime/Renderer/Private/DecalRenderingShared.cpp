@@ -92,6 +92,34 @@ private:
 
 IMPLEMENT_SHADER_TYPE(,FDeferredDecalVS,TEXT("DeferredDecal"),TEXT("MainVS"),SF_Vertex);
 
+// Fast geometry shader for rendering decals with multi-res
+class FDeferredDecalFastGS : public FGlobalShader
+{
+	DECLARE_SHADER_TYPE(FDeferredDecalFastGS, Global);
+
+public:
+	static bool ShouldCache(EShaderPlatform Platform)
+	{
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && IsFastGSNeeded();
+	}
+
+	FDeferredDecalFastGS() {}
+	FDeferredDecalFastGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
+		FGlobalShader(Initializer)
+	{
+	}
+
+	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+	{
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View.ViewUniformBuffer);
+	}
+
+	static const bool IsFastGeometryShader = true;
+};
+
+IMPLEMENT_SHADER_TYPE(, FDeferredDecalFastGS, TEXT("DeferredDecal"), TEXT("VRProjectFastGS"), SF_Geometry);
+
+
 /**
  * A pixel shader for projecting a deferred decal onto the scene.
  */
@@ -311,6 +339,7 @@ void FDecalRendering::SetShader(FRHICommandList& RHICmdList, FGraphicsPipelineSt
 	const FMaterialShaderMap* MaterialShaderMap = DecalData.MaterialResource->GetRenderingThreadShaderMap();
 	auto PixelShader = MaterialShaderMap->GetShader<FDeferredDecalPS>();
 	TShaderMapRef<FDeferredDecalVS> VertexShader(View.ShaderMap);
+	TOptionalShaderMapRef<FDeferredDecalFastGS> FastGeometryShader(View.ShaderMap);
 
 	const EDebugViewShaderMode DebugViewShaderMode = View.Family->GetDebugViewShaderMode();
 	if (DebugViewShaderMode != DVSM_None)
@@ -321,6 +350,10 @@ void FDecalRendering::SetShader(FRHICommandList& RHICmdList, FGraphicsPipelineSt
 
 		const uint32 NumPixelShaderInstructions = PixelShader->GetNumInstructions();
 		const uint32 NumVertexShaderInstructions = VertexShader->GetNumInstructions();
+		const bool bVRProjectEnabled = View.bVRProjectEnabled;
+
+		FShader *MultiResGS = bVRProjectEnabled ? *FastGeometryShader : nullptr;
+
 
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
@@ -331,15 +364,25 @@ void FDecalRendering::SetShader(FRHICommandList& RHICmdList, FGraphicsPipelineSt
 
 		DebugPixelShader->SetParameters(RHICmdList, *VertexShader, PixelShader, DecalData.MaterialProxy, *DecalData.MaterialResource, View);
 		DebugPixelShader->SetMesh(RHICmdList, View);
+		if (bVRProjectEnabled)
+		{
+			FastGeometryShader->SetParameters(RHICmdList, View);
+		}
 	}
 	else
 	{
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader->GetPixelShader();
+		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(PixelShader);
+		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(View.bVRProjectEnabled?*FastGeometryShader:nullptr);
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
+		// first Bind, then SetParameters()
 		RHICmdList.SetLocalGraphicsPipelineState(RHICmdList.BuildLocalGraphicsPipelineState(GraphicsPSOInit));
+		if (View.bVRProjectEnabled)
+		{
+			FastGeometryShader->SetParameters(RHICmdList, View);
+		}
 		PixelShader->SetParameters(RHICmdList, View, DecalData.MaterialProxy, *DecalData.DecalProxy, DecalData.FadeAlpha);
 	}
 
@@ -369,11 +412,17 @@ void FDecalRendering::SetShader(FRHICommandList& RHICmdList, FGraphicsPipelineSt
 void FDecalRendering::SetVertexShaderOnly(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, const FViewInfo& View, const FMatrix& FrustumComponentToClip)
 {
 	TShaderMapRef<FDeferredDecalVS> VertexShader(View.ShaderMap);
+	TOptionalShaderMapRef<FDeferredDecalFastGS> FastGeometryShader(View.ShaderMap);
 
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader->GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(View.bVRProjectEnabled ? *FastGeometryShader : nullptr);
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 	RHICmdList.SetLocalGraphicsPipelineState(RHICmdList.BuildLocalGraphicsPipelineState(GraphicsPSOInit));
 	VertexShader->SetParameters(RHICmdList, View.ViewUniformBuffer, FrustumComponentToClip);
+	if (View.bVRProjectEnabled)
+	{
+		FastGeometryShader->SetParameters(RHICmdList, View);
+	}
 }

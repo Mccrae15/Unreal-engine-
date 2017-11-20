@@ -1001,21 +1001,23 @@ public:
 		const FViewMatrices& InPrevViewMatrices,
 		FBox* OutTranslucentCascadeBoundsArray, 
 		int32 NumTranslucentCascades,
-		FViewUniformShaderParameters& ViewUniformShaderParameters) const;
-
+		FViewUniformShaderParameters& ViewUniformShaderParameters, 
+		bool SupportMultiRes = false) const;
 	/** Recreates ViewUniformShaderParameters, taking the view transform from the View Matrices */
 	inline void SetupUniformBufferParameters(
 		FSceneRenderTargets& SceneContext,
 		FBox* OutTranslucentCascadeBoundsArray,
 		int32 NumTranslucentCascades,
-		FViewUniformShaderParameters& ViewUniformShaderParameters) const
+		FViewUniformShaderParameters& ViewUniformShaderParameters,
+		bool SupportMultiRes = false) const
 	{
 		SetupUniformBufferParameters(SceneContext,
 			ViewMatrices,
 			PrevViewMatrices,
 			OutTranslucentCascadeBoundsArray,
 			NumTranslucentCascades,
-			ViewUniformShaderParameters);
+			ViewUniformShaderParameters,
+			SupportMultiRes);
 	}
 
 	void SetupDefaultGlobalDistanceFieldUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters) const;
@@ -1063,7 +1065,8 @@ public:
 	/** Instanced stereo and multi-view only need to render the left eye. */
 	bool ShouldRenderView() const 
 	{
-		if (!bIsInstancedStereoEnabled && !bIsMobileMultiViewEnabled)
+		// NV_MSCHOTT is this correct
+		if (!bIsInstancedStereoEnabled && !bIsMobileMultiViewEnabled && !bAllowSinglePassStereo)
 		{
 			return true;
 		}
@@ -1072,6 +1075,11 @@ public:
 			return true;
 		}
 		else if (bIsMobileMultiViewEnabled && StereoPass != eSSP_RIGHT_EYE && Family && Family->Views.Num() > 1)
+		{
+			return true;
+		}
+		// NV_MSCHOTT this feels right
+		else if (bAllowSinglePassStereo && StereoPass != eSSP_RIGHT_EYE)
 		{
 			return true;
 		}
@@ -1488,6 +1496,9 @@ protected:
 	void RenderPlanarReflection(class FPlanarReflectionSceneProxy* ReflectionSceneProxy);
 
 	void ResolveSceneColor(FRHICommandList& RHICmdList);
+
+	/** Renders a depth mask to block out areas not visible with ModifiedW rendering **/
+	void RenderModifiedWBoundaryMask(FRHICommandListImmediate& RHICmdList);
 };
 
 /**

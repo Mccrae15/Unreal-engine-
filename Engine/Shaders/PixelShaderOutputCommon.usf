@@ -53,6 +53,10 @@ void MainPS
 		FBasePassInterpolantsVSToPS BasePassInterpolants,
 #endif
 
+#if SINGLE_PASS_STEREO
+		in uint InViewportArrayIndex : SV_ViewportArrayIndex,
+#endif
+
 		in INPUT_POSITION_QUALIFIERS float4 SvPosition : SV_Position		// after all interpolators
 
 		OPTIONAL_IsFrontFace
@@ -116,6 +120,10 @@ void MainPS
 
 	PixelShaderIn.SvPosition = SvPosition;
 	PixelShaderIn.bIsFrontFace = bIsFrontFace;
+
+#if	SINGLE_PASS_STEREO
+	PixelShaderIn.SvViewportArrayIndex = InViewportArrayIndex;
+#endif
 
 #if PIXELSHADEROUTPUT_BASEPASS
 	FPixelShaderInOut_MainPS(Interpolants, BasePassInterpolants, PixelShaderIn, PixelShaderOut);

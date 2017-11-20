@@ -206,8 +206,26 @@ void FLayerManager::PreSubmitUpdate_RenderThread(FRHICommandListImmediate& RHICm
 			EyeLayer.EyeFov.Fov[0] = FrameSettings->EyeRenderDesc[0].Fov;
 			EyeLayer.EyeFov.Fov[1] = FrameSettings->EyeRenderDesc[1].Fov;
 
-			EyeLayer.EyeFov.Viewport[0] = ToOVRRecti(FrameSettings->EyeRenderViewport[0]);
-			EyeLayer.EyeFov.Viewport[1] = ToOVRRecti(FrameSettings->EyeRenderViewport[1]);
+			{
+				static const auto CVarLensMatchedShading = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
+				static const auto CVarLensMatchedShadingRendering = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShadingRendering"));
+				bool bLensMatchedShadeEnabled = GSupportsFastGeometryShader && GSupportsModifiedW &&
+					CVarLensMatchedShading && CVarLensMatchedShading->GetValueOnRenderThread() && CVarLensMatchedShadingRendering->GetValueOnRenderThread() > 0;
+
+				if (bLensMatchedShadeEnabled)
+				{
+					static const auto CVarLensMatchedShadingUnwarpScale = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("vr.LensMatchedShadingUnwarpScale"));
+					float Scale = CVarLensMatchedShadingUnwarpScale->GetValueOnRenderThread();
+
+					EyeLayer.EyeFov.Viewport[0] = ToOVRRecti(FrameSettings->EyeRenderViewport[0].Scale(Scale));
+					EyeLayer.EyeFov.Viewport[1] = ToOVRRecti(FrameSettings->EyeRenderViewport[1].Scale(Scale));
+				}
+				else
+				{
+					EyeLayer.EyeFov.Viewport[0] = ToOVRRecti(FrameSettings->EyeRenderViewport[0]);
+					EyeLayer.EyeFov.Viewport[1] = ToOVRRecti(FrameSettings->EyeRenderViewport[1]);
+				}
+			}
 
 			EyeLayer.EyeFov.ColorTexture[0] = RenderLayer->GetSwapTextureSet();
 			EyeLayer.EyeFov.ColorTexture[1] = RenderLayer->GetSwapTextureSet();
