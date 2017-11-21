@@ -188,6 +188,15 @@ public:
 	// @param Data must not be 0
 	virtual void RHISetMultipleViewports(uint32 Count, const FViewportBounds* Data) = 0;
 
+	// Useful when used with geometry shader (emit polygons to different viewports), otherwise SetScissorRect() is simpler
+	// @param Count >0
+	// @param Data must not be 0
+	virtual void RHISetMultipleScissorRects(bool bEnable, uint32 Num, const FIntRect* Rects) = 0;
+
+	// Used for enabling w warp
+	virtual void RHISetModifiedWMode(const FLensMatchedShading::Configuration& Conf, const bool bWarpForward, const bool bEnable) = 0;
+	virtual void RHISetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& Conf, const bool bWarpForward, const bool bEnable) = 0;
+
 	/** Clears a UAV to the multi-component value provided. */
 	virtual void RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef UnorderedAccessViewRHI, const uint32* Values) = 0;
 
@@ -538,12 +547,16 @@ public:
 	*					The valid values for fMinDepth and fMaxDepth are such that 0 <= fMinDepth <= fMaxDepth <= 1
 	*/
 	virtual void RHIEnableDepthBoundsTest(bool bEnable, float MinDepth, float MaxDepth) = 0;
+	
+	virtual void RHISetSinglePassStereoParameters(bool bEnable, uint32 RenderTargetIndexOffset, uint8 IndependentViewportMaskEnable) = 0;
 
 	virtual void RHIPushEvent(const TCHAR* Name, FColor Color) = 0;
 
 	virtual void RHIPopEvent() = 0;
 
 	virtual void RHIUpdateTextureReference(FTextureReferenceRHIParamRef TextureRef, FTextureRHIParamRef NewTexture) = 0;
+	virtual void RHISetGPUMask(uint32 Mask) = 0;
+	virtual void RHICopyResourceToGPU(FTextureRHIParamRef SourceTextureRHI, FTextureRHIParamRef DestTextureRHI, uint32 DestGPUIndex, uint32 SrcGPUIndex, const FResolveParams& ResolveParams) = 0;
 
 	virtual TRefCountPtr<FRHIRenderPass> RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, const TCHAR* InName)
 	{

@@ -362,10 +362,11 @@ void DrawRectangle(
 	FIntPoint TextureSize,
 	FShader* VertexShader,
 	EDrawRectangleFlags Flags,
-	uint32 InstanceCount
+	uint32 InstanceCount,
+	bool bForceNoRemap
 )
 {
-	InternalDrawRectangle(RHICmdList, X, Y, SizeX, SizeY, U, V, SizeU, SizeV, TargetSize, TextureSize, VertexShader, Flags, InstanceCount);
+	InternalDrawRectangle(RHICmdList, X, Y, SizeX, SizeY, U, V, SizeU, SizeV, TargetSize, TextureSize, VertexShader, Flags, InstanceCount, bForceNoRemap);
 }
 
 void DrawTransformedRectangle(

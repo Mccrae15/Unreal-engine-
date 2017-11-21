@@ -327,7 +327,7 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 
 	// For upscaling multi-res on an HMD, UnscaledViewRect will not be correct; we need
 	// to get the destination size from NonVRProjectViewRect instead.
-	if (View.bVRProjectEnabled && GEngine->HMDDevice.IsValid() && View.Family->EngineShowFlags.StereoRendering)
+	if (View.bVRProjectEnabled && GEngine->XRSystem.IsValid() && View.Family->EngineShowFlags.StereoRendering)
 	{
 		DestRect = View.NonVRProjectViewRect;
 

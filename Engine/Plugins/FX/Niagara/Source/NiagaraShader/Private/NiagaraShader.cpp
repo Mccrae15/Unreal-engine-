@@ -641,7 +641,7 @@ void FNiagaraShaderMap::Compile(
 							CompilationEnvironment,
 							Platform,
 							NewJobs,
-							FShaderTarget(ShaderType->GetFrequency(), Platform),
+							FShaderTarget(ShaderType->GetFrequency(), Platform, ShaderType->IsFastGeometryShader()),
 							Script->GetDataInterfaceBufferDescriptors()
 							);
 						check(!SharedShaderJobs.Find(ShaderType));
@@ -817,7 +817,7 @@ void FNiagaraShaderMap::LoadMissingShadersFromMemory(const FNiagaraScript* Scrip
 		FNiagaraShaderType* ShaderType = ShaderTypeIt->GetNiagaraShaderType();
 		if (ShaderType && ShouldCacheNiagaraShader(ShaderType, Platform, Script) && !HasShader(ShaderType))
 		{
-			FShaderId ShaderId(ShaderMapHash, nullptr, nullptr, ShaderType, FShaderTarget(ShaderType->GetFrequency(), Platform));
+			FShaderId ShaderId(ShaderMapHash, nullptr, nullptr, ShaderType, FShaderTarget(ShaderType->GetFrequency(), Platform, ShaderType->IsFastGeometryShader()));
 			FShader* FoundShader = ShaderType->FindShaderById(ShaderId);
 			if (FoundShader)
 			{

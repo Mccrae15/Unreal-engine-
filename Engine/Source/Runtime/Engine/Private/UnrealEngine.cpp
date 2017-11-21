@@ -2377,11 +2377,12 @@ static TAutoConsoleVariable<int32> CVarEmulateStereoViewportGap(TEXT("r.StereoEm
 /**
  * A fake stereo rendering device used to test stereo rendering without an attached device.
  */
-class FFakeStereoRenderingDevice : public IStereoRendering, public ISceneViewExtension
+class FFakeStereoRenderingDevice : public IStereoRendering, public FSceneViewExtensionBase
 {
 public:
-	FFakeStereoRenderingDevice() 
-	: FOVInDegrees(100)
+	FFakeStereoRenderingDevice(const FAutoRegister& AutoRegister)
+	: FSceneViewExtensionBase(AutoRegister)
+	, FOVInDegrees(100)
 	, MonoCullingDistance(0.0f)
 	, Width(640)
 	, Height(480)
@@ -2504,9 +2505,9 @@ bool UEngine::InitializeHMDDevice()
 		static TAutoConsoleVariable<int32> CVarEmulateStereo(TEXT("r.EnableStereoEmulation"), 0, TEXT("Emulate stereo rendering"));
 		if (FParse::Param(FCommandLine::Get(), TEXT("emulatestereo")) || CVarEmulateStereo.GetValueOnAnyThread() != 0)
 		{
-			TSharedPtr<FFakeStereoRenderingDevice, ESPMode::ThreadSafe> FakeStereoDevice(new FFakeStereoRenderingDevice());
-			StereoRenderingDevice = FakeStereoDevice;
-			ViewExtensions.Add(FakeStereoDevice);
+			// VRWorks-4.18: This adds the FFakeStereoRenderingDevice to the KnownExtensions under ViewExtensions which is no longer an Array.
+			// This works because it inherits from FSceneViewExtensionBase.
+			StereoRenderingDevice = FSceneViewExtensions::NewExtension<FFakeStereoRenderingDevice>();
 		}
 		// No reason to connect an HMD on a dedicated server.  Also fixes dedicated servers stealing the oculus connection.
 		else if (!XRSystem.IsValid() && !FParse::Param(FCommandLine::Get(), TEXT("nohmd")) && !IsRunningDedicatedServer())

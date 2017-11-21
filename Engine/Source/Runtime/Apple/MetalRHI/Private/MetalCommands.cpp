@@ -195,6 +195,21 @@ void FMetalRHICommandContext::RHISetModifiedWModeStereo(const FLensMatchedShadin
 	NOT_SUPPORTED("RHISetModifiedWModeStereo");
 }
 
+void FMetalRHICommandContext::RHISetMultipleScissorRects(bool bEnable, uint32 Num, const FIntRect* Rects)
+{
+	NOT_SUPPORTED("RHISetMultipleViewports");
+}
+
+void FMetalRHICommandContext::RHISetModifiedWMode(const FLensMatchedShading::Configuration& Conf, const bool bWarpForward, const bool bEnable)
+{
+	NOT_SUPPORTED("RHISetModifiedWMode");
+}
+
+void FMetalRHICommandContext::RHISetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& Conf, const bool bWarpForward, const bool bEnable)
+{
+	NOT_SUPPORTED("RHISetModifiedWModeStereo");
+}
+
 void FMetalRHICommandContext::RHISetScissorRect(bool bEnable,uint32 MinX,uint32 MinY,uint32 MaxX,uint32 MaxY)
 {
 	@autoreleasepool {

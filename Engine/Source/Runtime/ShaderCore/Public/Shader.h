@@ -1066,7 +1066,8 @@ private:
 		ShaderClass::ConstructCompiledInstance, \
 		ShaderClass::ModifyCompilationEnvironment, \
 		ShaderClass::ShouldCache, \
-		ShaderClass::GetStreamOutElements \
+		ShaderClass::GetStreamOutElements, \
+		ShaderClass::IsFastGeometryShader \
 		);
 
 /** A macro to implement a templated shader type, the function name and the source filename comes from the class. */

@@ -257,7 +257,6 @@ void Main(
 	float FadedShadow = lerp(1.0f, Square(Shadow), ShadowFadeFraction);
 
 #if FORWARD_SHADING
-	float4 HomogeneousWorldPosition = mul(float4(ScreenPosition.xy * SceneW, SceneW, 1), View.ScreenToWorld);
 	float LightInfluenceMask = GetLightInfluenceMask(WorldPosition);
 	// Constrain shadowing from this light to pixels inside the light's influence, since other non-overlapping lights are packed into the same channel
 	FadedShadow = lerp(1, FadedShadow, LightInfluenceMask);
