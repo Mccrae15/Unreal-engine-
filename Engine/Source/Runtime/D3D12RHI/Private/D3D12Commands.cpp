@@ -430,6 +430,23 @@ void FD3D12CommandContext::RHISetScissorRect(bool bEnable, uint32 MinX, uint32 M
 	}
 }
 
+
+void FD3D12CommandContext::RHISetMultipleScissorRects(bool bEnable, uint32 Num, const FIntRect* Rects)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("D3D12 RHI does not yet support multiple scissor rects!"));
+}
+
+void FD3D12CommandContext::RHISetModifiedWMode(const FLensMatchedShading::Configuration& Conf, const bool bWarpForward, const bool bEnable)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("D3D12 RHI does not yet support w-warp!"));
+}
+
+void FD3D12CommandContext::RHISetModifiedWModeStereo(const FLensMatchedShading::StereoConfiguration& Conf, const bool bWarpForward, const bool bEnable)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("D3D12 RHI does not yet support w-warp!"));
+}
+
+
 /**
 * Set bound shader state. This will set the vertex decl/shader, and pixel shader
 * @param BoundShaderState - state resource
@@ -1967,10 +1984,22 @@ void FD3D12CommandContext::SetDepthBounds(float MinDepth, float MaxDepth)
 	}
 }
 
+void FD3D12CommandContext::RHISetSinglePassStereoParameters(bool bEnable, uint32 RenderTargetIndexOffset, uint8 IndependentViewportMaskEnable)
+{
+	// Not supported
+	UE_LOG(LogD3D12RHI, Warning, TEXT("RHISetSinglePassStereoParameters not supported on DX12 yet."));
+}
+
+
 void FD3D12CommandContext::RHISubmitCommandsHint()
 {
 	// Submit the work we have so far, and start a new command list.
 	FlushCommands();
+}
+
+void FD3D12CommandContext::RHISetGPUMask(uint32 Mask)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("D3D12 render path does not support GPU mask!"));
 }
 
 #define USE_COPY_QUEUE_FOR_RESOURCE_SYNC 1

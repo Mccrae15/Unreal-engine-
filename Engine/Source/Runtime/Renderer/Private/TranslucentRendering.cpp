@@ -335,6 +335,7 @@ void FTranslucencyDrawingPolicyFactory::CopySceneColor(FRHICommandList& RHICmdLi
 
 	SceneContext.BeginRenderingLightAttenuation(RHICmdList);
 	RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+	RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -460,7 +461,7 @@ public:
 			false);
 
 		DrawingPolicy.SetupPipelineState(DrawRenderState, View);
-		CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderState, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel()));
+		CommitGraphicsPipelineState(RHICmdList, DrawingPolicy, DrawRenderState, DrawingPolicy.GetBoundShaderStateInput(View.GetFeatureLevel(), View.bVRProjectEnabled));
 		DrawingPolicy.SetSharedState(RHICmdList, DrawRenderState, &View, typename TBasePassDrawingPolicy<LightMapPolicyType>::ContextDataType(), bUseDownsampledTranslucencyViewUniformBuffer);
 
 		int32 BatchElementIndex = 0;
@@ -1018,6 +1019,11 @@ public:
 	virtual ~FTranslucencyPassParallelCommandListSet()
 	{
 		Dispatch();
+		if (View.bVRProjectEnabled)
+		{
+			// Reset viewport and scissor after rendering to vr projection view
+			View.EndVRProjectionStates(ParentCmdList);
+		}
 	}
 
 	virtual void SetStateOnCommandList(FRHICommandList& CmdList) override
@@ -1235,6 +1241,8 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 
 		FViewInfo& View = Views[ViewIndex];
 
+		RHICmdList.SetGPUMask(View.StereoPass);
+
 		// if (View.TranslucentPrimSet.SortedPrimsNum.UseSceneColorCopy(TranslucencyPass))
 		// {
 		// 		FTranslucencyDrawingPolicyFactory::CopySceneColor(RHICmdList, View);
@@ -1246,6 +1254,8 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 			View.ViewState->TranslucencyTimer.Begin(RHICmdList);
 		}
 #endif
+		// For MGPU we need to clear both views because RTs live on different GPUs.
+		const bool bFirstTimeThisFrame = FVRWorks::IsVRSLIEnabled() ? true : ViewIndex == 0;
 
 		FDrawingPolicyRenderState DrawRenderState(View);
 
@@ -1263,7 +1273,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 			{
 				BeginTimingSeparateTranslucencyPass(RHICmdList, View);
 			}
-			SceneContext.BeginRenderingSeparateTranslucency(RHICmdList, View, ViewIndex == 0);
+			SceneContext.BeginRenderingSeparateTranslucency(RHICmdList, View, bFirstTimeThisFrame);
 
 			// Draw only translucent prims that are in the SeparateTranslucency pass
 			DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
@@ -1278,6 +1288,13 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 			}
 
 			SceneContext.FinishRenderingSeparateTranslucency(RHICmdList, View);
+
+			// EHartNV : ToDo - confirm correctness, previously, this was unconditional
+			if (View.bVRProjectEnabled)
+			{
+				View.EndVRProjectionStates(RHICmdList);
+			}
+
 			if (TranslucencyPass == ETranslucencyPass::TPT_TranslucencyAfterDOF)
 			{
 				EndTimingSeparateTranslucencyPass(RHICmdList, View);
@@ -1289,7 +1306,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 		}
 		else
 		{
-			SceneContext.BeginRenderingTranslucency(RHICmdList, View, ViewIndex == 0);
+			SceneContext.BeginRenderingTranslucency(RHICmdList, View, bFirstTimeThisFrame);
 			DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
 	
 			if (bUseParallel)
@@ -1301,6 +1318,12 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 				RenderViewTranslucency(RHICmdList, View, DrawRenderState, TranslucencyPass);
 }
 
+			// EHartNV : ToDo - confirm correctness, previously, this was unconditional
+			if (View.bVRProjectEnabled)
+			{
+				View.EndVRProjectionStates(RHICmdList);
+			}
+
 			// SceneContext.FinishRenderingTranslucency(RHICmdList, View);
 		}
 
@@ -1310,6 +1333,8 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(FRHICommandListImmediate&
 			STAT(View.ViewState->TranslucencyTimer.End(RHICmdList));
 		}
 #endif
+
+		RHICmdList.SetGPUMask(0);
 	}
 }
 

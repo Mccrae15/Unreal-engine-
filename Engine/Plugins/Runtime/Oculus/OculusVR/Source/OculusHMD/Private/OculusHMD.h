@@ -189,6 +189,7 @@ public:
 	{
 		return -1; // We want to run after the FDefaultXRCamera's view extension
 	}
+	virtual int32 GetViewportGap() const override;
 
 public:
 	FOculusHMD(const FAutoRegister&);

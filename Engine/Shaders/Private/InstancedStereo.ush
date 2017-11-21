@@ -14,40 +14,58 @@
 // see GenerateInstancedStereoCode()
 #include "/Engine/Generated/GeneratedInstancedStereo.ush"
 
+#if SINGLE_PASS_STEREO
+#define PACKED_EYE_INDEX_TYPE uint4
+#define SET_PACKED_EYE_INDEX(result) uint4(result, result, result, result)
+#define GET_PACKED_EYE_INDEX  PackedIndex.x
+#else
+#define PACKED_EYE_INDEX_TYPE uint
+#define SET_PACKED_EYE_INDEX(result) result
+#define GET_PACKED_EYE_INDEX  PackedIndex
+#endif
+
 // Packing the eye index and instanced stereo flag into a single uint to save an interpolator
-uint PackEyeIndex(uint EyeIndex, bool bIsInstancedStereo)
+PACKED_EYE_INDEX_TYPE PackEyeIndex(uint EyeIndex, bool bIsInstancedStereo)
 {
 	uint Result = 0;
 	Result |= (uint)bIsInstancedStereo << 31;
 	Result |= EyeIndex;
-	return Result;
+	return SET_PACKED_EYE_INDEX(Result);
 }
 
-uint GetEyeIndex(uint PackedIndex)
+uint GetEyeIndex(PACKED_EYE_INDEX_TYPE PackedIndex)
 {
-	return PackedIndex & 0x1;
+	return GET_PACKED_EYE_INDEX & 0x1;
 }
 
-bool IsInstancedStereo(uint PackedIndex)
+bool IsInstancedStereo(PACKED_EYE_INDEX_TYPE PackedIndex)
 {
-	return (PackedIndex >> 1) > 0;
+	return (GET_PACKED_EYE_INDEX & (1 << 31)) != 0;
 }
 
 static ViewState ResolvedView;
+#if SINGLE_PASS_STEREO
+static ViewState ResolvedViewRight;
+#endif
 
 ViewState ResolveView()
 {
 	return GetPrimaryView();
 }
 
-#if INSTANCED_STEREO
+#if INSTANCED_STEREO || SINGLE_PASS_STEREO
 static const float EyeOffsetScale[2] = { -1.0, 1.0 };
 static const float4 EyeClipEdge[2] = { float4(-1.0, 0.0, 0.0, 1.0), float4(1.0, 0.0, 0.0, 1.0) };
+#if SINGLE_PASS_STEREO
+static const float SinglePassStereoDepthBias = 0.00011;
+#endif
+
+bool bIsSinglePassStereo;
 bool bIsInstancedStereo;
 #endif
 
 // Generated for Metal in GeneratedInstancedStereo.usf
-#if !COMPILER_METAL && (INSTANCED_STEREO || MOBILE_MULTI_VIEW)
+#if !COMPILER_METAL && (INSTANCED_STEREO || SINGLE_PASS_STEREO || MOBILE_MULTI_VIEW)
 ViewState ResolveView(uint ViewIndex)
 {
 	if (ViewIndex == 0)

@@ -34,7 +34,7 @@ struct FRHICommandBindClearMRTValues;
 struct FRHICommandBuildLocalBoundShaderState;
 struct FRHICommandBuildLocalGraphicsPipelineState;
 struct FRHICommandBuildLocalUniformBuffer;
-struct FRHICommandClearUAV;
+struct FRHICommandClearTinyUAV;
 struct FRHICommandCopyToResolveTarget;
 struct FRHICommandDrawIndexedIndirect;
 struct FRHICommandDrawIndexedPrimitive;
@@ -274,6 +274,12 @@ void FRHICommandSetStereoViewport::Execute(FRHICommandListBase& CmdList)
 	INTERNAL_DECORATOR(RHISetStereoViewport)(LeftMinX, RightMinX, LeftMinY, RightMinY, MinZ, LeftMaxX, RightMaxX, LeftMaxY, RightMaxY, MaxZ);
 }
 
+void FRHICommandSetMultipleViewports::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(SetMultipleViewports);
+	INTERNAL_DECORATOR(RHISetMultipleViewports)(Num, Viewports);
+}
+
 void FRHICommandSetScissorRect::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(SetScissorRect);
@@ -316,6 +322,36 @@ void FRHICommandEndRenderSubPass::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(EndRenderSubPass);
 	INTERNAL_DECORATOR(RHIEndRenderSubPass)(LocalRenderPass->RenderPass, LocalRenderSubPass->RenderSubPass);
+}
+
+void FRHICommandSetMultipleScissorRects::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(SetMultipleScissorRects);
+	INTERNAL_DECORATOR(RHISetMultipleScissorRects)(bEnable, Num, Rects);
+}
+
+void FRHICommandSetModifiedWMode::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(SetModifiedWMode);
+	INTERNAL_DECORATOR(RHISetModifiedWMode)(Conf, bWarpForward, bEnable);
+}
+
+void FRHICommandSetModifiedWModeStereo::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(SetModifiedWModeStereo);
+	INTERNAL_DECORATOR(RHISetModifiedWModeStereo)(Conf, bWarpForward, bEnable);
+}
+
+void FRHICommandSetGPUMask::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(SetGPUMask);
+	INTERNAL_DECORATOR(RHISetGPUMask)(Mask);
+}
+
+void FRHICommandCopyResourceToGPU::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(CopyResourceToGPU);
+	INTERNAL_DECORATOR(RHICopyResourceToGPU)(SourceTexture, DestTexture, DestGPUIndex, SrcGPUIndex, ResolveParams);
 }
 
 void FRHICommandSetRenderTargets::Execute(FRHICommandListBase& CmdList)
@@ -454,6 +490,12 @@ void FRHICommandEnableDepthBoundsTest::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(EnableDepthBoundsTest);
 	INTERNAL_DECORATOR(RHIEnableDepthBoundsTest)(bEnable, MinDepth, MaxDepth);
+}
+
+void FRHICommandSetSinglePassStereoParameters::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(SetSinglePassStereoParameters);
+	INTERNAL_DECORATOR(RHISetSinglePassStereoParameters)(bEnable, RenderTargetIndexOffset, IndependentViewportMaskEnable);
 }
 
 void FRHICommandClearTinyUAV::Execute(FRHICommandListBase& CmdList)

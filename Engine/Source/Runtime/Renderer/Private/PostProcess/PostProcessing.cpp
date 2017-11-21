@@ -53,6 +53,7 @@
 #include "DeferredShadingRenderer.h"
 #include "PostProcess/PostProcessFFTBloom.h"
 #include "MobileSeparateTranslucencyPass.h"
+#include "PostProcessMultiResWarp.h"
 
 /** The global center for all post processing activities. */
 FPostProcessing GPostProcessing;
@@ -228,28 +229,40 @@ public:
 		bHasLog2Alpha(bGenerateLog2Alpha), Context(InContext)
 	{
 
-		static const TCHAR* PassLabels[] =
-		{ NULL, TEXT("BloomDownsample1"), TEXT("BloomDownsample2"), TEXT("BloomDownsample3"), TEXT("BloomDownsample4"), TEXT("BloomDownsample5") };
-		static_assert(ARRAY_COUNT(PassLabels) == DownSampleStages, "PassLabel count must be equal to DownSampleStages.");
+		// Optionally encode log2 data in the alpha channel. Used for EyeAdaptation.
+		if (bHasLog2Alpha) {
+			FRenderingCompositePass* BasicEyeSetupPass = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessBasicEyeAdaptationSetUp());
+			BasicEyeSetupPass->SetInput(ePId_Input0, SourceDownsample);
+			PostProcessDownsamples[0] = FRenderingCompositeOutputRef(BasicEyeSetupPass); 
+		}
+		else
+		{
+			// The source becomes the 0th down sample.
+			PostProcessDownsamples[0] = SourceDownsample;
+		}
 
-		// The first down sample is the input
-		PostProcessDownsamples[0] = SourceDownsample;
+		const FViewInfo &View = InContext.View;
+
+		// if we're downsampling with vr projection, resample the buffer to linear first to avoid artifacts with really small levels
+		if (View.bVRProjectEnabled)
+		{
+			FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(Context.RHICmdList);
+			FRenderingCompositePass* Pass = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessVRProjectWarp(SceneContext.GetBufferSizeXY(), SceneContext.GetLinearBufferSizeXY(), TEXT("LinearizeMultiRes")));
+			Pass->SetInput(ePId_Input0, PostProcessDownsamples[0]);
+			PostProcessDownsamples[0] = FRenderingCompositeOutputRef(Pass);
+		}
 
 		const bool bIsComputePass = CVarPostProcessingPreferCompute.GetValueOnRenderThread() && Context.View.FeatureLevel >= ERHIFeatureLevel::SM5;
 
 		// Queue the down samples. 
 		for (int i = 1; i < DownSampleStages; i++)
 		{
-			FRenderingCompositePass* Pass = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessDownsample(PF_Unknown, 1, bIsComputePass, PassLabels[i]));
+			static const TCHAR* PassLabels[] =
+			{ NULL, TEXT("BloomDownsample1"), TEXT("BloomDownsample2"), TEXT("BloomDownsample3"), TEXT("BloomDownsample4"), TEXT("BloomDownsample5") };
+			static_assert(ARRAY_COUNT(PassLabels) == DownSampleStages, "PassLabel count must be equal to DownSampleStages.");
+			FRenderingCompositePass* Pass = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessDownsample(PF_Unknown, 1, bIsComputePass, View.bVRProjectEnabled, PassLabels[i]));
 			Pass->SetInput(ePId_Input0, PostProcessDownsamples[i - 1]);
 			PostProcessDownsamples[i] = FRenderingCompositeOutputRef(Pass);
-
-			// Add log2 data to the alpha channel after doing the 1st (i==1) down sample pass
-			if (bHasLog2Alpha && i == 1 ) {
-				FRenderingCompositePass* BasicEyeSetupPass = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessBasicEyeAdaptationSetUp());
-				BasicEyeSetupPass->SetInput(ePId_Input0, PostProcessDownsamples[i]);
-				PostProcessDownsamples[i] = FRenderingCompositeOutputRef(BasicEyeSetupPass);
-			}
 		}
 
 		// Calculate the final viewrect size (matching FRCPassPostProcessDownsample behavior)
@@ -321,6 +334,7 @@ static FRenderingCompositeOutputRef RenderGaussianBlur(
 	const TCHAR* DebugNameY,
 	const FRenderingCompositeOutputRef& Input,
 	float SizeScale,
+	bool ForceLinear = false,
 	FLinearColor Tint = FLinearColor::White,
 	const FRenderingCompositeOutputRef Additive = FRenderingCompositeOutputRef(),
 	float CrossCenterWeight = 0.0f)
@@ -328,7 +342,7 @@ static FRenderingCompositeOutputRef RenderGaussianBlur(
 	const bool bIsComputePass = CVarPostProcessingPreferCompute.GetValueOnRenderThread() && Context.View.FeatureLevel >= ERHIFeatureLevel::SM5;
 
 	// Gaussian blur in x
-	FRCPassPostProcessWeightedSampleSum* PostProcessBlurX = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessWeightedSampleSum(EFS_Horiz, EFCM_Weighted, SizeScale, bIsComputePass, DebugNameX));
+	FRCPassPostProcessWeightedSampleSum* PostProcessBlurX = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessWeightedSampleSum(EFS_Horiz, EFCM_Weighted, SizeScale, bIsComputePass, ForceLinear, DebugNameX));
 	PostProcessBlurX->SetInput(ePId_Input0, Input);
 	if(CrossCenterWeight > 0)
 	{
@@ -336,7 +350,7 @@ static FRenderingCompositeOutputRef RenderGaussianBlur(
 	}
 
 	// Gaussian blur in y
-	FRCPassPostProcessWeightedSampleSum* PostProcessBlurY = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessWeightedSampleSum(EFS_Vert, EFCM_Weighted, SizeScale, bIsComputePass, DebugNameY, Tint));
+	FRCPassPostProcessWeightedSampleSum* PostProcessBlurY = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessWeightedSampleSum(EFS_Vert, EFCM_Weighted, SizeScale, bIsComputePass, ForceLinear, DebugNameY, Tint));
 	PostProcessBlurY->SetInput(ePId_Input0, FRenderingCompositeOutputRef(PostProcessBlurX));
 	PostProcessBlurY->SetInput(ePId_Input1, Additive);
 	PostProcessBlurY->SetCrossCenterWeight(FMath::Abs(CrossCenterWeight));
@@ -353,8 +367,9 @@ static FRenderingCompositeOutputRef RenderBloom(
 	const FRenderingCompositeOutputRef Additive = FRenderingCompositeOutputRef())
 {
 	const float CrossBloom = CVarBloomCross.GetValueOnRenderThread();
+	const bool UseLinearSpace = Context.View.bVRProjectEnabled;
 
-	return RenderGaussianBlur(Context, TEXT("BloomBlurX"), TEXT("BloomBlurY"), PreviousBloom, Size, Tint, Additive,CrossBloom);
+	return RenderGaussianBlur(Context, TEXT("BloomBlurX"), TEXT("BloomBlurY"), PreviousBloom, Size, UseLinearSpace, Tint, Additive,CrossBloom);
 }
 
 static FRCPassPostProcessTonemap* AddTonemapper(
@@ -793,6 +808,7 @@ static FRenderingCompositeOutputRef AddBloom(FBloomDownSampleArray& BloomDownSam
 		const uint32 BloomStageCount = BloomQualityStages[BloomQuality - 1];
 		check(BloomStageCount <= NumBloomStages);
 		float TintScale = 1.0f / NumBloomStages;
+
 		for (uint32 i = 0, SourceIndex = NumBloomStages - 1; i < BloomStageCount; i++, SourceIndex--)
 		{
 			FBloomStage& Op = BloomStages[i];
@@ -1322,7 +1338,7 @@ void FPostProcessing::Process(FRHICommandListImmediate& RHICmdList, const FViewI
 		bool bDoScreenPercentage;
 		{
 			//
-			bool bHMDWantsUpscale = bStereoRenderingAndHMD && GEngine->XRSystem->GetHMDDevice()->NeedsUpscalePostProcessPass();
+			bool bHMDWantsUpscale = (bStereoRenderingAndHMD && GEngine->XRSystem->GetHMDDevice()->NeedsUpscalePostProcessPass()) || View.bVRProjectEnabled;
 			// Do not use upscale if SeparateRenderTarget is in use! (stereo rendering wants to control this)
 			bool bAllowScreenPercentage = bHMDWantsUpscale || !View.Family->EngineShowFlags.StereoRendering || (!View.Family->EngineShowFlags.HMDDistortion && !View.Family->bUseSeparateRenderTarget);
 			// is Upscale from a lower resolution needed and allowed
@@ -1565,7 +1581,8 @@ void FPostProcessing::Process(FRHICommandListImmediate& RHICmdList, const FViewI
 				int32 DownsampleQuality = FMath::Clamp(CDownsampleQuality.GetValueOnRenderThread(), 0, 1);
 				const bool bIsComputePass = CVarPostProcessingPreferCompute.GetValueOnRenderThread() && Context.View.FeatureLevel >= ERHIFeatureLevel::SM5;
 
-				FRenderingCompositePass* HalfResPass = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessDownsample(PF_FloatRGB, DownsampleQuality, bIsComputePass, TEXT("SceneColorHalfRes")));
+				// doesn't have to be as high quality as the Scene color
+				FRenderingCompositePass* HalfResPass = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessDownsample(PF_FloatRGB, DownsampleQuality, bIsComputePass, false, TEXT("SceneColorHalfRes")));
 				HalfResPass->SetInput(ePId_Input0, FRenderingCompositeOutputRef(Context.FinalOutput));
 
 				SceneColorHalfRes = FRenderingCompositeOutputRef(HalfResPass);
@@ -1986,7 +2003,7 @@ void FPostProcessing::Process(FRHICommandListImmediate& RHICmdList, const FViewI
 		if(bDoScreenPercentage)
 		{
 			// Check if we can save the Upscale pass and do it in the Tonemapper to save performance
-			if(Tonemapper && !PaniniConfig.IsEnabled() && !Tonemapper->bDoGammaOnly)
+			if (Tonemapper && !PaniniConfig.IsEnabled() && !Tonemapper->bDoGammaOnly && !Context.View.bVRProjectEnabled)
 			{
 				if (Context.FinalOutput.GetPass() == Tonemapper)
 				{

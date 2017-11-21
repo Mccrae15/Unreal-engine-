@@ -47,6 +47,7 @@ public class OSVRInput : ModuleRules
             var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
             PrivateIncludePaths.AddRange(
                 new string[] {
+                            Path.Combine(EngineDir, @"Source\ThirdParty\NVIDIA\nvapi"),
                             Path.Combine(EngineDir, @"Source\Runtime\Windows\D3D11RHI\Private"),
                             Path.Combine(EngineDir, @"Source\Runtime\Windows\D3D11RHI\Private\Windows")
                             });

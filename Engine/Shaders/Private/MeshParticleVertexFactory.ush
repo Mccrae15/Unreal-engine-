@@ -132,7 +132,7 @@ struct FVertexFactoryInterpolantsVSToPS
 #endif
 
 #if INSTANCED_STEREO
-	nointerpolation uint PackedEyeIndex : PACKED_EYE_INDEX;
+	nointerpolation PACKED_EYE_INDEX_TYPE PackedEyeIndex : PACKED_EYE_INDEX;
 #endif
 };
 
@@ -654,6 +654,10 @@ float4 VertexFactoryGetPreviousWorldPosition(FVertexFactoryInput Input, FVertexF
 #if USE_DYNAMIC_PARAMETERS
 		TESSELLATION_INTERPOLATE_MEMBER(InterpolantsVSToPS.DynamicParameter);
 #endif	//USE_DYNAMIC_PARAMETERS
+
+#if INSTANCED_STEREO
+		O.InterpolantsVSToPS.PackedEyeIndex = a.InterpolantsVSToPS.PackedEyeIndex;
+#endif
 
 		return O;
 	}

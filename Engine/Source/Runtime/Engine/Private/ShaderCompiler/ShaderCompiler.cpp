@@ -44,6 +44,7 @@
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "SceneInterface.h"
+#include "VRWorks.h"
 
 DEFINE_LOG_CATEGORY(LogShaderCompilers);
 
@@ -2697,6 +2698,8 @@ void GlobalBeginCompileShader(
 	// #defines get stripped out by the preprocessor without this. We can override with this
 	Input.Environment.SetDefine(TEXT("COMPILER_DEFINE"), TEXT("#define"));
 
+	bool bDisallowUnusedInterpolatorsRemoval = false;
+
 	// Set VR definitions
 	{
 		static const auto CVarInstancedStereo = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.InstancedStereo"));
@@ -2726,6 +2729,51 @@ void GlobalBeginCompileShader(
 		}
 
 		Input.Environment.SetDefine(TEXT("MONOSCOPIC_FAR_FIELD"), bIsMonoscopicFarField);
+	}
+
+	// Set multires define
+	{
+		const EShaderPlatform ShaderPlatform = static_cast<EShaderPlatform>(Target.Platform);
+		const bool bIsMultiRes = FVRWorks::IsMultiResSupportEnabled() && (ShaderPlatform == EShaderPlatform::SP_PCD3D_SM5);
+		Input.Environment.SetDefine(TEXT("MULTIRES"), bIsMultiRes ? 1 : 0);
+
+		// Throw a warning if we are silently disabling MultiRes due to missing platform support.
+		if (FVRWorks::IsMultiResSupportEnabled() && !bIsMultiRes)
+		{
+			UE_LOG(LogShaderCompilers, Warning, TEXT("MultiRes rendering is not supported on this platform."));
+		}
+
+		bDisallowUnusedInterpolatorsRemoval |= bIsMultiRes;
+	}
+
+	// Set lens matched shading define
+	{
+		const EShaderPlatform ShaderPlatform = static_cast<EShaderPlatform>(Target.Platform);
+		const bool bIsLensMatched = FVRWorks::IsLensMatchedShadingSupportEnabled() && (ShaderPlatform == EShaderPlatform::SP_PCD3D_SM5);
+		Input.Environment.SetDefine(TEXT("LENS_MATCHED"), bIsLensMatched ? 1 : 0);
+
+		// Throw a warning if we are silently disabling lens matched shading due to missing platform support.
+		if (FVRWorks::IsLensMatchedShadingSupportEnabled() && !bIsLensMatched)
+		{
+			UE_LOG(LogShaderCompilers, Warning, TEXT("Lens Matched Shading rendering is not supported on this platform."));
+		}
+
+		bDisallowUnusedInterpolatorsRemoval |= bIsLensMatched;
+	}
+
+	// Set SinglePassStereo define
+	{
+		const EShaderPlatform ShaderPlatform = static_cast<EShaderPlatform>(Target.Platform);
+		const bool bIsSinglePassStereo = FVRWorks::IsSinglePassStereoSupportEnabled() && (ShaderPlatform == EShaderPlatform::SP_PCD3D_SM5);
+		Input.Environment.SetDefine(TEXT("SINGLE_PASS_STEREO"), bIsSinglePassStereo ? 1 : 0);
+
+		// Throw a warning if we are silently disabling single pass stereo due to missing platform support.
+		if (FVRWorks::IsSinglePassStereoSupportEnabled() && !bIsSinglePassStereo)
+		{
+			UE_LOG(LogShaderCompilers, Warning, TEXT("SinglePassStereo is not supported on this platform."));
+		}
+
+		bDisallowUnusedInterpolatorsRemoval |= bIsSinglePassStereo;
 	}
 
 	ShaderType->AddReferencedUniformBufferIncludes(Input.Environment, Input.SourceFilePrefix, (EShaderPlatform)Target.Platform);
@@ -2786,7 +2834,7 @@ void GlobalBeginCompileShader(
 		}
 	}
 
-	if (IsD3DPlatform((EShaderPlatform)Target.Platform, false))
+	if (IsD3DPlatform((EShaderPlatform)Target.Platform, false) && !bDisallowUnusedInterpolatorsRemoval)
 	{
 		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.D3D.RemoveUnusedInterpolators"));
 		if (CVar && CVar->GetInt() != 0)
@@ -3315,7 +3363,7 @@ FShaderCompileJob* FGlobalShaderTypeCompiler::BeginCompileShader(FGlobalShaderTy
 		ShaderPipeline,
 		ShaderType->GetShaderFilename(),
 		ShaderType->GetFunctionName(),
-		FShaderTarget(ShaderType->GetFrequency(), Platform),
+		FShaderTarget(ShaderType->GetFrequency(), Platform, ShaderType->IsFastGeometryShader()),
 		NewJob,
 		NewJobs
 	);

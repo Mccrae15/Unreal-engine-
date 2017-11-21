@@ -6,6 +6,7 @@
 #include "Shader.h"
 #include "GlobalShader.h"
 #include "ShadowRendering.h"
+#include "VRWorks.h"
 
 /*=============================================================================
 	SceneOcclusion.h
@@ -63,3 +64,31 @@ private:
 	FStencilingGeometryShaderParameters StencilingGeometryParameters;
 };
 
+/** Fast geometry shader for rendering occlusion queries.
+*/
+class FOcclusionQueryMultiResGS : public FGlobalShader
+{
+	DECLARE_SHADER_TYPE(FOcclusionQueryMultiResGS, Global);
+public:
+	static bool ShouldCache(EShaderPlatform Platform)
+	{
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
+	}
+
+	FOcclusionQueryMultiResGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
+		FGlobalShader(Initializer)
+	{
+	}
+
+	FOcclusionQueryMultiResGS() {}
+
+	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+	{
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View.ViewUniformBuffer);
+	}
+
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
+};

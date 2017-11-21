@@ -35,6 +35,7 @@
 #endif
 #include "Runtime/UtilityShaders/Public/OculusShaders.h"
 #include "PipelineStateCache.h"
+#include "VRWorks.h"
 
 #if WITH_EDITOR
 #include "Editor/UnrealEd/Classes/Editor/EditorEngine.h"
@@ -1454,6 +1455,21 @@ namespace OculusHMD
 			}
 		}
 	}
+	int32 FOculusHMD::GetViewportGap() const
+	{
+		//figure out viewport gap from L/R viewports
+		const FSettings* SettingsPtr = InRenderThread() ? GetSettings_RenderThread() : GetSettings();
+
+		if (SettingsPtr == nullptr)
+		{
+			return 0;
+		}
+
+		const int32 ViewportGap = (SettingsPtr->EyeRenderViewport[ovrpEye_Right].Min.X - SettingsPtr->EyeRenderViewport[ovrpEye_Left].Max.X)/2;
+		check(ViewportGap >= 0);
+
+		return ViewportGap;
+	}
 
 	uint32 FOculusHMD::CreateLayer(const IStereoLayers::FLayerDesc& InLayerDesc)
 	{
@@ -2344,6 +2360,7 @@ namespace OculusHMD
 		{
 			// Update viewports
 			float ViewportScale = Settings->bPixelDensityAdaptive ? PixelDensity / Settings->PixelDensityMax : 1.0f;
+
 			ovrpSizei rtSize = EyeLayerDesc.TextureSize;
 			ovrpSizei vpSizeMax = EyeLayerDesc.MaxViewportSize;
 			ovrpRecti vpRect[3];
@@ -2353,7 +2370,9 @@ namespace OculusHMD
 
 			EyeLayer->SetEyeLayerDesc(EyeLayerDesc, vpRect);
 
-			Settings->RenderTargetSize = FIntPoint(rtSize.w, rtSize.h);
+			const float Scale = FVRWorks::GetLensMatchedShadingUnwarpScale();
+
+			Settings->RenderTargetSize = FIntPoint(rtSize.w*Scale, rtSize.h*Scale);
 			Settings->EyeRenderViewport[0].Min = FIntPoint(vpRect[0].Pos.x, vpRect[0].Pos.y);
 			Settings->EyeRenderViewport[0].Max = Settings->EyeRenderViewport[0].Min + FIntPoint(vpRect[0].Size.w, vpRect[0].Size.h);
 			Settings->EyeRenderViewport[1].Min = FIntPoint(vpRect[1].Pos.x, vpRect[1].Pos.y);

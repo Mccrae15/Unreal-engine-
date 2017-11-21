@@ -12,6 +12,7 @@
 #include "PostProcess/SceneFilterRendering.h"
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
+#include "VRWorks.h"
 
 DECLARE_FLOAT_COUNTER_STAT(TEXT("Lights"), Stat_GPU_Lights, STATGROUP_GPU);
 
@@ -34,9 +35,48 @@ static FAutoConsoleVariableRef CVarAllowSimpleLights(
 	TEXT("If true, we allow simple (ie particle) lights")
 );
 
+ // Stencil culling of regions outside the view area, defaults to off due to a stencil interaction bug under active debug
+static int32 bLMSStencilOptimization = 1;
+static FAutoConsoleVariableRef CVarLMSStencilOptimization(
+	TEXT("vr.LMSStencilOptimization"),
+	bLMSStencilOptimization,
+	TEXT("If true, use the setncil optimization when rendering lights with LMS")
+);
+
 // Implement a version for directional lights, and a version for point / spot lights
 IMPLEMENT_SHADER_TYPE(template<>,TDeferredLightVS<false>,TEXT("/Engine/Private/DeferredLightVertexShaders.usf"),TEXT("DirectionalVertexMain"),SF_Vertex);
 IMPLEMENT_SHADER_TYPE(template<>,TDeferredLightVS<true>,TEXT("/Engine/Private/DeferredLightVertexShaders.usf"),TEXT("RadialVertexMain"),SF_Vertex);
+
+// Fast geometry shader for rendering point/spot lights with multi-res
+class FDeferredLightFastGS : public FGlobalShader
+{
+	DECLARE_SHADER_TYPE(FDeferredLightFastGS, Global);
+
+public:
+	static bool ShouldCache(EShaderPlatform Platform)
+	{
+		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && RHISupportsFastGeometryShaders(Platform) && FVRWorks::IsFastGSNeeded();
+	}
+
+	FDeferredLightFastGS() {}
+	FDeferredLightFastGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
+		FGlobalShader(Initializer)
+	{
+	}
+
+	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+	{
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, (FGeometryShaderRHIParamRef)GetGeometryShader(), View.ViewUniformBuffer);
+	}
+
+	static bool IsFastGeometryShader()
+	{
+		return true;
+	}
+};
+
+IMPLEMENT_SHADER_TYPE(, FDeferredLightFastGS, TEXT("/Engine/Private/DeferredLightVertexShaders.usf"), TEXT("VRProjectFastGS"), SF_Geometry);
+
 
 /** A pixel shader for rendering the light in a deferred pass. */
 template<bool bUseIESProfile, bool bRadialAttenuation, bool bInverseSquaredFalloff, bool bVisualizeLightCulling, bool bUseLightingChannels>
@@ -106,6 +146,13 @@ public:
 		Ar << LightingChannelsTexture;
 		Ar << LightingChannelsSampler;
 		return bShaderHasOutdatedParameters;
+	}
+
+	FGlobalBoundShaderState& GetBoundShaderState( bool bMultiRes = false)
+	{
+		static FGlobalBoundShaderState State[2];
+
+		return State[int(bMultiRes)];
 	}
 
 private:
@@ -201,6 +248,8 @@ IMPLEMENT_DEFERREDLIGHT_PIXELSHADER_TYPE(false, false, false, false, true, TEXT(
 IMPLEMENT_DEFERREDLIGHT_PIXELSHADER_TYPE(false, false, false, true, true, TEXT("DirectionalPixelMain"));
 IMPLEMENT_DEFERREDLIGHT_PIXELSHADER_TYPE(false, true, false, true, true, TEXT("RadialPixelMain"));
 
+
+
 /** Shader used to visualize stationary light overlap. */
 template<bool bRadialAttenuation>
 class TDeferredLightOverlapPS : public FGlobalShader
@@ -246,6 +295,13 @@ public:
 		Ar << HasValidChannel;
 		Ar << DeferredParameters;
 		return bShaderHasOutdatedParameters;
+	}
+
+	FGlobalBoundShaderState& GetBoundShaderState(bool bMultiRes = false)
+	{
+		static FGlobalBoundShaderState State[2];
+
+		return State[int(bMultiRes)];
 	}
 
 private:
@@ -456,8 +512,60 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 			
 			if (bRenderSimpleLightsStandardDeferred)
 			{
-				SceneContext.BeginRenderingSceneColor(RHICmdList, ESimpleRenderTargetMode::EExistingColorAndDepth, FExclusiveDepthStencil::DepthRead_StencilWrite);
+				SceneContext.BeginRenderingSceneColor(RHICmdList, ESimpleRenderTargetMode::EExistingColorAndDepth, FExclusiveDepthStencil::DepthNop_StencilWrite);
 				RenderSimpleLightsStandardDeferred(RHICmdList, SimpleLights);
+			}
+
+			if (bLMSStencilOptimization)
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, SetStencilForLMS);
+				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
+				{
+					const FViewInfo& View = Views[ViewIndex];
+					if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+					{
+						// render octagon stencil here
+						SceneContext.BeginRenderingStencilOnly(RHICmdList, false);
+
+						FGraphicsPipelineStateInitializer GraphicsPSOInit;
+						RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+						GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+						GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
+
+						RHICmdList.SetGPUMask(View.StereoPass);
+
+						// First clear the stencil in the whole view to 0x80
+						FIntRect ViewPortRect = View.ViewRect;
+						RHICmdList.SetViewport(ViewPortRect.Min.X, ViewPortRect.Min.Y, 0.0f, ViewPortRect.Max.X, ViewPortRect.Max.Y, 1.0f);
+
+						GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState
+							<
+							false, CF_Always,
+							true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+							false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+							0x80, 0x80
+							>::GetRHI();
+
+						RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit, 0x80);
+
+						// Clear stencil in the octagon area to 0
+						GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState
+							<
+							false, CF_Always,
+							true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+							false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+							0x80, 0x80
+							>::GetRHI();
+
+						View.BeginVRProjectionStates(RHICmdList);
+						RenderModifiedWBoundaryMask(RHICmdList, GraphicsPSOInit, 0x00);
+						View.EndVRProjectionStates(RHICmdList);
+
+						SceneContext.FinishRenderingStencilOnly(RHICmdList);
+					}
+				}
+
+				RHICmdList.SetGPUMask(0);
 			}
 
 			{
@@ -536,6 +644,8 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 							{
 								FViewInfo& View = Views[ViewIndex];
 
+								RHICmdList.SetGPUMask(View.StereoPass);
+
 								if (LightSceneInfo->ShouldRenderLight(View))
 								{
 									FSceneViewState* ViewState = (FSceneViewState*)View.State;
@@ -548,7 +658,8 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 										}
 									}
 								}
-							}					
+							}		
+							RHICmdList.SetGPUMask(0);
 						}
 					}
 				}
@@ -596,8 +707,10 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 					for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 					{
 						const FViewInfo& View = Views[ViewIndex];
+						RHICmdList.SetGPUMask(View.StereoPass);
 						View.HeightfieldLightingViewInfo.ClearShadowing(View, RHICmdList, LightSceneInfo);
 					}
+					RHICmdList.SetGPUMask(0);
 
 					// Clear light attenuation for local lights with a quad covering their extents
 					const bool bClearLightScreenExtentsOnly = SortedLightInfo.SortKey.Fields.LightType != LightType_Directional;
@@ -676,6 +789,26 @@ void FDeferredShadingSceneRenderer::RenderLights(FRHICommandListImmediate& RHICm
 					RenderLight(RHICmdList, &LightSceneInfo, ScreenShadowMaskTexture, false, true);
 				}
 			}
+			if (bLMSStencilOptimization)
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, ClearStencilForLMS);
+
+				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
+				{
+					const FViewInfo& View = Views[ViewIndex];
+					if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+					{
+						SceneContext.BeginRenderingStencilOnly(RHICmdList, false);
+
+						// Clear stencil if any view has LMS enabled
+						// Don't have to clear per-view since at this point the engine expects a clean stencil buffer
+						DrawClearQuad(RHICmdList, false, FLinearColor(), false, 0.0f, true, 0.0f);
+
+						SceneContext.FinishRenderingStencilOnly(RHICmdList);
+						break;
+					}
+				}
+			}
 		}
 	}
 }
@@ -730,7 +863,7 @@ void FDeferredShadingSceneRenderer::RenderStationaryLightOverlap(FRHICommandList
 }
 
 /** Sets up rasterizer and depth state for rendering bounding geometry in a deferred pass. */
-void SetBoundingGeometryRasterizerAndDepthState(FGraphicsPipelineStateInitializer& GraphicsPSOInit, const FViewInfo& View, const FSphere& LightBounds)
+void SetBoundingGeometryRasterizerAndDepthState(FGraphicsPipelineStateInitializer& GraphicsPSOInit, const FViewInfo& View, const FSphere& LightBounds, uint32& StencilRef)
 {
 	const bool bCameraInsideLightGeometry = ((FVector)View.ViewMatrices.GetViewOrigin() - LightBounds.Center).SizeSquared() < FMath::Square(LightBounds.W * 1.05f + View.NearClippingDistance * 2.0f)
 		// Always draw backfaces in ortho
@@ -748,10 +881,30 @@ void SetBoundingGeometryRasterizerAndDepthState(FGraphicsPipelineStateInitialize
 		GraphicsPSOInit.RasterizerState = View.bReverseCulling ? TStaticRasterizerState<FM_Solid, CM_CCW>::GetRHI() : TStaticRasterizerState<FM_Solid, CM_CW>::GetRHI();
 	}
 
-	GraphicsPSOInit.DepthStencilState =
-		bCameraInsideLightGeometry
-		? TStaticDepthStencilState<false, CF_Always>::GetRHI()
-		: TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI();
+	StencilRef = 0;
+
+	if (bCameraInsideLightGeometry)
+	{
+		if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched && bLMSStencilOptimization)
+		{
+			// no depth test or writes, Test stencil for 0xff.
+			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<
+				false, CF_Always,
+				true, CF_NotEqual, SO_Keep, SO_Keep, SO_Keep,
+				false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+				0x80, 0x80 // Mask the highest bit
+			>::GetRHI();
+			StencilRef = 0x80;
+		}
+		else
+		{
+			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+		}
+	}
+	else
+	{
+		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI();
+	}
 }
 
 template <bool bRadialAttenuation>
@@ -769,6 +922,17 @@ static void SetShaderTemplLighting(
 	const FLightSceneInfo* LightSceneInfo, 
 	IPooledRenderTarget* ScreenShadowMaskTexture)
 {
+	// Use multi-res geometry shader only when drawing point/spot lights
+	const bool bUseFastGS = (View.bVRProjectEnabled) && (LightSceneInfo->Proxy->GetLightType() != LightType_Directional);
+
+	//EHartNV : toDo - evulate if there is a better way to do this with a shader ref
+	FDeferredLightFastGS *GeometryShader = nullptr;
+	if (bUseFastGS)
+	{
+		GeometryShader = View.ShaderMap->GetShader<FDeferredLightFastGS>();
+		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(GeometryShader);
+	}
+
 	if(View.Family->EngineShowFlags.VisualizeLightCulling)
 	{
 		TShaderMapRef<TDeferredLightPS<false, bRadialAttenuation, false, true, false> > PixelShader(View.ShaderMap);
@@ -799,6 +963,11 @@ static void SetShaderTemplLighting(
 			PixelShader->SetParameters(RHICmdList, View, LightSceneInfo, ScreenShadowMaskTexture);
 		}
 	}
+
+	if (GeometryShader)
+	{
+		GeometryShader->SetParameters(RHICmdList, View);
+	}
 }
 
 template<bool bUseIESProfile, bool bRadialAttenuation, bool bInverseSquaredFalloff>
@@ -810,7 +979,16 @@ static void SetShaderTemplLightingSimple(
 	const FSimpleLightEntry& SimpleLight,
 	const FSimpleLightPerViewEntry& SimpleLightPerViewData)
 {
-	if(View.Family->EngineShowFlags.VisualizeLightCulling)
+	const bool bVRProjectEnabled = View.bVRProjectEnabled;
+
+	FDeferredLightFastGS *GeometryShader = nullptr;
+	if (bVRProjectEnabled)
+	{
+		GeometryShader = View.ShaderMap->GetShader<FDeferredLightFastGS>();
+		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(GeometryShader);
+	}
+
+	if (View.Family->EngineShowFlags.VisualizeLightCulling)
 	{
 		TShaderMapRef<TDeferredLightPS<false, bRadialAttenuation, false, true, false> > PixelShader(View.ShaderMap);
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetDeferredLightingVertexDeclaration<bRadialAttenuation>();
@@ -827,6 +1005,11 @@ static void SetShaderTemplLightingSimple(
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 		PixelShader->SetParametersSimpleLight(RHICmdList, View, SimpleLight, SimpleLightPerViewData);
+	}
+
+	if (GeometryShader)
+	{
+		GeometryShader->SetParameters(RHICmdList, View);
 	}
 }
 
@@ -847,6 +1030,11 @@ void CalculateLightNearFarDepthFromBounds(const FViewInfo& View, const FSphere &
 	const FVector4 NearPoint4 = FVector4(NearPoint, 1.f);
 	const FVector4 NearPoint4Clip = ViewProjection.TransformFVector4(NearPoint4);
 	NearDepth = NearPoint4Clip.Z / NearPoint4Clip.W;
+
+	if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+	{
+		FarDepth = 0;// FarPoint4Clip.Z / (FMath::Max(View.LensMatchedShadingConf.WarpUp, View.LensMatchedShadingConf.WarpDown) + FMath::Max(View.LensMatchedShadingConf.WarpLeft, View.LensMatchedShadingConf.WarpRight) + FarPoint4Clip.W);
+	}
 
 	// negative means behind view, but we use a NearClipPlane==1.f depth	
 
@@ -888,11 +1076,12 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 	{
 		FViewInfo& View = Views[ViewIndex];
 
-		// Ensure the light is valid for this view
 		if (!LightSceneInfo->ShouldRenderLight(View))
 		{
 			continue;
 		}
+		
+		RHICmdList.SetGPUMask(View.StereoPass);
 
 		bool bUseIESTexture = false;
 
@@ -901,16 +1090,23 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 			bUseIESTexture = (LightSceneInfo->Proxy->GetIESTextureResource() != 0);
 		}
 
-		// Set the device viewport for the view.
-		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
-
 		bool bClearCoatNeeded = (View.ShadingModelMaskInView & (1 << MSM_ClearCoat)) != 0;
 		if (LightSceneInfo->Proxy->GetLightType() == LightType_Directional)
 		{
+			// Set the device viewport for the view. No multi-res viewports needed as it's a full-screen pass.
+			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+
 			TShaderMapRef<TDeferredLightVS<false> > VertexShader(View.ShaderMap);
 
 			GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
-			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+			if (View.bVRProjectEnabled && View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+			{
+				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNear>::GetRHI();
+			}
+			else
+			{
+				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+			}
 
 			if (bRenderOverlap)
 			{
@@ -949,9 +1145,21 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 		}
 		else
 		{
+			// Set the device viewport for the view. Since point/spot lights render geometry, need to use the
+			// vr projection geometry shader and viewports.
+			if (View.bVRProjectEnabled)
+			{
+				View.BeginVRProjectionStates(RHICmdList);
+			}
+			else
+			{
+				RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+			}
+
 			TShaderMapRef<TDeferredLightVS<true> > VertexShader(View.ShaderMap);
 
-			SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds);
+			uint32 StencilRef;
+			SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds, StencilRef);
 
 			if (bRenderOverlap)
 			{
@@ -961,6 +1169,7 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
 
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+
 				PixelShader->SetParameters(RHICmdList, View, LightSceneInfo);
 			}
 			else
@@ -988,6 +1197,7 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 					}
 				}
 			}
+			RHICmdList.SetStencilRef(StencilRef);
 
 			VertexShader->SetParameters(RHICmdList, View, LightSceneInfo);
 
@@ -1026,8 +1236,15 @@ void FDeferredShadingSceneRenderer::RenderLight(FRHICommandList& RHICmdList, con
 				// Turn DBT back off
 				RHICmdList.EnableDepthBoundsTest(false, 0, 1);
 			}
+
+			if (View.bVRProjectEnabled)
+			{
+				// Reset viewport and scissor after rendering to vr projection view
+				View.EndVRProjectionStates(RHICmdList);
+			}
 		}
 	}
+	RHICmdList.SetGPUMask(0);
 
 	if (bStencilDirty)
 	{
@@ -1061,12 +1278,23 @@ void FDeferredShadingSceneRenderer::RenderSimpleLightsStandardDeferred(FRHIComma
 
 			FViewInfo& View = Views[ViewIndex];
 
-			// Set the device viewport for the view.
-			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+			RHICmdList.SetGPUMask(View.StereoPass);
+
+			// Set the device viewport for the view. Since point/spot lights render geometry, need to use the
+			// vr projection geometry shader and viewports.
+			if (View.bVRProjectEnabled)
+			{
+				View.BeginVRProjectionStates(RHICmdList);
+			}
+			else
+			{
+				RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+			}
 
 			TShaderMapRef<TDeferredLightVS<true> > VertexShader(View.ShaderMap);
 
-			SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds);
+			uint32 StencilRef;
+			SetBoundingGeometryRasterizerAndDepthState(GraphicsPSOInit, View, LightBounds, StencilRef);
 
 			if (SimpleLight.Exponent == 0)
 			{
@@ -1078,12 +1306,20 @@ void FDeferredShadingSceneRenderer::RenderSimpleLightsStandardDeferred(FRHIComma
 				// light's exponent, not inverse squared
 				SetShaderTemplLightingSimple<false, true, false>(RHICmdList, GraphicsPSOInit, View, *VertexShader, SimpleLight, SimpleLightPerViewData);
 			}
+			RHICmdList.SetStencilRef(StencilRef);
 
 			VertexShader->SetSimpleLightParameters(RHICmdList, View, LightBounds);
 
 			// Apply the point or spot light with some approximately bounding geometry, 
 			// So we can get speedups from depth testing and not processing pixels outside of the light's influence.
 			StencilingGeometry::DrawSphere(RHICmdList);
+
+			if (View.bVRProjectEnabled)
+			{
+				// Reset viewport and scissor after rendering to vr projection view
+				View.EndVRProjectionStates(RHICmdList);
+			}
 		}
+		RHICmdList.SetGPUMask(0);
 	}
 }

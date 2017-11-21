@@ -4,6 +4,7 @@
  * MaterialTemplate.usf: Filled in by FHLSLMaterialTranslator::GetMaterialShaderCode for each material being compiled.
  */
 
+#pragma once
 #include "/Engine/Private/Random.ush"
 #include "/Engine/Private/MonteCarlo.ush"
 #include "/Engine/Generated/UniformBuffers/Material.ush"
@@ -1843,7 +1844,7 @@ void CalcMaterialParameters(
 	float4 SvPosition,
 	FIsFrontFace bIsFrontFace)
 {
-	float4 ScreenPosition = SvPositionToResolvedScreenPosition(SvPosition);
+	float4 ScreenPosition = SvPositionToVRProjectResolvedScreenPosition(SvPosition);
 	float3 TranslatedWorldPosition = SvPositionToResolvedTranslatedWorld(SvPosition);
 
 	CalcMaterialParametersEx(Parameters, PixelMaterialInputs, SvPosition, ScreenPosition, bIsFrontFace, TranslatedWorldPosition, TranslatedWorldPosition);
@@ -1855,7 +1856,7 @@ void CalcMaterialParametersPost(
 	float4 SvPosition,
 	FIsFrontFace bIsFrontFace)
 {
-	float4 ScreenPosition = SvPositionToScreenPosition(SvPosition);
+	float4 ScreenPosition = SvPositionToVRProjectScreenPosition(SvPosition);
 	float3 TranslatedWorldPosition = SvPositionToTranslatedWorld(SvPosition);
 
 	CalcMaterialParametersEx(Parameters, PixelMaterialInputs, SvPosition, ScreenPosition, bIsFrontFace, TranslatedWorldPosition, TranslatedWorldPosition);

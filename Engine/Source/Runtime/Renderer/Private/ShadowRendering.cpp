@@ -13,6 +13,7 @@
 #include "ScenePrivate.h"
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
+#include "VRWorks.h"
 
 static TAutoConsoleVariable<float> CVarCSMShadowDepthBias(
 	TEXT("r.Shadow.CSMDepthBias"),
@@ -186,6 +187,8 @@ IMPLEMENT_SHADER_TYPE(,FShadowProjectionNoTransformVS,TEXT("/Engine/Private/Shad
 
 IMPLEMENT_SHADER_TYPE(,FShadowVolumeBoundProjectionVS,TEXT("/Engine/Private/ShadowProjectionVertexShader.usf"),TEXT("Main"),SF_Vertex);
 
+IMPLEMENT_SHADER_TYPE(, FShadowProjectionMultiResGS, TEXT("/Engine/Private/ShadowProjectionVertexShader.usf"), TEXT("VRProjectFastGS"), SF_Geometry);
+
 /**
  * Implementations for TShadowProjectionPS.  
  */
@@ -273,12 +276,24 @@ void StencilingGeometry::DrawCone(FRHICommandList& RHICmdList)
 		FStencilConeIndexBuffer::NumVerts, 0, StencilingGeometry::GStencilConeIndexBuffer.GetIndexCount() / 3, 1);
 }
 
+/** bound shader state for stencil masking the shadow projection
+*  [0]:FShadowProjectionNoTransformVS
+*  [1]:FShadowProjectionNoTransformVS + FShadowProjectionMultiResGS
+*  [2]:FShadowProjectionVS
+*  [3]:FShadowProjectionVS + FShadowProjectionMultiResGS
+*/
+static FGlobalBoundShaderState MaskBoundShaderState[4];
+
 static void GetShadowProjectionShaders(
 	int32 Quality, const FViewInfo& View, const FProjectedShadowInfo* ShadowInfo, bool bMobileModulatedProjections,
-	FShadowProjectionVertexShaderInterface** OutShadowProjVS, FShadowProjectionPixelShaderInterface** OutShadowProjPS)
+	FShadowProjectionVertexShaderInterface** OutShadowProjVS, FShadowProjectionGeometryShaderInterface** OutShadowProjGS,
+	FShadowProjectionPixelShaderInterface** OutShadowProjPS)
 {
 	check(!*OutShadowProjVS);
+	check(!*OutShadowProjGS);
 	check(!*OutShadowProjPS);
+
+	*OutShadowProjGS = View.bVRProjectEnabled ? View.ShaderMap->GetShader<FShadowProjectionMultiResGS>() : nullptr;
 
 	if (ShadowInfo->bTranslucentShadow)
 	{
@@ -374,6 +389,11 @@ static void GetShadowProjectionShaders(
 
 	check(*OutShadowProjVS);
 	check(*OutShadowProjPS);
+
+	if (View.bVRProjectEnabled)
+	{
+		check(*OutShadowProjGS);
+	}
 }
 
 void FProjectedShadowInfo::SetBlendStateForProjection(
@@ -591,17 +611,38 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 	DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
 	DrawRenderState.SetBlendState(TStaticBlendState<CW_NONE>::GetRHI());
 
+	if (View->bVRProjectEnabled)
+	{
+		// EHartNV : ToDo - follow-up on Nathan's optimization issue
+		// @todo: restrict rendering to the light's screen-space rectangle (as in LightSceneInfo->Proxy->SetScissorRect).
+		// Would need to map the scissor rect to multi-res coordinates, then intersect it with the vr projection scissors.
+		if ((bPreShadow || bSelfShadowOnly) && View->bIsInstancedStereoEnabled && View->VRProjMode == FSceneView::EVRProjectMode::MultiRes)
+		{
+			//for preshadow and selfshadow in multires+instanced stereo regime we need to setup shared stereo viewports
+			//grab shared viewports from the left view since only the left view has ones
+			const FSceneView* LeftView = View->Family->Views[0];
+			RHICmdList.SetMultipleViewports(LeftView->StereoVRProjectViewportArray.Num(), LeftView->StereoVRProjectViewportArray.GetData());
+			RHICmdList.SetMultipleScissorRects(true, LeftView->StereoVRProjectScissorArray.Num(), LeftView->StereoVRProjectScissorArray.GetData());
+		}
+		else
+		{
+			View->BeginVRProjectionStates(RHICmdList);
+		}
+	}
+
 	// If this is a preshadow, mask the projection by the receiver primitives.
 	if (bPreShadow || bSelfShadowOnly)
 	{
 		SCOPED_DRAW_EVENTF(RHICmdList, EventMaskSubjects, TEXT("Stencil Mask Subjects"));
 
 		// If instanced stereo is enabled, we need to render each view of the stereo pair using the instanced stereo transform to avoid bias issues.
-		const bool bIsInstancedStereoEmulated = View->bIsInstancedStereoEnabled && !View->bIsMultiViewEnabled && View->StereoPass != eSSP_FULL;
-		if (bIsInstancedStereoEmulated)
+		const bool bIsInstancedStereoEmulated = View->bIsInstancedStereoEnabled && !View->bIsMultiViewEnabled && View->StereoPass != eSSP_FULL && !View->bAllowSinglePassStereo;
+		if (bIsInstancedStereoEmulated && !View->bVRProjectEnabled)
 		{
 			RHICmdList.SetViewport(0, 0, 0, View->Family->InstancedStereoWidth, View->ViewRect.Max.Y, 1);
 		}
+
+		const bool bNeedsSinglePassStereoBias = bPreShadow && View->bAllowSinglePassStereo && View->StereoPass == eSSP_RIGHT_EYE;
 
 		// Set stencil to one.
 		DrawRenderState.SetDepthStencilState(
@@ -609,7 +650,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 			false, CF_DepthNearOrEqual,
 			true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
 			false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-			0xff, 0xff
+			0x7f, 0x7f
 			>::GetRHI());
 		DrawRenderState.SetStencilRef(1);
 
@@ -624,7 +665,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 			const FMeshBatchAndRelevance& MeshBatchAndRelevance = DynamicMeshElements[MeshBatchIndex];
 			const FMeshBatch& MeshBatch = *MeshBatchAndRelevance.Mesh;
 
-			FDepthDrawingPolicyFactory::DrawDynamicMesh(RHICmdList, *View, Context, MeshBatch, true, DrawRenderState, MeshBatchAndRelevance.PrimitiveSceneProxy, MeshBatch.BatchHitProxyId, false, bIsInstancedStereoEmulated);
+			FDepthDrawingPolicyFactory::DrawDynamicMesh(RHICmdList, *View, Context, MeshBatch, true, DrawRenderState, MeshBatchAndRelevance.PrimitiveSceneProxy, MeshBatch.BatchHitProxyId, false, bIsInstancedStereoEmulated, false, bNeedsSinglePassStereoBias);
 		}
 
 		// Pre-shadows mask by receiver elements, self-shadow mask by subject elements.
@@ -658,7 +699,8 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 								ReceiverPrimitiveSceneInfo->Proxy,
 								StaticMesh.BatchHitProxyId, 
 								false, 
-								bIsInstancedStereoEmulated
+								bIsInstancedStereoEmulated,
+								bNeedsSinglePassStereoBias
 								);
 						}
 					}
@@ -682,13 +724,14 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 					StaticMesh.PrimitiveSceneInfo->Proxy,
 					StaticMesh.BatchHitProxyId, 
 					false, 
-					bIsInstancedStereoEmulated
+					bIsInstancedStereoEmulated,
+					bNeedsSinglePassStereoBias
 					);
 			}
 		}
 
 		// Restore viewport
-		if (bIsInstancedStereoEmulated)
+		if (bIsInstancedStereoEmulated && !View->bVRProjectEnabled)
 		{
 			RHICmdList.SetViewport(View->ViewRect.Min.X, View->ViewRect.Min.Y, 0.0f, View->ViewRect.Max.X, View->ViewRect.Max.Y, 1.0f);
 		}
@@ -702,7 +745,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 			false, CF_DepthNearOrEqual,
 			true, CF_Always, SO_Keep, SO_Increment, SO_Keep,
 			true, CF_Always, SO_Keep, SO_Decrement, SO_Keep,
-			0xff, 0xff
+			0x7f, 0x7f
 			>::GetRHI());
 
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
@@ -725,7 +768,22 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShaderNoTransform);
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		// vrworks todo. The original MaskBoundShaderState[0],[1] usage needed?
+		const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[View->GetFeatureLevel()]) && FVRWorks::IsFastGSNeeded();
+		if (View->bVRProjectEnabled && bMultiRes)
+		{
+			TOptionalShaderMapRef<FShadowProjectionMultiResGS> MultiResGeometryShader(View->ShaderMap);
+			GraphicsPSOInit.BoundShaderState.GeometryShaderRHI =  GETSAFERHISHADER_GEOMETRY(*MultiResGeometryShader);
+
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			MultiResGeometryShader->SetParameters(RHICmdList, *View);
+		}
+		else
+		{
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		}
+
+		VertexShaderNoTransform->SetParameters(RHICmdList, View->ViewUniformBuffer);
 
 		FVector4 Near = View->ViewMatrices.GetProjectionMatrix().TransformFVector4(FVector4(0, 0, CascadeSettings.SplitNear));
 		FVector4 Far = View->ViewMatrices.GetProjectionMatrix().TransformFVector4(FVector4(0, 0, CascadeSettings.SplitFar));
@@ -768,7 +826,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 				false, CF_DepthNearOrEqual,
 				true, CF_Always, SO_Keep, SO_Increment, SO_Keep,
 				true, CF_Always, SO_Keep, SO_Decrement, SO_Keep,
-				0xff, 0xff
+				0x7f,0x7f
 				>::GetRHI());
 		}
 		else
@@ -780,7 +838,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 				false, CF_DepthNearOrEqual,
 				true, CF_Always, SO_Keep, SO_Keep, SO_Increment,
 				true, CF_Always, SO_Keep, SO_Keep, SO_Decrement,
-				0xff, 0xff
+				0x7f,0x7f
 				>::GetRHI());
 		}
 		
@@ -793,11 +851,24 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 		// Find the projection shaders.
 		TShaderMapRef<FShadowVolumeBoundProjectionVS> VertexShader(View->ShaderMap);
 
+		//vrworks todo. Original MaskBoundShaderState[2], [3] usage needed?
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		const bool bMultiRes = RHISupportsFastGeometryShaders(GShaderPlatformForFeatureLevel[View->GetFeatureLevel()]) && FVRWorks::IsFastGSNeeded();
+		if (View->bVRProjectEnabled && bMultiRes)
+		{
+			TOptionalShaderMapRef<FShadowProjectionMultiResGS> MultiResGeometryShader(View->ShaderMap);
+			GraphicsPSOInit.BoundShaderState.GeometryShaderRHI =  GETSAFERHISHADER_GEOMETRY(*MultiResGeometryShader);
+
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			MultiResGeometryShader->SetParameters(RHICmdList, *View);
+		}
+		else
+		{
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		}
 
 		// Set the projection vertex shader parameters
 		VertexShader->SetParameters(RHICmdList, *View, this);
@@ -813,7 +884,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 				false, CF_DepthNearOrEqual,
 				true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
 				true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
-				0xff, 0xff
+				0x7f, 0x7f
 				>::GetRHI());
 			DrawRenderState.SetStencilRef(0);
 
@@ -881,19 +952,52 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 		SetupProjectionStencilMask(RHICmdList, View, FrustumVertices, bMobileModulatedProjections, bCameraInsideShadowFrustum);
 	}
 
+	if (View->bVRProjectEnabled)
+	{
+		// EHartNV : ToDo - follow-up on Nathan's optimization issue
+		// @todo: restrict rendering to the light's screen-space rectangle (as in LightSceneInfo->Proxy->SetScissorRect).
+		// Would need to map the scissor rect to multi-res coordinates, then intersect it with the vr projection scissors.
+		View->BeginVRProjectionStates(RHICmdList);
+	}
+
 	// solid rasterization w/ back-face culling.
 	GraphicsPSOInit.RasterizerState = (View->bReverseCulling || IsWholeSceneDirectionalShadow()) ? TStaticRasterizerState<FM_Solid,CM_CCW>::GetRHI() : TStaticRasterizerState<FM_Solid,CM_CW>::GetRHI();
 
 	if (bDepthBoundsTestEnabled)
 	{
-		EnableDepthBoundsTest(RHICmdList, CascadeSettings.SplitNear, CascadeSettings.SplitFar, View->ViewMatrices.GetProjectionMatrix());
+		FVector4 Near = View->ViewMatrices.GetProjectionMatrix().TransformFVector4(FVector4(0, 0, CascadeSettings.SplitNear));
+		FVector4 Far = View->ViewMatrices.GetProjectionMatrix().TransformFVector4(FVector4(0, 0, CascadeSettings.SplitFar));
+		float DepthNear = Near.Z / Near.W;
+		float DepthFar = Far.Z / Far.W;
+
+		if (View->bVRProjectEnabled && View->VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		{
+			DepthFar = 0;// Far.Z / (FMath::Max(View->LensMatchedShadingConf.WarpUp, View->LensMatchedShadingConf.WarpDown) + FMath::Max(View->LensMatchedShadingConf.WarpLeft, View->LensMatchedShadingConf.WarpRight) + Far.W);
+		}
+
+		DepthFar = FMath::Clamp(DepthFar, 0.0f, 1.0f);
+		DepthNear = FMath::Clamp(DepthNear, 0.0f, 1.0f);
+
+		if (DepthNear <= DepthFar)
+		{
+			DepthNear = 1.0f;
+			DepthFar = 0.0f;
+		}
+
+		//vrworks todo. compare with the original EnableDepthBoundsTest(RHICmdList, CascadeSettings.SplitNear, CascadeSettings.SplitFar, View->ViewMatrices.GetProjectionMatrix());
+		// Note, using a reversed z depth surface
+		RHICmdList.EnableDepthBoundsTest(true, DepthFar, DepthNear);
 
 		// no depth test or writes
 		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 	}
 	else
 	{
-		if (GStencilOptimization)
+		SCOPED_DRAW_EVENT(RHICmdList, ClearStencilPerShadow);
+
+		static const auto CVarLMSStencilOpt = IConsoleManager::Get().FindConsoleVariable(TEXT("vr.LMSStencilOptimization"));
+
+		if (GStencilOptimization || (View->bVRProjectEnabled && View->VRProjMode == FSceneView::EVRProjectMode::LensMatched && CVarLMSStencilOpt->GetInt()))
 		{
 			// No depth test or writes, zero the stencil
 			// Note: this will disable hi-stencil on many GPUs, but still seems 
@@ -903,7 +1007,7 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 				false, CF_Always,
 				true, CF_NotEqual, SO_Zero, SO_Zero, SO_Zero,
 				false, CF_Always, SO_Zero, SO_Zero, SO_Zero,
-				0xff, 0xff
+				0x7f, 0x7f
 				>::GetRHI();
 		}
 		else
@@ -914,7 +1018,7 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 				false, CF_Always,
 				true, CF_NotEqual, SO_Keep, SO_Keep, SO_Keep,
 				false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
-				0xff, 0xff
+				0x7f, 0x7f
 				>::GetRHI();
 		}
 	}
@@ -957,12 +1061,14 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 
 		FShadowProjectionVertexShaderInterface* ShadowProjVS = nullptr;
 		FShadowProjectionPixelShaderInterface* ShadowProjPS = nullptr;
+		FShadowProjectionGeometryShaderInterface* ShadowProjGS = nullptr;
 
-		GetShadowProjectionShaders(LocalQuality, *View, this, bMobileModulatedProjections, &ShadowProjVS, &ShadowProjPS);
+		GetShadowProjectionShaders(LocalQuality, *View, this, bMobileModulatedProjections, &ShadowProjVS, &ShadowProjGS, &ShadowProjPS);
 
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(ShadowProjVS);
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(ShadowProjPS);
+		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = ShadowProjGS ? GETSAFERHISHADER_GEOMETRY(ShadowProjGS) : nullptr;
 
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
         
@@ -970,6 +1076,11 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 
 		ShadowProjVS->SetParameters(RHICmdList, *View, this);
 		ShadowProjPS->SetParameters(RHICmdList, ViewIndex, *View, this);
+
+		if (ShadowProjGS)
+		{
+			ShadowProjGS->SetParameters(RHICmdList, *View);
+		}
 	}
 
 	if (IsWholeSceneDirectionalShadow())
@@ -990,14 +1101,23 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 		DrawIndexedPrimitiveUP(RHICmdList, PT_TriangleList, 0, 8, 12, GCubeIndices, sizeof(uint16), FrustumVertices.GetData(), sizeof(FVector4));
 	}
 
+	if (View->bVRProjectEnabled)
+	{
+		// Reset viewport and scissor for the next pass (and before possibly clearing stencil)
+		RHICmdList.SetViewport(View->ViewRect.Min.X, View->ViewRect.Min.Y, 0.0f, View->ViewRect.Max.X, View->ViewRect.Max.Y, 1.0f);
+		View->EndVRProjectionStates(RHICmdList);
+	}
+
 	if (bDepthBoundsTestEnabled)
 	{
 		DisableDepthBoundsTest(RHICmdList);
 	}
 	else
 	{
+		static const auto CVarLMSStencilOpt = IConsoleManager::Get().FindConsoleVariable(TEXT("vr.LMSStencilOptimization"));
+
 		// Clear the stencil buffer to 0.
-		if (!GStencilOptimization)
+		if (!(GStencilOptimization || (View->bVRProjectEnabled && View->VRProjMode == FSceneView::EVRProjectMode::LensMatched && CVarLMSStencilOpt->GetInt())))
 		{
 			DrawClearQuad(RHICmdList, false, FLinearColor::Transparent, false, 0, true, 1);
 		}
@@ -1005,20 +1125,48 @@ void FProjectedShadowInfo::RenderProjection(FRHICommandListImmediate& RHICmdList
 }
 
 
-template <uint32 Quality>
-static void SetPointLightShaderTempl(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, int32 ViewIndex, const FViewInfo& View, const FProjectedShadowInfo* ShadowInfo)
+template <uint32 Quality, bool bVRProjectEnabled>
+static void SetPointLightShaderTemplMultiRes(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, int32 ViewIndex, const FViewInfo& View, const FProjectedShadowInfo* ShadowInfo)
 {
 	TShaderMapRef<FShadowVolumeBoundProjectionVS> VertexShader(View.ShaderMap);
+	TOptionalShaderMapRef<FShadowProjectionMultiResGS> MultiResGS(View.ShaderMap);
 	TShaderMapRef<TOnePassPointShadowProjectionPS<Quality> > PixelShader(View.ShaderMap);
 
+	//vrworks todo. compare with the original SetGlobalBoundShaderState.
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	if (bVRProjectEnabled)
+	{
+		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(*MultiResGS);
+
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+
+		MultiResGS->SetParameters(RHICmdList, View);
+	}
+	else
+	{
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	}
 	
 	VertexShader->SetParameters(RHICmdList, View, ShadowInfo);
 	PixelShader->SetParameters(RHICmdList, ViewIndex, View, ShadowInfo);
+}
+
+template <uint32 Quality>
+static void SetPointLightShaderTempl(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit, int32 ViewIndex, const FViewInfo& View, const FProjectedShadowInfo* ShadowInfo)
+{
+	const bool bVRProjectEnabled = View.bVRProjectEnabled;
+	
+	if (bVRProjectEnabled)
+	{
+		SetPointLightShaderTemplMultiRes<Quality,true>(RHICmdList, GraphicsPSOInit, ViewIndex, View, ShadowInfo);
+	}
+	else
+	{
+		SetPointLightShaderTemplMultiRes<Quality, false>(RHICmdList, GraphicsPSOInit, ViewIndex, View, ShadowInfo);
+	}
 }
 
 /** Render one pass point light shadow projections. */
@@ -1050,6 +1198,14 @@ void FProjectedShadowInfo::RenderOnePassPointLightProjection(FRHICommandListImme
 		GraphicsPSOInit.RasterizerState = View.bReverseCulling ? TStaticRasterizerState<FM_Solid, CM_CCW>::GetRHI() : TStaticRasterizerState<FM_Solid, CM_CW>::GetRHI();
 	}	
 
+	if (View.bVRProjectEnabled)
+	{
+		// EHartNV : ToDo - follow-up on Nathan's optimization issue
+		// @todo: restrict rendering to the light's screen-space rectangle (as in LightSceneInfo->Proxy->SetScissorRect).
+		// Would need to map the scissor rect to multi-res coordinates, then intersect it with the multi-res scissors.
+		View.BeginVRProjectionStates(RHICmdList);
+	}
+	
 	{
 		uint32 LocalQuality = GetShadowQuality();
 
@@ -1085,6 +1241,11 @@ void FProjectedShadowInfo::RenderOnePassPointLightProjection(FRHICommandListImme
 	// Project the point light shadow with some approximately bounding geometry, 
 	// So we can get speedups from depth testing and not processing pixels outside of the light's influence.
 	StencilingGeometry::DrawSphere(RHICmdList);
+	
+	if (View.bVRProjectEnabled)
+	{
+		View.EndVRProjectionStates(RHICmdList);
+	}
 }
 
 void FProjectedShadowInfo::RenderFrustumWireframe(FPrimitiveDrawInterface* PDI) const
@@ -1403,12 +1564,18 @@ bool FSceneRenderer::RenderShadowProjections(FRHICommandListImmediate& RHICmdLis
 		SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
 
 		const FViewInfo& View = Views[ViewIndex];
+		RHICmdList.SetGPUMask(View.StereoPass);
 
-		// Set the device viewport for the view.
-		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+		// EHartNV : ToDo - determine if this is really necessary, or whether it is just a small inefficiency
+		// In multi-res mode, defer viewport/scissor setting to RenderProjection().
+		if (!View.bVRProjectEnabled)
+		{
+			// Set the device viewport for the view.
+			RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
 
-		// Set the light's scissor rectangle.
-		LightSceneInfo->Proxy->SetScissorRect(RHICmdList, View);
+			// Set the light's scissor rectangle.
+			LightSceneInfo->Proxy->SetScissorRect(RHICmdList, View);
+		}
 
 		// Project the shadow depth buffers onto the scene.
 		for (int32 ShadowIndex = 0; ShadowIndex < VisibleLightInfo.ShadowsToProject.Num(); ShadowIndex++)
@@ -1436,9 +1603,14 @@ bool FSceneRenderer::RenderShadowProjections(FRHICommandListImmediate& RHICmdLis
 			}
 		}
 
-		// Reset the scissor rectangle.
-		RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
+		// EHartNV : ToDo - determine if this is really necessary, or whether it is just a small inefficiency
+		if (!View.bVRProjectEnabled)
+		{
+			// Reset the scissor rectangle.
+			RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
+		}
 	}
+	RHICmdList.SetGPUMask(0);
 
 	return true;
 }

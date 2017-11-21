@@ -19,6 +19,7 @@
 
 #include "EngineAnalytics.h"
 #include "Runtime/Analytics/Analytics/Public/Interfaces/IAnalyticsProvider.h"
+#include "VRWorks.h"
 
 #include "Engine/Canvas.h"
 #include "CanvasItem.h"
@@ -1304,6 +1305,48 @@ void FSteamVRHMD::CalculateStereoViewOffset(const enum EStereoscopicPass StereoP
 	FHeadMountedDisplayBase::CalculateStereoViewOffset(StereoPassType, ViewRotation, WorldToMeters, ViewLocation);
 }
 
+#define SPS_VFOV_AVERAGE 0
+
+void FSteamVRHMD::GetTopBottomScaleCoefficients(const enum EStereoscopicPass StereoPassType, float& OutTopScale, float& OutBottomScale) const
+{
+	OutTopScale = OutBottomScale = 1.f;
+
+	if (FVRWorks::IsSinglePassStereoRenderingEnabled())
+	{
+#if !SPS_VFOV_AVERAGE
+		//only the right eye
+		if (StereoPassType == eSSP_RIGHT_EYE)
+		{
+			float Dummy, LTop, LBottom, RTop, RBottom;
+			VRSystem->GetProjectionRaw(vr::Eye_Left, &Dummy, &Dummy, &LTop, &LBottom);
+			VRSystem->GetProjectionRaw(vr::Eye_Right, &Dummy, &Dummy, &RTop, &RBottom);
+
+			OutTopScale = RTop / LTop;
+			OutBottomScale = RBottom / LBottom;
+		}
+#else
+		//both eyes
+		float Dummy, LTop, LBottom, RTop, RBottom;
+		VRSystem->GetProjectionRaw(vr::Eye_Left, &Dummy, &Dummy, &LTop, &LBottom);
+		VRSystem->GetProjectionRaw(vr::Eye_Right, &Dummy, &Dummy, &RTop, &RBottom);
+
+		float Top = (LTop + RTop) / 2.f;
+		float Bottom = (LBottom + RBottom) / 2.f;
+		
+		if (StereoPassType == eSSP_LEFT_EYE)
+		{
+			OutTopScale = LTop / Top;
+			OutBottomScale = LBottom / Bottom;
+		}
+		else
+		{
+			OutTopScale = RTop / Top;
+			OutBottomScale = RBottom / Bottom;
+		}
+#endif
+	}
+}
+
 FMatrix FSteamVRHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass StereoPassType) const
 {
 	check(IsStereoEnabled());
@@ -1312,6 +1355,25 @@ FMatrix FSteamVRHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass Ster
 	float Left, Right, Top, Bottom;
 
 	VRSystem->GetProjectionRaw(HmdEye, &Right, &Left, &Top, &Bottom);
+
+	//NVIDIA SPS WAR! For SPS we need to align right eye's vertical fov with left eye's vertical fov since we only support horizontal shift
+	//TODO: disable this code for n-view!
+	if (FVRWorks::IsSinglePassStereoRenderingEnabled())
+	{
+#if !SPS_VFOV_AVERAGE
+		//this way only the non-SPS passes will be affected and SPS passes will be rendered in the way they were rendered before the fix
+		float Dummy;
+		VRSystem->GetProjectionRaw(vr::Eye_Left, &Dummy, &Dummy, &Top, &Bottom);
+#else
+		//this way both eye' fovs will be affected and the final image will be different from the image we had before the fix
+		float Dummy, LTop, LBottom, RTop, RBottom;
+		VRSystem->GetProjectionRaw(vr::Eye_Left, &Dummy, &Dummy, &LTop, &LBottom);
+		VRSystem->GetProjectionRaw(vr::Eye_Right, &Dummy, &Dummy, &RTop, &RBottom);
+		Top = (LTop + RTop) / 2.f;
+		Bottom = (LBottom + RBottom) / 2.f;
+#endif
+	}
+
 	Bottom *= -1.0f;
 	Top *= -1.0f;
 	Right *= -1.0f;
@@ -1458,9 +1520,9 @@ void FSteamVRHMD::CalculateRenderTargetSize(const class FViewport& Viewport, uin
 	{
 		return;
 	}
-	
-	InOutSizeX = FrameSettings.RenderTargetSize.X;
-	InOutSizeY = FrameSettings.RenderTargetSize.Y;
+	const float Scale = CVar->GetValueOnGameThread()*FVRWorks::GetLensMatchedShadingUnwarpScale(); // psilva: necessary?
+	InOutSizeX = FrameSettings.RenderTargetSize.X * scale;
+	InOutSizeY = FrameSettings.RenderTargetSize.Y * scale;
 
 	check(InOutSizeX != 0 && InOutSizeY != 0);
 }

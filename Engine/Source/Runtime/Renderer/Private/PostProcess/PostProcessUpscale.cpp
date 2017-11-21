@@ -14,6 +14,9 @@
 #include "PostProcess/PostProcessing.h"
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
+#include "StereoRendering.h"
+#include "HeadMountedDisplay.h"
+#include "VRWorks.h"
 
 static TAutoConsoleVariable<float> CVarUpscaleSoftness(
 	TEXT("r.Upscale.Softness"),
@@ -165,6 +168,7 @@ public:
 	FPostProcessPassParameters PostprocessParameter;
 	FDeferredPixelShaderParameters DeferredParameters;
 	FShaderParameter UpscaleSoftness;
+	FShaderParameter VRProjectionFlags;
 
 	/** Initialization constructor. */
 	FPostProcessUpscalePS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -173,6 +177,7 @@ public:
 		PostprocessParameter.Bind(Initializer.ParameterMap);
 		DeferredParameters.Bind(Initializer.ParameterMap);
 		UpscaleSoftness.Bind(Initializer.ParameterMap,TEXT("UpscaleSoftness"));
+		VRProjectionFlags.Bind(Initializer.ParameterMap, TEXT("VRProjectionFlags"));
 	}
 
 	template <typename TRHICmdList>
@@ -194,13 +199,21 @@ public:
 
 			SetShaderValue(RHICmdList, ShaderRHI, UpscaleSoftness, UpscaleSoftnessValue);
 		}
+
+		{
+			unsigned int Flags = 0;
+			Flags |= Context.View.Family->EngineShowFlags.VisualizeVRWarp ? 0x1 : 0x0;
+			Flags |= Context.View.Family->EngineShowFlags.VisualizeVRWarpDivisions ? 0x2 : 0x0;
+			Flags |= Context.View.Family->EngineShowFlags.VisualizeVRWarpRate ? 0x4 : 0x0;
+			SetShaderValue(Context.RHICmdList, ShaderRHI, VRProjectionFlags, Flags);
+		}
 	}
 	
 	// FShader interface.
 	virtual bool Serialize(FArchive& Ar) override
 	{
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter << DeferredParameters << UpscaleSoftness;
+		Ar << PostprocessParameter << DeferredParameters << UpscaleSoftness << VRProjectionFlags;
 		return bShaderHasOutdatedParameters;
 	}
 
@@ -310,6 +323,57 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 	// no upscale if separate ren target is used.
 	FIntRect DestRect = (ViewFamily.bUseSeparateRenderTarget) ? View.ViewRect : View.UnscaledViewRect;
 	FIntPoint SrcSize = InputDesc->Extent;
+	FIntRect FullClearRect(0, 0, ViewFamily.FamilyLinearSizeX, ViewFamily.FamilyLinearSizeY);
+
+	// For upscaling multi-res on an HMD, UnscaledViewRect will not be correct; we need
+	// to get the destination size from NonVRProjectViewRect instead.
+	if (View.bVRProjectEnabled && GEngine->HMDDevice.IsValid() && View.Family->EngineShowFlags.StereoRendering)
+	{
+		DestRect = View.NonVRProjectViewRect;
+
+		if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+		{
+			const float UnwarpScale = FVRWorks::GetLensMatchedShadingUnwarpScale();
+
+			DestRect = DestRect.Scale(UnwarpScale);
+			FullClearRect = FullClearRect.Scale(UnwarpScale);
+		}
+	}
+
+	int32 ViewportGap = View.StereoPass != eSSP_FULL ? GEngine->StereoRenderingDevice->GetViewportGap() : 0;
+
+	if (ViewportGap > 0.0f)
+	{
+		if (GEngine->StereoRenderingDevice->IsEmulatedStereo())
+		{
+			if (View.StereoPass == eSSP_RIGHT_EYE)
+			{
+				DestRect.Min.X += ViewportGap;
+			}
+			else
+			{
+				DestRect.Max.X -= ViewportGap;
+			}
+		}
+		else
+		{
+			if (View.StereoPass == eSSP_RIGHT_EYE)
+			{
+				if (View.VRProjMode == FSceneView::EVRProjectMode::LensMatched)
+				{
+					const float Scale = FVRWorks::GetLensMatchedShadingUnwarpScale();
+
+					DestRect.Min.X += 2 * ViewportGap * Scale;
+					DestRect.Max.X += 2 * ViewportGap * Scale;
+				}
+				else
+				{
+					DestRect.Min.X += 2 * ViewportGap;
+					DestRect.Max.X += 2 * ViewportGap;
+				}
+			}
+		}
+	}
 
 	const FSceneRenderTargetItem& DestRenderTarget = PassOutputs[0].RequestSurface(Context);
 	if (!DestRenderTarget.TargetableTexture)
@@ -325,11 +389,12 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 	// with distortion (bTessellatedQuad) we need to clear the background
 	FIntRect ExcludeRect = bTessellatedQuad ? FIntRect() : DestRect;
 
-	Context.SetViewportAndCallRHI(DestRect);
 	if (View.StereoPass == eSSP_FULL || View.StereoPass == eSSP_LEFT_EYE)
 	{
+		Context.SetViewportAndCallRHI(ViewportGap > 0.0 ? FullClearRect : DestRect);
 		DrawClearQuad(Context.RHICmdList, true, FLinearColor::Black, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, ExcludeRect);
 	}
+	Context.SetViewportAndCallRHI(DestRect);
 
 	FShader* VertexShader = 0;
 
@@ -374,7 +439,9 @@ void FRCPassPostProcessUpscale::Process(FRenderingCompositePassContext& Context)
 		DestRect.Size(),
 		SrcSize,
 		VertexShader,
-		bTessellatedQuad ? EDRF_UseTesselatedIndexBuffer: EDRF_UseTriangleOptimization);
+		bTessellatedQuad ? EDRF_UseTesselatedIndexBuffer : EDRF_UseTriangleOptimization,
+		1,
+		true);
 
 	Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
 }

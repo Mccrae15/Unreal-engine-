@@ -10,6 +10,7 @@
 #include "RHIStaticStates.h"
 #include "ResolveShader.h"
 #include "PipelineStateCache.h"
+#include "VRWorks.h"
 
 static inline DXGI_FORMAT ConvertTypelessToUnorm(DXGI_FORMAT Format)
 {
@@ -380,6 +381,72 @@ void FD3D11DynamicRHI::RHICopyToResolveTarget(FTextureRHIParamRef SourceTextureR
 		// bit of a hack.  no one resolves slice by slice and 0 is the default value.  assume for the moment they are resolving the whole texture.
 		check(ResolveParams.SourceArrayIndex == 0);
 		check(SourceTexture3D == DestTexture3D);
+	}
+}
+
+void FD3D11DynamicRHI::RHICopyResourceToGPU(FTextureRHIParamRef SourceTextureRHI, FTextureRHIParamRef DestTextureRHI, uint32 DestGPUIndex, uint32 SrcGPUIndex, const FResolveParams& ResolveParams)
+{
+	if (MultiGPUDevice && FVRWorks::IsVRSLIEnabled())
+	{
+		if (!SourceTextureRHI || !DestTextureRHI)
+		{
+			// no need to do anything (sliently ignored)
+			return;
+		}
+
+		FRHICommandList_RecursiveHazardous RHICmdList(this);
+
+		FD3D11Texture2D* SourceTexture2D = static_cast<FD3D11Texture2D*>(SourceTextureRHI->GetTexture2D());
+		FD3D11Texture2D* DestTexture2D = static_cast<FD3D11Texture2D*>(DestTextureRHI->GetTexture2D());
+
+		if (ResolveParams.Rect.IsValid())
+		{
+			D3D11_BOX SrcBox;
+
+			SrcBox.left = ResolveParams.Rect.X1;
+			SrcBox.top = ResolveParams.Rect.Y1;
+			SrcBox.front = 0;
+			SrcBox.right = ResolveParams.Rect.X2;
+			SrcBox.bottom = ResolveParams.Rect.Y2;
+			SrcBox.back = 1;
+
+			MultiGPUDevice->CopySubresourceRegion(
+				Direct3DDeviceIMContext,
+				DestTexture2D->GetResource(),
+				0,
+				DestGPUIndex,
+				ResolveParams.Rect.X1,
+				ResolveParams.Rect.Y1,
+				0,
+				SourceTexture2D->GetResource(),
+				0,
+				SrcGPUIndex,
+				&SrcBox);
+		}
+		else
+		{
+			D3D11_BOX SrcBox;
+
+			SrcBox.left = 0;
+			SrcBox.top = 0;
+			SrcBox.front = 0;
+			SrcBox.right = SourceTexture2D->GetSizeX();
+			SrcBox.bottom = SourceTexture2D->GetSizeY();
+			SrcBox.back = 1;
+
+			MultiGPUDevice->CopySubresourceRegion(
+				Direct3DDeviceIMContext,
+				DestTexture2D->GetResource(),
+				0,
+				DestGPUIndex,
+				0,
+				0,
+				0,
+				SourceTexture2D->GetResource(),
+				0,
+				SrcGPUIndex,
+				&SrcBox);
+		}
 	}
 }
 

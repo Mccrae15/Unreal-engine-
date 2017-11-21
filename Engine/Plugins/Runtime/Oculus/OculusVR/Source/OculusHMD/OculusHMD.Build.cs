@@ -16,6 +16,7 @@ namespace UnrealBuildTool.Rules
 					"../../../../../Source/Runtime/OpenGLDrv/Private",
 					"../../../../../Source/Runtime/VulkanRHI/Private",
 					"../../../../../Source/Runtime/Engine/Classes/Components",
+					"../../../../../Source/ThirdParty/NVIDIA/nvapi",
 				});
 
 			PublicIncludePathModuleNames.Add("Launch");

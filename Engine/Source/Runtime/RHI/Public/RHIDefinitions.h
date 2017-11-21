@@ -907,6 +907,12 @@ inline bool RHISupportsShaderCompression(const EShaderPlatform Platform)
 	return true;
 }
 
+inline bool RHISupportsFastGeometryShaders(const EShaderPlatform Platform)
+{
+	// Restrict support to PC D3D with SM5
+	return Platform == SP_PCD3D_SM5;
+}
+
 inline bool RHIHasTiledGPU(const EShaderPlatform Platform)
 {
 	// @todo MetalMRT Technically we should include (Platform == SP_METAL_MRT) but this would disable depth-pre-pass which is currently required.

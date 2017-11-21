@@ -100,6 +100,23 @@ void FLayer::SetEyeLayerDesc(const ovrpLayerDesc_EyeFov& InEyeLayerDesc, const o
 	}
 
 	bHasDepth = InEyeLayerDesc.DepthFormat != ovrpTextureFormat_None;
+	// override eye layer RT and submit params
+	if (Id == 0)
+	{
+		const float Scale = FVRWorks::GetLensMatchedShadingUnwarpScale();
+
+		OvrpLayerDesc.EyeFov.TextureSize.w *= Scale;
+		OvrpLayerDesc.EyeFov.TextureSize.h *= Scale;
+
+		for (int eye = 0; eye < ovrpEye_Count; eye++)
+		{
+			OvrpLayerSubmit.ViewportRect[eye].Pos.x *= Scale;
+			OvrpLayerSubmit.ViewportRect[eye].Pos.y *= Scale;
+
+			OvrpLayerSubmit.ViewportRect[eye].Size.w *= Scale;
+			OvrpLayerSubmit.ViewportRect[eye].Size.h *= Scale;
+		}
+	}
 }
 
 

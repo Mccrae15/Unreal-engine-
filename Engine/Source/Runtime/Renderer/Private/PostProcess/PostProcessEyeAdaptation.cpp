@@ -322,12 +322,22 @@ void FRCPassPostProcessEyeAdaptation::Process(FRenderingCompositePassContext& Co
 			DestSize,
 			DestSize,
 			*VertexShader,
-			EDRF_UseTriangleOptimization);
+			EDRF_UseTriangleOptimization,
+			1,
+			true);
 
 		Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
 
 		// Inform MultiGPU systems that we've finished updating this texture for this frame
 		Context.RHICmdList.EndUpdateMultiFrameResource(DestRenderTarget.ShaderResourceTexture);
+	}
+
+	if (Context.View.StereoPass == eSSP_LEFT_EYE)
+	{
+		Context.RHICmdList.CopyResourceToGPU(
+			EyeAdaptation->GetRenderTargetItem().TargetableTexture,
+			EyeAdaptation->GetRenderTargetItem().TargetableTexture,
+			1, 0, FResolveParams());
 	}
 
 	Context.View.SetValidEyeAdaptation();

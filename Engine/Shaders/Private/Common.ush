@@ -52,6 +52,8 @@
 
 #include "Definitions.usf"
 
+#include "VRProjection.usf"
+
 #define METAL_TESSELLATION_PROFILE ((METAL_PROFILE || METAL_SM5_PROFILE) && USING_TESSELLATION)
 
 #ifndef MOBILE_FORCE_DEPTH_TEXTURE_READS
@@ -1049,7 +1051,16 @@ float CalcSceneDepth(float2 ScreenUV)
 	return 0.0f;
 #else
 	#if FEATURE_LEVEL > FEATURE_LEVEL_ES3_1 || MOBILE_FORCE_DEPTH_TEXTURE_READS
-		return ConvertFromDeviceZ(Texture2DSampleLevel(SceneDepthTexture, SceneDepthTextureSampler, ScreenUV, 0).r);
+	float DeviceZ = Texture2DSampleLevel(SceneDepthTexture, SceneDepthTextureSampler, ScreenUV, 0).r;
+	if (LensMatchedShadingIsActive())
+	{
+		DeviceZ = LensMatchedCorrectDeviceZ(DeviceZ, ScreenUV);
+		return ConvertFromDeviceZ(DeviceZ);
+	}
+	else
+	{
+		return ConvertFromDeviceZ(DeviceZ);
+	}
 	#else
 		#if COMPILER_GLSL_ES2
 			#if IOS
@@ -1074,8 +1085,16 @@ float CalcSceneDepth(float2 ScreenUV)
 float LookupDeviceZ( float2 ScreenUV )
 {
 #if FEATURE_LEVEL > FEATURE_LEVEL_ES3_1
-	// native Depth buffer lookup
-	return Texture2DSampleLevel(SceneDepthTexture, SceneDepthTextureSampler, ScreenUV, 0).r;
+	float DeviceZ = Texture2DSampleLevel(SceneDepthTexture, SceneDepthTextureSampler, ScreenUV, 0).r;
+	if (LensMatchedShadingIsActive())
+	{
+		DeviceZ = LensMatchedCorrectDeviceZ(DeviceZ, ScreenUV);
+		return DeviceZ;
+	}
+	else
+	{
+		return DeviceZ;
+	}
 #else
 	#if COMPILER_GLSL_ES2
 		// todo: can be optimized
@@ -1103,8 +1122,16 @@ float LookupDeviceZ( float2 ScreenUV )
 #else
 		float DeviceZ = SceneDepthTextureNonMS.Load(int3(PixelPos, 0));
 
-		// Fetch the depth buffer Z / W value, solve for W
-		return ConvertFromDeviceZ(DeviceZ);
+		if (LensMatchedShadingIsActive())
+		{
+			DeviceZ = LensMatchedCorrectDeviceZUint(DeviceZ, PixelPos);
+			return ConvertFromDeviceZ(DeviceZ);
+		}
+		else
+		{
+			// Fetch the depth buffer Z / W value, solve for W
+			return ConvertFromDeviceZ(DeviceZ);
+		}
 #endif
 	}
 #endif
@@ -1147,9 +1174,20 @@ float2 SvPositionToBufferUV(float4 SvPosition)
 	return SvPosition.xy * View.BufferSizeAndInvSize.zw;
 }
 
+float4 SvPositionToLinearSvPosition(float4 SvPosition)
+{
+	if (VRProjectionIsActive())
+	{
+		SvPosition.xy = VRProjMapRenderTargetVRProjToLinear(SvPosition.xy * View.BufferSizeAndInvSize.zw) * View.BufferSizeAndInvSize.xy;
+	}
+	return SvPosition;
+}
+
 // Used for post process shaders which don't need to resolve the view	
 float3 SvPositionToTranslatedWorld(float4 SvPosition)
 {
+	SvPosition = SvPositionToLinearSvPosition(SvPosition);
+
 	float4 HomWorldPos = mul(float4(SvPosition.xyz, 1), View.SVPositionToTranslatedWorld);
 
 	return HomWorldPos.xyz / HomWorldPos.w;
@@ -1158,6 +1196,29 @@ float3 SvPositionToTranslatedWorld(float4 SvPosition)
 // Used for vertex factory shaders which need to use the resolved view
 float3 SvPositionToResolvedTranslatedWorld(float4 SvPosition)
 {
+	if (VRProjectionIsActive())
+	{
+		// Remap for warped viewports, no-op for regular viewports
+		if (LensMatchedShadingIsActive())
+		{
+			// jukimNV - TODO: combine all of this into a 3d remapping function in VRProjection.usf
+			float2 UV = SvPosition.xy * View.BufferSizeAndInvSize.zw;
+			float2 RenderTargetUV = VRProjMapResolvedRenderTargetToViewRectInternal(UV);
+			FModifiedWConfiguration Conf = GetModifiedWConfigurationResolvedView();
+			float2 WindowCoord = RenderTargetUV * Conf.BoundingRectSize + Conf.BoundingRectOrigin;
+			float3 LinearNDC = ModifiedWMapWindowToClip(Conf, float3(WindowCoord, SvPosition.z)).xyz;
+			float2 LinearUV = float2(LinearNDC.x * 0.5 + 0.5, -LinearNDC.y * 0.5 + 0.5);
+			RenderTargetUV = VRProjMapResolvedViewRectToRenderTargetInternal(LinearUV);
+			SvPosition.xy = RenderTargetUV * View.BufferSizeAndInvSize.xy;
+			// jukimNV - for some reason, setting this corrected Z in the normal SvPositionToLinearSvPosition function breaks some materials, so only fixing here
+			SvPosition.z = LinearNDC.z;
+		}
+		else // multires
+		{
+			SvPosition.xy = VRProjMapResolvedRenderTargetVRProjToLinear(SvPosition.xy * View.BufferSizeAndInvSize.zw) * View.BufferSizeAndInvSize.xy;
+		}
+	}
+
 	float4 HomWorldPos = mul(float4(SvPosition.xyz, 1), ResolvedView.SVPositionToTranslatedWorld);
 
 	return HomWorldPos.xyz / HomWorldPos.w;
@@ -1177,8 +1238,11 @@ float4 SvPositionToScreenPosition(float4 SvPosition)
 
 	float2 PixelPos = SvPosition.xy - View.ViewRectMin.xy;	
 
+	// account for framebuffer distortion
+	float2 LinearPos = VRProjMapVRProjToLinear(PixelPos * View.ViewSizeAndInvSize.zw);
+
 	// NDC (NormalizedDeviceCoordinates, after the perspective divide)
-	float3 NDCPos = float3( (PixelPos * View.ViewSizeAndInvSize.zw - 0.5f) * float2(2, -2), SvPosition.z);
+	float3 NDCPos = float3((LinearPos - 0.5f) * float2(2, -2), SvPosition.z);
 
 	// SvPosition.w: so .w has the SceneDepth, some mobile code and the DepthFade material expression wants that
 	return float4(NDCPos.xyz, 1) * SvPosition.w;
@@ -1196,12 +1260,46 @@ float4 SvPositionToResolvedScreenPosition(float4 SvPosition)
 	return float4(NDCPos.xyz, 1) * SvPosition.w;
 }
 
+float4 SvPositionToVRProjectScreenPosition(float4 SvPosition)
+{
+	// todo: is already in .w or needs to be reconstructed like this:
+	//	SvPosition.w = ConvertFromDeviceZ(SvPosition.z);
+
+	float2 PixelPos = SvPosition.xy - View.ViewRectMin.xy;
+
+	// account for framebuffer distortion
+	float2 LinearPos = PixelPos * View.ViewSizeAndInvSize.zw;
+
+	// NDC (NormalizedDeviceCoordinates, after the perspective divide)
+	float3 NDCPos = float3((LinearPos - 0.5f) * float2(2, -2), SvPosition.z);
+
+	// SvPosition.w: so .w has the SceneDepth, some mobile code and the DepthFade material expression wants that
+	return float4(NDCPos.xyz, 1) * SvPosition.w;
+}
+
+float4 SvPositionToVRProjectResolvedScreenPosition(float4 SvPosition)
+{
+	// todo: is already in .w or needs to be reconstructed like this:
+	//	SvPosition.w = ConvertFromDeviceZ(SvPosition.z);
+
+	float2 PixelPos = SvPosition.xy - ResolvedView.ViewRectMin.xy;
+
+	// account for framebuffer distortion
+	float2 LinearPos = PixelPos * ResolvedView.ViewSizeAndInvSize.zw;
+
+	// NDC (NormalizedDeviceCoordinates, after the perspective divide)
+	float3 NDCPos = float3((LinearPos - 0.5f) * float2(2, -2), SvPosition.z);
+
+	// SvPosition.w: so .w has the SceneDepth, some mobile code and the DepthFade material expression wants that
+	return float4(NDCPos.xyz, 1) * SvPosition.w;
+}
+
 float2 SvPositionToViewportUV(float4 SvPosition)
 {
 	// can be optimized from 2SUB+2MUL to 2MAD
 	float2 PixelPos = SvPosition.xy - View.ViewRectMin.xy;	
 
-	return PixelPos.xy * View.ViewSizeAndInvSize.zw;
+	return VRProjMapVRProjToLinear(PixelPos.xy * View.ViewSizeAndInvSize.zw);
 }
 
 float2 BufferUVToViewportUV(float2 BufferUV)
@@ -1234,6 +1332,21 @@ MaterialFloat2 ScreenAlignedUV( MaterialFloat2 UV )
 MaterialFloat2 GetViewportCoordinates(MaterialFloat2 InFragmentCoordinates)
 {
 	return InFragmentCoordinates;
+}
+
+float CalcPixelDepth(float4 ScreenPos)
+{
+	if (LensMatchedShadingIsActive())
+	{
+		float2 ScreenUV = ScreenAlignedPosition(ScreenPos);
+		float ScreenZ = ScreenPos.z / ScreenPos.w;
+		ScreenZ = LensMatchedCorrectDeviceZ(ScreenZ, ScreenUV);
+		return ConvertFromDeviceZ(ScreenZ);
+	}
+	else
+	{
+		return ScreenPos.w;
+	}
 }
 
 /**
@@ -1618,15 +1731,29 @@ struct FWriteToSliceGeometryOutput
 void DrawRectangle( in float4 InPosition, in float2 InTexCoord, out float4 OutPosition, out float2 OutTexCoord)
 {
 	OutPosition = InPosition;
-	OutPosition.xy = -1.0f + 2.0f * (DrawRectangleParameters.PosScaleBias.zw + (InPosition.xy * DrawRectangleParameters.PosScaleBias.xy)) * DrawRectangleParameters.InvTargetSizeAndTextureSize.xy;
-	OutPosition.xy *= float2( 1, -1 );
-	OutTexCoord.xy = (DrawRectangleParameters.UVScaleBias.zw + (InTexCoord.xy * DrawRectangleParameters.UVScaleBias.xy)) * DrawRectangleParameters.InvTargetSizeAndTextureSize.zw;
+	float2 Pos = InPosition.xy;
+	float2 Tex = InTexCoord.xy;
+	if (LensMatchedShadingIsActive() && DrawRectangleParameters.bDisableRemap == 0)
+	{
+		// In order to minimize number of pixels shaded with lens-matched shading enabled, we draw an octagon instead of a full screen triangle/quad
+		// The octagon vertex positions start out along the border of a quad and need to be repositioned according to the LMS remapping parameters
+		Pos.xy = VRProjMapLinearToVRProj(Pos.xy);
+		Tex.xy = VRProjMapLinearToVRProj(Tex.xy);
+	}
+	OutPosition.xy = -1.0f + 2.0f * (DrawRectangleParameters.PosScaleBias.zw + (Pos.xy * DrawRectangleParameters.PosScaleBias.xy)) * DrawRectangleParameters.InvTargetSizeAndTextureSize.xy;
+	OutTexCoord.xy = (DrawRectangleParameters.UVScaleBias.zw + (Tex.xy * DrawRectangleParameters.UVScaleBias.xy)) * DrawRectangleParameters.InvTargetSizeAndTextureSize.zw;
+	OutPosition.xy *= float2(1, -1);
 }
 
 /** Used for calculating vertex positions when drawing with DrawRectangle */
 void DrawRectangle( in float4 InPosition, out float4 OutPosition)
 {
 	OutPosition = InPosition;
+	float2 Pos = InPosition.xy;
+	if (LensMatchedShadingIsActive() && DrawRectangleParameters.bDisableRemap == 0)
+	{
+		Pos.xy = VRProjMapLinearToVRProj(Pos.xy);
+	}
 	OutPosition.xy = -1.0f + 2.0f * (DrawRectangleParameters.PosScaleBias.zw + (InPosition.xy * DrawRectangleParameters.PosScaleBias.xy)) * DrawRectangleParameters.InvTargetSizeAndTextureSize.xy;
 	OutPosition.xy *= float2( 1, -1 );
 }
@@ -1786,6 +1913,10 @@ struct FPixelShaderIn
 
 	//
 	bool bIsFrontFace;
+
+#if SINGLE_PASS_STEREO
+	uint SvViewportArrayIndex;
+#endif
 };
 // see PixelShaderOutputCommon
 struct FPixelShaderOut

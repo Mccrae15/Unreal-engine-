@@ -208,7 +208,7 @@ void SSRTemporalAAPS(
 #endif
 }
 
-float4 DOFTemporalAACommon(in float2 UV, in float InExposureScale)
+float4 DOFTemporalAACommon(in float2 UV, in float4 SvPosition, in float InExposureScale)
 {
 	float4 OutColor = 0;
 
@@ -243,7 +243,7 @@ void DOFTemporalAAPS(
 	out float4 OutColor : SV_Target0 )
 {
 	float InExposureScale = InExposureScaleVignette.x;
-	OutColor = DOFTemporalAACommon(UV, InExposureScale);
+	OutColor = DOFTemporalAACommon(UV, SvPosition, InExposureScale);
 }
 
 #if COMPUTESHADER
@@ -251,6 +251,7 @@ void DOFTemporalAAPS(
 void DOFTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 {
 	float2 UV = ((float2)DispatchThreadId + View.ViewRectMin.xy + 0.5f) * TemporalAAComputeParams.zw;
+	float4 SvPosition = float4(UV*2-1,0,1);
 	float4 OutColor = 0;
 
 	if (IsComputeUVOutOfBounds(UV))
@@ -259,7 +260,7 @@ void DOFTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	float InExposureScale = EyeAdaptationLookup();
-	OutColor = DOFTemporalAACommon(UV, InExposureScale);
+	OutColor = DOFTemporalAACommon(UV, SvPosition, InExposureScale);
 
 	uint2 PixelPos = DispatchThreadId + (uint2)View.ViewRectMin.xy;
 	OutComputeTex[PixelPos] = OutColor;
@@ -357,7 +358,7 @@ void MainTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 }
 #endif
 
-float4 MainFastTemporalAACommon(in float2 UV, in float InExposureScale)
+float4 MainFastTemporalAACommon(in float2 UV, in float4 SvPosition, in float InExposureScale)
 {
 	float4 OutColor = 0;
 
@@ -392,7 +393,7 @@ void MainFastTemporalAAPS(
 	out float4 OutColor : SV_Target0 )
 {
 	float InExposureScale = InExposureScaleVignette.x;
-	OutColor = MainFastTemporalAACommon(UV, InExposureScale);
+	OutColor = MainFastTemporalAACommon(UV, SvPosition, InExposureScale);
 } 
 
 #if COMPUTESHADER
@@ -400,6 +401,7 @@ void MainFastTemporalAAPS(
 void MainFastTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 {
 	float2 UV = ((float2)DispatchThreadId + View.ViewRectMin.xy + 0.5f) * TemporalAAComputeParams.zw;
+	float4 SvPosition = float4(UV*2-1,0,1);
 	float4 OutColor = 0;
 
 	if (IsComputeUVOutOfBounds(UV))
@@ -408,7 +410,7 @@ void MainFastTemporalAACS(uint2 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	float InExposureScale = EyeAdaptationLookup();
-	OutColor = MainFastTemporalAACommon(UV, InExposureScale);
+	OutColor = MainFastTemporalAACommon(UV, SvPosition, InExposureScale);
 
 	uint2 PixelPos = DispatchThreadId + (uint2)View.ViewRectMin.xy;
 	OutComputeTex[PixelPos] = OutColor;

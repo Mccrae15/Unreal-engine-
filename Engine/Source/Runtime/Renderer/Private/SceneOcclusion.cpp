@@ -61,8 +61,8 @@ int32 FOcclusionQueryHelpers::GetNumBufferedFrames()
 {
 #if WITH_SLI
 	// If we're running with SLI, assume throughput is more important than latency, and buffer an extra frame
-	check(GNumActiveGPUsForRendering <= (int32)FOcclusionQueryHelpers::MaxBufferedOcclusionFrames);
-	return FMath::Min<int32>(GNumActiveGPUsForRendering, (int32)FOcclusionQueryHelpers::MaxBufferedOcclusionFrames);
+	check(GNumAlternateFrameRenderingGroups <= (int32)FOcclusionQueryHelpers::MaxBufferedOcclusionFrames);
+	return FMath::Min<int32>(GNumAlternateFrameRenderingGroups, (int32)FOcclusionQueryHelpers::MaxBufferedOcclusionFrames);
 #else
 	static const auto NumBufferedQueriesVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.NumBufferedOcclusionQueries"));
 	return FMath::Clamp<int32>(NumBufferedQueriesVar->GetValueOnAnyThread(), 1, (int32)FOcclusionQueryHelpers::MaxBufferedOcclusionFrames);
@@ -72,8 +72,7 @@ int32 FOcclusionQueryHelpers::GetNumBufferedFrames()
 
 // default, non-instanced shader implementation
 IMPLEMENT_SHADER_TYPE(,FOcclusionQueryVS,TEXT("/Engine/Private/OcclusionQueryVertexShader.usf"),TEXT("Main"),SF_Vertex);
-
-static FGlobalBoundShaderState GOcclusionTestBoundShaderState;
+IMPLEMENT_SHADER_TYPE(,FOcclusionQueryMultiResGS, TEXT("/Engine/Private/OcclusionQueryVertexShader.usf"), TEXT("VRProjectFastGS"), SF_Geometry);
 
 /** 
  * Returns an array of visibility data for the given view position, or NULL if none exists. 
@@ -222,7 +221,7 @@ bool FSceneViewState::IsShadowOccluded(FRHICommandListImmediate& RHICmdList, FSc
 	// Read the occlusion query results.
 	uint64 NumSamples = 0;
 	// Only block on the query if not running SLI
-	const bool bWaitOnQuery = GNumActiveGPUsForRendering == 1;
+	const bool bWaitOnQuery = GNumAlternateFrameRenderingGroups == 1;
 
 	if (Query && RHICmdList.GetRenderQueryResult(*Query, NumSamples, bWaitOnQuery))
 	{
@@ -1179,7 +1178,8 @@ void BuildHZB( FRHICommandListImmediate& RHICmdList, FViewInfo& View )
 			HZBSize,
 			FSceneRenderTargets::Get(RHICmdList).GetBufferSizeXY(),
 			*VertexShader,
-			EDRF_UseTriangleOptimization);
+			EDRF_UseTriangleOptimization,
+			1, true);
 	}
 
 	FIntPoint SrcSize = HZBSize;
@@ -1222,7 +1222,8 @@ void BuildHZB( FRHICommandListImmediate& RHICmdList, FViewInfo& View )
 			DstSize,
 			SrcSize,
 			*VertexShader,
-			EDRF_UseTriangleOptimization);
+			EDRF_UseTriangleOptimization,
+			1, true);
 
 		SrcSize /= 2;
 		DstSize /= 2;
@@ -1418,8 +1419,12 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 				// We only need to render the front-faces of the culling geometry (this halves the amount of pixels we touch)
 				GraphicsPSOInit.RasterizerState = View.bReverseCulling ? TStaticRasterizerState<FM_Solid, CM_CCW>::GetRHI() : TStaticRasterizerState<FM_Solid, CM_CW>::GetRHI();
 				
+				RHICmdList.SetGPUMask(View.StereoPass);
+
 				if (bUseDownsampledDepth)
 				{
+					// EHartNVV : ToDo
+					//   How do we make downsampled depth compatible with vr projection, is it necessary?
 					const uint32 DownsampledX = FMath::TruncToInt(View.ViewRect.Min.X / SceneContext.GetSmallColorDepthDownsampleFactor());
 					const uint32 DownsampledY = FMath::TruncToInt(View.ViewRect.Min.Y / SceneContext.GetSmallColorDepthDownsampleFactor());
 					const uint32 DownsampledSizeX = FMath::TruncToInt(View.ViewRect.Width() / SceneContext.GetSmallColorDepthDownsampleFactor());
@@ -1430,19 +1435,33 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 				}
 				else
 				{
-					RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+					if (View.bVRProjectEnabled)
+					{
+						View.BeginVRProjectionStates(RHICmdList);
+					}
+					else
+					{
+						RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
+					}
 				}
-				
+
 				// Lookup the vertex shader.
 				TShaderMapRef<FOcclusionQueryVS> VertexShader(View.ShaderMap);
-				
+				TOptionalShaderMapRef<FOcclusionQueryMultiResGS> GeometryShader(View.ShaderMap);
+
 				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector3();
 				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+				GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(View.bVRProjectEnabled ? *GeometryShader : nullptr);
 				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 				
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 				VertexShader->SetParameters(RHICmdList, View);
-				
+				if (View.bVRProjectEnabled)
+				{
+					check(GeometryShader.IsValid());
+					GeometryShader->SetParameters(RHICmdList, View);
+				}
+
 				{
 					SCOPED_DRAW_EVENT(RHICmdList, ShadowFrustumQueries);
 					for (TPair<FProjectedShadowInfo const*, FRenderQueryRHIRef> const& Query : ViewQuery.PointLightQueries)
@@ -1475,7 +1494,12 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 	#endif
 				{
 					VertexShader->SetParameters(RHICmdList, View);
-					
+
+					if (View.bVRProjectEnabled)
+					{
+						GeometryShader->SetParameters(RHICmdList, View);
+					}
+
 					{
 						SCOPED_DRAW_EVENT(RHICmdList, IndividualQueries);
 						View.IndividualOcclusionQueries.Flush(RHICmdList);
@@ -1485,8 +1509,15 @@ void FDeferredShadingSceneRenderer::BeginOcclusionTests(FRHICommandListImmediate
 						View.GroupedOcclusionQueries.Flush(RHICmdList);
 					}
 				}
+
+				// Reset scissor after rendering to multi-res view
+				if (!bUseDownsampledDepth && View.bVRProjectEnabled)
+				{
+					View.EndVRProjectionStates(RHICmdList);
+				}
 			}
 			
+			RHICmdList.SetGPUMask(0);
 			RHICmdList.EndOcclusionQueryBatch();
 			
 			if (bUseDownsampledDepth)

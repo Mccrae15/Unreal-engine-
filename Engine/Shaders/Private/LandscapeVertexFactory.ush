@@ -100,7 +100,7 @@ struct FVertexFactoryInterpolantsVSToPS
 #endif
 
 #if INSTANCED_STEREO
-	nointerpolation uint PackedEyeIndex : PACKED_EYE_INDEX;
+	nointerpolation PACKED_EYE_INDEX_TYPE PackedEyeIndex : PACKED_EYE_INDEX;
 #endif
 };
 
@@ -828,6 +828,10 @@ FVertexFactoryInterpolantsVSToDS VertexFactoryInterpolate(FVertexFactoryInterpol
 	TESSELLATION_INTERPOLATE_MEMBER(TangentToWorld0);
 	TESSELLATION_INTERPOLATE_MEMBER(TangentToWorld2);
 	TESSELLATION_INTERPOLATE_MEMBER(CalculatedLOD);
+#endif
+
+#if INSTANCED_STEREO
+	O.InterpolantsVSToPS.PackedEyeIndex = a.InterpolantsVSToPS.PackedEyeIndex;
 #endif
 
 	return O;

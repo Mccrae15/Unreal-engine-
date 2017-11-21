@@ -431,6 +431,24 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ConsoleVariable = "vr.DebugCanvasInLayer", DisplayName = "Debug Canvas in Layer",
 		ToolTip = "Enables debug canvases to be rendered in HMD layers"))
 		uint32 bDebugCanvasInLayer : 1;
+	
+	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
+		ConsoleVariable = "vr.MultiRes", DisplayName = "MultiRes Rendering",
+		ToolTip = "Enable multiple-resolution rendering (only available for D3D SM5).",
+		ConfigRestartRequired = true))
+		uint32 bMultiRes : 1;
+		
+	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
+		ConsoleVariable = "vr.LensMatchedShading", DisplayName = "Lens Matched Rendering",
+		ToolTip = "Enable Lens Matched Shading rendering (only available for Pascal GPUs with R367 drivers and above).",
+		ConfigRestartRequired = true))
+		uint32 bLensMatched : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
+		ConsoleVariable = "vr.SinglePassStereo", DisplayName = "SinglePassStereo",
+		ToolTip = "Enable SinglePassStereo (only available for Pascal GPUs with R367 drivers and above).",
+		ConfigRestartRequired = true))
+		uint32 bSinglePassStereo : 1;
 
 	UPROPERTY(config, EditAnywhere, Category=Editor, meta=(
 		ConsoleVariable="r.WireframeCullThreshold",DisplayName="Wireframe Cull Threshold",

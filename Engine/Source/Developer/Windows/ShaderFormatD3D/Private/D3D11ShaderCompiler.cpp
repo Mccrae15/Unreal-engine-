@@ -1033,6 +1033,10 @@ void CompileD3D11Shader(const FShaderCompilerInput& Input,FShaderCompilerOutput&
 		Exceptions.AddUnique(TEXT("SV_CullDistance5"));
 		Exceptions.AddUnique(TEXT("SV_CullDistance6"));
 		Exceptions.AddUnique(TEXT("SV_CullDistance7"));
+
+		// Do not remove any of the VRWorks semantics!
+		Exceptions.AddUnique(TEXT("NV_X_RIGHT"));
+		Exceptions.AddUnique(TEXT("NV_VIEWPORT_MASK"));
 		
 		TArray<FString> Errors;
 		if (!RemoveUnusedOutputs(PreprocessedShaderSource, UsedOutputs, Exceptions, EntryPointName, Errors))

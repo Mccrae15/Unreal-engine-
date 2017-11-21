@@ -10,6 +10,7 @@ public class UtilityShaders : ModuleRules
 			new string[] {
 				"Core",
 				"RHI",
+				"Engine",
                 "RenderCore",
 				"ShaderCore",
 			}

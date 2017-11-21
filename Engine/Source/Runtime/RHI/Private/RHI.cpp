@@ -302,6 +302,8 @@ FString GGPUTraceFileName;
 bool GRHISupportsTextureStreaming = false;
 bool GSupportsDepthBoundsTest = false;
 bool GSupportsEfficientAsyncCompute = false;
+bool GSupportsFastGeometryShader = false;
+bool GSupportsModifiedW = false;
 bool GRHISupportsBaseVertexIndex = true;
 TRHIGlobal<bool> GRHISupportsInstancing(true);
 bool GRHISupportsFirstInstance = false;
@@ -321,11 +323,16 @@ bool GRHISupportsResolveCubemapFaces = false;
 bool GRHISupportsHDROutput = false;
 EPixelFormat GRHIHDRDisplayOutputFormat = PF_FloatRGBA;
 
+bool GSupportsSinglePassStereo = false;
+
+bool GSupportsExplicitMGPU = false;
+
 /** Whether we are profiling GPU hitches. */
 bool GTriggerGPUHitchProfile = false;
 
 #if WITH_SLI
-int32 GNumActiveGPUsForRendering = 1;
+int32 GNumAlternateFrameRenderingGroups = 1;
+int32 GNumExplicitGPUsForRendering = 1;
 #endif
 
 FVertexElementTypeSupportInfo GVertexElementTypeSupport;

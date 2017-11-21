@@ -326,5 +326,11 @@ SHOWFLAG_ALWAYS_ACCESSIBLE(WidgetComponents, SFG_Normal, LOCTEXT("WidgetComponen
 SHOWFLAG_FIXED_IN_SHIPPING(0, Bones, SFG_Developer, LOCTEXT("BoneSF", "Bones"))
 /** If media planes should be shown */
 SHOWFLAG_ALWAYS_ACCESSIBLE(MediaPlanes, SFG_Normal, LOCTEXT("MediaPlanesSF", "Media Planes"))
+/** Visualize the VRProjection warp */
+SHOWFLAG_ALWAYS_ACCESSIBLE(VisualizeVRWarp, SFG_Visualize, LOCTEXT("VisualizeVRWarp", "VR Warp"))
+/** Visualize the VRProjection warp divisions*/
+SHOWFLAG_ALWAYS_ACCESSIBLE(VisualizeVRWarpDivisions, SFG_Visualize, LOCTEXT("VisualizeVRWarpDivisions", "VR Warp Divisions"))
+/** Visualize the VRProjection warp */
+SHOWFLAG_ALWAYS_ACCESSIBLE(VisualizeVRWarpRate, SFG_Visualize, LOCTEXT("VisualizeVRWarpRate", "VR Warp Rate"))
 #undef SHOWFLAG_ALWAYS_ACCESSIBLE
 #undef SHOWFLAG_FIXED_IN_SHIPPING

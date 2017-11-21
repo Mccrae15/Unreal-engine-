@@ -784,6 +784,12 @@ public:
 	static const uint32 ShaderMagic_CleaningUp = 0xdc67f93b;
 	/** Canary is set to this if the FShader is a valid pointer and initialized. */
 	static const uint32 ShaderMagic_Initialized = 0x335b43ab;
+
+	/** FastGS is off by default; this is overridden in derived classes to enable it */
+	static bool IsFastGeometryShader()
+	{
+		return false;
+	}
 };
 
 /** An object which is used to serialize/deserialize, compile, and cache a particular shader class. */
@@ -800,6 +806,7 @@ public:
 
 	typedef class FShader* (*ConstructSerializedType)();
 	typedef void (*GetStreamOutElementsType)(FStreamOutElementList& ElementList, TArray<uint32>& StreamStrides, int32& RasterizedStream);
+	typedef bool (*IsFastGeometryShaderType)();
 
 	/** @return The global shader factory list. */
 	static TLinkedList<FShaderType*>*& GetTypeList();
@@ -830,7 +837,9 @@ public:
 		const TCHAR* InFunctionName,
 		uint32 InFrequency,
 		ConstructSerializedType InConstructSerializedRef,
-		GetStreamOutElementsType InGetStreamOutElementsRef);
+		GetStreamOutElementsType InGetStreamOutElementsRef,
+		IsFastGeometryShaderType InIsFastGeometryShaderRef
+	);
 
 	virtual ~FShaderType();
 
@@ -894,6 +903,7 @@ public:
 	{ 
 		return (EShaderFrequency)Frequency; 
 	}
+
 	inline const TCHAR* GetName() const
 	{ 
 		return Name; 
@@ -960,6 +970,15 @@ public:
 		(*GetStreamOutElementsRef)(ElementList, StreamStrides, RasterizedStream);
 	}
 
+	/**
+	* Checks if the shader type's geometry shader is a fast geometry shader.
+	* @return True if this shader type use fast geometry shader.
+	*/
+	bool IsFastGeometryShader() const
+	{
+		return (*IsFastGeometryShaderRef)();
+	}
+
 private:
 	EShaderTypeForDynamicCast ShaderTypeForDynamicCast;
 	uint32 HashIndex;
@@ -971,6 +990,7 @@ private:
 
 	ConstructSerializedType ConstructSerializedRef;
 	GetStreamOutElementsType GetStreamOutElementsRef;
+	IsFastGeometryShaderType IsFastGeometryShaderRef;
 
 	/** A map from shader ID to shader.  A shader will be removed from it when deleted, so this doesn't need to use a TRefCountPtr. */
 	TMap<FShaderId,FShader*> ShaderIdMap;
@@ -1030,7 +1050,8 @@ private:
 		ShaderClass::ConstructCompiledInstance, \
 		ShaderClass::ModifyCompilationEnvironment, \
 		ShaderClass::ShouldCache, \
-		ShaderClass::GetStreamOutElements \
+		ShaderClass::GetStreamOutElements, \
+		ShaderClass::IsFastGeometryShader \
 		);
 
 /** A macro to implement a shader type. Shader name is got from GetDebugName(), which is helpful for templated shaders. */
@@ -1060,7 +1081,8 @@ private:
 	ShaderClass::ConstructCompiledInstance, \
 	ShaderClass::ModifyCompilationEnvironment, \
 	ShaderClass::ShouldCache, \
-	ShaderClass::GetStreamOutElements \
+	ShaderClass::GetStreamOutElements, \
+	ShaderClass::IsFastGeometryShader \
 	);
 
 
@@ -1075,7 +1097,8 @@ private:
 	ShaderClass::ConstructCompiledInstance, \
 	ShaderClass::ModifyCompilationEnvironment, \
 	ShaderClass::ShouldCache, \
-	ShaderClass::GetStreamOutElements \
+	ShaderClass::GetStreamOutElements, \
+	ShaderClass::IsFastGeometryShader \
 	);
 #endif
 

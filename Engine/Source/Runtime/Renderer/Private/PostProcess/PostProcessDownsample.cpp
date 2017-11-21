@@ -229,10 +229,11 @@ VARIATION1(0)			VARIATION1(1)			VARIATION1(2)
 #undef VARIATION1
 
 
-FRCPassPostProcessDownsample::FRCPassPostProcessDownsample(EPixelFormat InOverrideFormat, uint32 InQuality, bool bInIsComputePass, const TCHAR *InDebugName)
+FRCPassPostProcessDownsample::FRCPassPostProcessDownsample(EPixelFormat InOverrideFormat, uint32 InQuality, bool bInIsComputePass, bool InUseLinear, const TCHAR *InDebugName)
 	: OverrideFormat(InOverrideFormat)
 	, Quality(InQuality)
 	, DebugName(InDebugName)
+	, UseLinear(InUseLinear)
 {
 	bIsComputePass = bInIsComputePass;
 	bPreferAsyncCompute = false;
@@ -277,10 +278,14 @@ void FRCPassPostProcessDownsample::Process(FRenderingCompositePassContext& Conte
 	FIntPoint SrcSize = InputDesc->Extent;
 	FIntPoint DestSize = PassOutputs[0].RenderTargetDesc.Extent;
 
-	// e.g. 4 means the input texture is 4x smaller than the buffer size
-	uint32 ScaleFactor = FMath::DivideAndRoundUp(FSceneRenderTargets::Get(Context.RHICmdList).GetBufferSizeXY().Y, SrcSize.Y);
+	const bool OverrideToLinear = UseLinear && View.bVRProjectEnabled;
+	const uint32 BufferY = OverrideToLinear ? FSceneRenderTargets::Get(Context.RHICmdList).GetLinearBufferSizeXY().Y : FSceneRenderTargets::Get(Context.RHICmdList).GetBufferSizeXY().Y;
+	const FIntRect BaseViewRect = OverrideToLinear ? View.NonVRProjectViewRect : View.ViewRect;
 
-	FIntRect SrcRect = View.ViewRect / ScaleFactor;
+	// e.g. 4 means the input texture is 4x smaller than the buffer size
+	uint32 ScaleFactor = FMath::DivideAndRoundUp<uint32>(BufferY, SrcSize.Y);
+
+	FIntRect SrcRect = BaseViewRect / ScaleFactor;
 	FIntRect DestRect = FIntRect::DivideAndRoundUp(SrcRect, 2);
 	SrcRect = DestRect * 2;
 
@@ -404,7 +409,8 @@ void FRCPassPostProcessDownsample::Process(FRenderingCompositePassContext& Conte
 			*VertexShader,
 			View.StereoPass,
 			false, // This pass is input for passes that can't use the hmd mask, so we need to disable it to ensure valid input data
-			EDRF_UseTriangleOptimization);
+			EDRF_UseTriangleOptimization,
+			OverrideToLinear);
 
 		Context.RHICmdList.CopyToResolveTarget(DestRenderTarget.TargetableTexture, DestRenderTarget.ShaderResourceTexture, false, FResolveParams());
 	}

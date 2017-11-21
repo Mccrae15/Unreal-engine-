@@ -10,6 +10,7 @@
 
 // only for MainPS
 float UpscaleSoftness;
+uint VRProjectionFlags;
 
 // only for MainVS()
 // .x:HalfFOV .y:tan(HalfFov) .z:CylinderDistortion(0=none, 1:full) .w:Correction to scale Y the same as X is scaled in the center
@@ -83,34 +84,122 @@ void MainVS(
 	OutTexCoord.zw =  OutPosition.xy;
 }
 
+/******************************************************************************************************************************************
+*
+*EHartNV ToDO - move this to VrProjection.usf once finalized
+*
+*******************************************************************************************************************************************/
+
+// Takes UV coordinate in Render Target space and returns parametric distance from split locations in view space (1.0 is the entire width/height of view)
+float2 VRProjGetDistanceFromBoundaries(float2 UV)
+{
+	float2 Distance = 2.0f; // more than a full screen away
+
+	if (VRProjectionIsActive())
+	{
+
+		UV = VRProjMapRenderTargetToViewRectInternal(UV);
+		if (MultiResIsActive())
+		{
+			float2 BoundaryX = abs(UV.x - View.VRProjectToLinearSplitsX);
+			float2 BoundaryY = abs(UV.y - View.VRProjectToLinearSplitsY);
+
+			Distance = float2(min(BoundaryX.x, BoundaryX.y), min(BoundaryY.x, BoundaryY.y));
+		}
+		else if (LensMatchedShadingIsActive())
+		{
+			// LMS nees to run a transform to get to the right space where the divisions are defined properly
+			float BoundaryX = abs((UV.x - 0.5));
+			float BoundaryY = abs((UV.y - 0.5));
+
+			Distance = float2(BoundaryX,BoundaryY);
+		}
+	}
+
+	return Distance;
+}
+
+// Jonah's red-blue heatmap scheme
+static const int gHeatmapPoints = 5;
+
+static const float4 gHeatmap[] = {
+	float4(0.25,	1, 0, 0),
+	float4(0.97, 1, 0.78, 0.78),
+	float4(0.975,	1, 1, 1),
+	float4(2,	0.5, 0.5, 1),
+	float4(5,	0, 0, 1)
+};
+
+float3 ShadingRateHeatmap(float Value)
+{
+	if (Value < gHeatmap[0].x)
+		return gHeatmap[0].yzw;
+
+	for (int idx = 0; idx < gHeatmapPoints - 1; idx++)
+	{
+		float4 Left = gHeatmap[idx];
+		float4 Right = gHeatmap[idx + 1];
+
+		if (Left.x <= Value && Value <= Right.x)
+		{
+			float f = (Value - Left.x) / (Right.x - Left.x);
+			return lerp(Left.yzw, Right.yzw, f).xyz;
+		}
+	}
+
+	return gHeatmap[gHeatmapPoints - 1].yzw;
+}
+
+// Takes UV coordinate in RenderTarget space and returns shading rate
+float3 VRProjGetShadingRate(float2 UV)
+{
+	float3 Rate = 1.0f;
+
+	float2 PixelCoord = UV * View.BufferSizeAndInvSize.xy;
+
+	float2 pdx = ddx(PixelCoord);
+	float2 pdy = ddy(PixelCoord);
+	float3 HeatMap = 0.0f;
+
+	// jacobian determinant, showing sampling rate in pixel area ratio
+	float JacobDet = pdx.x * pdy.y - pdx.y * pdy.x;
+	Rate = pow(ShadingRateHeatmap(JacobDet), 2.2);
+
+	return Rate;
+}
 
 void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
 {
+	float2 NewUV = UVAndScreenPos.xy;
 	OutColor = 0;
+
+	// Remap for warped viewports, no-op for regular viewports
+	if (VRProjectionIsActive() && !(VRProjectionFlags & 0x1))
+	{
+		NewUV = VRProjMapRenderTargetLinearToVRProj(NewUV);
+	}
 
 #if METHOD == 0
 	// Nearest sampling (not blurry but blocky, more for testing)
 	#if ES2_PROFILE || ES3_1_PROFILE
-		OutColor = Texture2DSample(PostprocessInput1, PostprocessInput1Sampler, UVAndScreenPos.xy);
+		OutColor = Texture2DSample(PostprocessInput1, PostprocessInput1Sampler, NewUV);
 	#else
-		OutColor = PostprocessInput1.SampleLevel(PostprocessInput1Sampler, UVAndScreenPos.xy, 0, int2(0, 0));
+		OutColor = PostprocessInput1.SampleLevel(PostprocessInput1Sampler, NewUV, 0, int2(0, 0));
 	#endif
 #endif
 
 #if METHOD == 1
 	// Bilinear (fast, aliasing)
-	float2 UV = UVAndScreenPos.xy;
-	OutColor = Texture2DSample(PostprocessInput0, PostprocessInput0Sampler, UV);
+	OutColor = Texture2DSample(PostprocessInput0, PostprocessInput0Sampler, NewUV);
 #endif
 
 #if METHOD == 2
 	// Directional blur with unsharp mask upsample.
-	float2 UV = UVAndScreenPos.xy;
 	float X = 0.5;
-	float3 ColorNW = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV + float2(-X, -X) * PostprocessInput0Size.zw, 0).rgb;
-	float3 ColorNE = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV + float2( X, -X) * PostprocessInput0Size.zw, 0).rgb;
-	float3 ColorSW = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV + float2(-X,  X) * PostprocessInput0Size.zw, 0).rgb;
-	float3 ColorSE = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV + float2( X,  X) * PostprocessInput0Size.zw, 0).rgb;
+	float3 ColorNW = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, NewUV + float2(-X, -X) * PostprocessInput0Size.zw, 0).rgb;
+	float3 ColorNE = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, NewUV + float2( X, -X) * PostprocessInput0Size.zw, 0).rgb;
+	float3 ColorSW = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, NewUV + float2(-X,  X) * PostprocessInput0Size.zw, 0).rgb;
+	float3 ColorSE = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, NewUV + float2( X,  X) * PostprocessInput0Size.zw, 0).rgb;
 	OutColor.rgb = (ColorNW * 0.25) + (ColorNE * 0.25) + (ColorSW * 0.25) + (ColorSE * 0.25);
 	
 	float LumaNW = Luma(ColorNW);
@@ -127,8 +216,8 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 	// avoid NaN on zero vectors by adding 2^-24 (float ulp when length==1, and also minimum representable half)
 	IsoBrightnessDir = IsoBrightnessDir * (0.125 * rsqrt(dot(IsoBrightnessDir, IsoBrightnessDir) + 6e-8));
 
-	float3 ColorN = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV - IsoBrightnessDir * PostprocessInput0Size.zw, 0).rgb;
-	float3 ColorP = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, UV + IsoBrightnessDir * PostprocessInput0Size.zw, 0).rgb;
+	float3 ColorN = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, NewUV - IsoBrightnessDir * PostprocessInput0Size.zw, 0).rgb;
+	float3 ColorP = PostprocessInput0.SampleLevel(PostprocessInput0Sampler, NewUV + IsoBrightnessDir * PostprocessInput0Size.zw, 0).rgb;
 
 	float UnsharpMask = 0.25;
 	OutColor.rgb = (ColorN + ColorP) * ((UnsharpMask + 1.0) * 0.5) - (OutColor.rgb * UnsharpMask);
@@ -136,13 +225,13 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 
 #if METHOD == 3
 	// Bicubic Catmull-Rom in five samples
-	OutColor = Texture2DSampleBicubic(PostprocessInput0, PostprocessInput0Sampler, UVAndScreenPos.xy, PostprocessInput0Size.xy);
+	OutColor = Texture2DSampleBicubic(PostprocessInput0, PostprocessInput0Sampler, NewUV, PostprocessInput0Size.xy);
 #endif
 
 #if METHOD == 4
 	{
 		// Lanczos 3
-		float2 UV = UVAndScreenPos.xy * PostprocessInput0Size.xy;
+		float2 UV = NewUV * PostprocessInput0Size.xy;
 		float2 tc = floor(UV - 0.5) + 0.5;
 		float2 f = UV - tc + 2;
 
@@ -200,7 +289,7 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 #if METHOD == 5
 	{
 		// Gaussian filtered unsharp mask
-		float2 UV = UVAndScreenPos.xy * PostprocessInput0Size.xy;
+		float2 UV = NewUV * PostprocessInput0Size.xy;
 		float2 tc = floor(UV) + 0.5;
 
 		// estimate pixel value and derivatives
@@ -352,6 +441,39 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 	#endif
 
 #endif
+
+	// adjust color based on shading rate
+	if ((VRProjectionFlags & 0x4))
+	{
+		float3 ShadingRateVis = VRProjGetShadingRate(NewUV);
+
+		// boundary and grid
+		if (any(NewUV > 1.0) || any(NewUV < 0.0))
+			ShadingRateVis = float3(0, 0, 0);
+		else
+		{
+			float2 PixelCoord = NewUV * View.BufferSizeAndInvSize.xy;
+			float2 grid = smoothstep(30.5, 32.0, abs(fmod(PixelCoord, 64.0) - 32.0));
+			ShadingRateVis = lerp(ShadingRateVis, float3(0, 0, 0), max(grid.x, grid.y));
+		}
+
+		//OutColor = lerp(OutColor, float4(ShadingRateVis, 1.0f), 0.3f);
+		OutColor *= float4(lerp(float3(1.0f, 1.0f, 1.0f), ShadingRateVis, 0.6f), 1.0f);
+	}
+
+	// Visualize boundaries
+	if (VRProjectionIsActive() && (VRProjectionFlags & 0x2))
+	{
+		// draw boundaries
+		// find closest distance to regsion boundaries and convert to pixels
+		float2 Distance = VRProjGetDistanceFromBoundaries(NewUV) * PostprocessInput0Size.xy;
+		float ScalarDistance = min(Distance.x, Distance.y);
+
+		// EHart, may be worth tweaking smoothstep scales
+		OutColor.rgb = lerp(float3(0, 0, 0), OutColor.rgb, smoothstep(1.0f, 4.0f, ScalarDistance));
+
+		OutColor.rgb = lerp(float3(1, 1, 1), OutColor.rgb, smoothstep(1.0f, 2.0f, ScalarDistance));
+	}
 
 #if 0
 	// Horz scan line pattern.

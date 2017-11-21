@@ -129,7 +129,8 @@ FShaderType::FShaderType(
 	const TCHAR* InFunctionName,
 	uint32 InFrequency,
 	ConstructSerializedType InConstructSerializedRef,
-	GetStreamOutElementsType InGetStreamOutElementsRef
+	GetStreamOutElementsType InGetStreamOutElementsRef,
+	IsFastGeometryShaderType InIsFastGeometryShaderRef
 	):
 	ShaderTypeForDynamicCast(InShaderTypeForDynamicCast),
 	Name(InName),
@@ -139,6 +140,7 @@ FShaderType::FShaderType(
 	Frequency(InFrequency),
 	ConstructSerializedRef(InConstructSerializedRef),
 	GetStreamOutElementsRef(InGetStreamOutElementsRef),
+	IsFastGeometryShaderRef(InIsFastGeometryShaderRef),
 	GlobalListLink(this)
 {
 	for (int32 Platform = 0; Platform < SP_NumPlatforms; Platform++)
@@ -688,7 +690,12 @@ void FShaderResource::InitRHI()
 	}
 	else if(Target.Frequency == SF_Geometry)
 	{
-		if (SpecificType)
+		if (Target.IsFastGeometryShader)
+		{
+			//@todo - not using the cache
+			GeometryShader = RHICreateFastGeometryShader_2(UncompressedCode, 0);
+		}
+		else if(SpecificType)
 		{
 			FStreamOutElementList ElementList;
 			TArray<uint32> StreamStrides;
@@ -792,7 +799,7 @@ FShaderId::FShaderId(const FSHAHash& InMaterialShaderMapHash, const FShaderPipel
 }
 
 FSelfContainedShaderId::FSelfContainedShaderId() :
-	Target(FShaderTarget(SF_NumFrequencies, SP_NumPlatforms))
+	Target(FShaderTarget(SF_NumFrequencies, SP_NumPlatforms, false))
 {}
 
 FSelfContainedShaderId::FSelfContainedShaderId(const FShaderId& InShaderId)
@@ -1775,6 +1782,30 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		if (bIsMonoscopicFarField)
 		{
 			KeyString += TEXT("_MONO");
+		}
+	}
+
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MultiRes"));
+		if ((Platform == EShaderPlatform::SP_PCD3D_SM5) && (CVar && CVar->GetValueOnGameThread() != 0))
+		{
+			KeyString += TEXT("_MRES");
+		}
+	}
+
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.LensMatchedShading"));
+		if ((Platform == EShaderPlatform::SP_PCD3D_SM5) && (CVar && CVar->GetValueOnGameThread() != 0))
+		{
+			KeyString += TEXT("_LMS");
+		}
+	}
+
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.SinglePassStereo"));
+		if ((Platform == EShaderPlatform::SP_PCD3D_SM5) && (CVar && CVar->GetValueOnGameThread() != 0))
+		{
+			KeyString += TEXT("_VRSPS");
 		}
 	}
 
