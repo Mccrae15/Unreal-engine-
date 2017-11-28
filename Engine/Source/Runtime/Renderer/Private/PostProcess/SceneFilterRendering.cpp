@@ -297,7 +297,7 @@ static inline void InternalDrawRectangle(
 	else if (bDrawOctagon)
 	{
 		// override everything that could use triangle optimization and draw octagon instead
-		RHICmdList.SetStreamSource(0, GScreenOctagonVertexBuffer.VertexBufferRHI, sizeof(FFilterVertex), 0);
+		RHICmdList.SetStreamSource(0, GScreenOctagonVertexBuffer.VertexBufferRHI, 0);
 		RHICmdList.DrawIndexedPrimitive(
 			GScreenOctagonIndexBuffer.IndexBufferRHI,
 			PT_TriangleList,

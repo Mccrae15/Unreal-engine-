@@ -89,7 +89,7 @@ void FSceneRenderer::RenderModifiedWBoundaryMask(FRHICommandListImmediate& RHICm
 	RHICmdList.SetStencilRef(StencilRef);
 
 	// no vertex buffer needed as we compute it in VS
-	RHICmdList.SetStreamSource(0, NULL, 0, 0);
+	RHICmdList.SetStreamSource(0, NULL, 0);
 
 	// mask is two triangles covering the screen which will be warped into octagon shape
 	RHICmdList.DrawPrimitive(PT_TriangleStrip,
