@@ -1228,7 +1228,7 @@ namespace OculusHMD
 	{
 		check(IsInRenderingThread());
 		// Rift does this differently than other platforms, it already has an idea of what rectangle it wants to use stored.
-		FIntRect& EyeRect = Settings_RenderThread->EyeRenderViewport[0];
+		const FIntRect EyeRect = Settings_RenderThread->EyeRenderViewport[0].Scale(FVRWorks::GetLensMatchedShadingUnwarpScale());
 
 		// But the rectangle rift specifies has corners cut off, so we will crop a little more.
 		static FVector2D SrcNormRectMin(0.05f, 0.0f);
