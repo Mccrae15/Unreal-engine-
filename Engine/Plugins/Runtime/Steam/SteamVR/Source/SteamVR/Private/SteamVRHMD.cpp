@@ -1521,9 +1521,10 @@ void FSteamVRHMD::CalculateRenderTargetSize(const class FViewport& Viewport, uin
 		return;
 	}
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataFloat(TEXT("r.ScreenPercentage"));
-	const float Scale = CVar->GetValueOnGameThread()*FVRWorks::GetLensMatchedShadingUnwarpScale(); // psilva: necessary?
-	InOutSizeX = FrameSettings.RenderTargetSize.X * Scale;
-	InOutSizeY = FrameSettings.RenderTargetSize.Y * Scale;
+	const float Scale = CVar->GetValueOnGameThread()*FVRWorks::GetLensMatchedShadingUnwarpScale() / 100.0f;
+
+	InOutSizeX = FMath::CeilToInt(FrameSettings.RenderTargetSize.X * Scale);
+	InOutSizeY = FMath::CeilToInt(FrameSettings.RenderTargetSize.Y * Scale);
 
 	check(InOutSizeX != 0 && InOutSizeY != 0);
 }
