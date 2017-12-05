@@ -1908,7 +1908,7 @@ void FSceneRenderTargets::AllocateCommonDepthTargets(FRHICommandList& RHICmdList
 	IStereoRenderTargetManager* const StereoRenderTargetManager = bStereo ? GEngine->StereoRenderingDevice->GetRenderTargetManager() : nullptr;
 	const bool isMrsOrLmsEnabled = FVRWorks::IsLensMatchedShadingSupportEnabled() || FVRWorks::IsMultiResSupportEnabled();
 
-	if (SceneDepthZ && (!(SceneDepthZ->GetRenderTargetItem().TargetableTexture->GetClearBinding() == DefaultDepthClear)) || (!isMrsOrLmsEnabled && StereoRenderTargetManager && StereoRenderTargetManager->NeedReAllocateDepthTexture(SceneDepthZ)))
+	if (SceneDepthZ && (!(SceneDepthZ->GetRenderTargetItem().TargetableTexture->GetClearBinding() == DefaultDepthClear) || (!isMrsOrLmsEnabled && StereoRenderTargetManager && StereoRenderTargetManager->NeedReAllocateDepthTexture(SceneDepthZ))))
 	{
 		uint32 StencilCurrent, StencilNew;
 		float DepthCurrent, DepthNew;
