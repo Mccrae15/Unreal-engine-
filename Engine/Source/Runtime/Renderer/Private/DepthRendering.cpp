@@ -1052,15 +1052,15 @@ static void RenderHiddenAreaMaskView(FRHICommandList& RHICmdList, FGraphicsPipel
 	const auto FeatureLevel = GMaxRHIFeatureLevel;
 	const auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
 	TShaderMapRef<TOneColorVS<true> > VertexShader(ShaderMap);
-	TShaderMapRef<TOneColorFastGS<> > GeometryShader(ShaderMap);
 
 	extern TGlobalResource<FFilterVertexDeclaration> GFilterVertexDeclaration;
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-	if (View.bVRProjectEnabled)
+	if (View.bVRProjectEnabled && FVRWorks::IsFastGSNeeded())
 	{
+		TShaderMapRef<TOneColorFastGS<> > GeometryShader(ShaderMap);
 		GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(*GeometryShader);
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 		GeometryShader->SetParameters(RHICmdList, View);
