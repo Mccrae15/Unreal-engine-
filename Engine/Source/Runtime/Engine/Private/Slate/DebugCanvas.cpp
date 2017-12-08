@@ -9,6 +9,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "IStereoLayers.h"
 #include "StereoRendering.h"
+#include "VRWorks.h"
 
 /**
  * Simple representation of the backbuffer that the debug canvas renders to
@@ -230,7 +231,8 @@ void FDebugCanvasDrawer::DrawRenderThread(FRHICommandListImmediate& RHICmdList, 
 		RenderThreadCanvas->SetAllowSwitchVerticalAxis(false);
 		if (RenderThreadCanvas->IsScaledToRenderTarget() && IsValidRef(RT)) 
 		{
-			RenderThreadCanvas->SetRenderTargetRect( FIntRect(0, 0, RT->GetSizeX(), RT->GetSizeY()) );
+			const float ViewportScale = FVRWorks::GetLensMatchedShadingUnwarpScale();
+			RenderThreadCanvas->SetRenderTargetRect( FIntRect(0, 0, RT->GetSizeX(), RT->GetSizeY()).Scale(ViewportScale) );
 		}
 		else
 		{
