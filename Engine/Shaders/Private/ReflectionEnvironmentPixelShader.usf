@@ -44,7 +44,7 @@ void ReflectionEnvironmentTiledDeferredMain(
 	out float4 OutColor : SV_Target0)
 {
 	float2 ScreenUV = UVAndScreenPos.xy;
-	float2 ScreenPosition = UVAndScreenPos.zw;
+	float2 ScreenPosition = VRProjMapNDCVRProjToLinear(UVAndScreenPos.zw);
 	FScreenSpaceData ScreenSpaceData = GetScreenSpaceData(ScreenUV);
 	FGBufferData GBuffer = ScreenSpaceData.GBuffer;
 	float SceneDepth = CalcSceneDepth(ScreenUV);
