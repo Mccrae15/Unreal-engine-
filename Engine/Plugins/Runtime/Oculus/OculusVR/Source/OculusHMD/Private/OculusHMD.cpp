@@ -47,8 +47,6 @@
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 
-#include "OculusHMDModule.h" // for IsOVRPluginAvailable()
-
 namespace OculusHMD
 {
 
@@ -1724,6 +1722,9 @@ namespace OculusHMD
 			RHICmdList.SetViewport(GapMinX, GapMinY, 0, GapMaxX, GapMaxY, 1.0f);
 			DrawClearQuad(RHICmdList, FLinearColor::Black);
 		}
+#else 
+		// ensure we have attached JNI to this thread - this has to happen persistently as the JNI could detach if the app loses focus 
+		FAndroidApplication::GetJavaEnv();
 #endif
 
 		// Start RHI frame
@@ -2071,12 +2072,19 @@ namespace OculusHMD
 			void* activity = nullptr;
 #endif
 
+			int initializeFlags = ovrpInitializeFlag_SupportsVRToggle;
+
+			if (Settings->Flags.bSupportsDash)
+			{
+				initializeFlags |= ovrpInitializeFlag_FocusAware;
+			}
+
 			if (OVRP_FAILURE(ovrp_Initialize4(
 				CustomPresent->GetRenderAPI(),
 				logCallback,
 				activity,
 				CustomPresent->GetOvrpInstance(),
-				ovrpInitializeFlag_SupportsVRToggle)))
+				initializeFlags)))
 			{
 				return false;
 			}
@@ -2136,6 +2144,8 @@ namespace OculusHMD
 			return false; // don't bother if HMD is not connected
 		}
 
+		LoadFromIni();
+
 		if (InitializeSession())
 		{
 			OCFlags.NeedSetFocusToGameViewport = true;
@@ -2147,7 +2157,6 @@ namespace OculusHMD
 					Settings->SystemHeadset = ovrpSystemHeadset_None;
 				}
 
-				LoadFromIni();
 				UpdateHmdRenderInfo();
 				UpdateStereoRenderingParams();
 
@@ -2640,11 +2649,7 @@ namespace OculusHMD
 
 	bool FOculusHMD::IsHMDActive() const
 	{
-		if (FOculusHMDModule::Get().IsOVRPluginAvailable())
-		{
-			return ovrp_GetInitialized() != ovrpBool_False;
-		}
-		return false;
+		return ovrp_GetInitialized() != ovrpBool_False;
 	}
 
 	float FOculusHMD::GetWorldToMetersScale() const
@@ -2998,6 +3003,7 @@ namespace OculusHMD
 		Result->WindowSize = CachedWindowSize;
 		Result->WorldToMetersScale = CachedWorldToMetersScale;
 		Result->MonoCullingDistance = CachedMonoCullingDistance;
+		Result->NearClippingPlane = GNearClippingPlane;
 		return Result;
 	}
 
@@ -3544,6 +3550,10 @@ namespace OculusHMD
 		if (GConfig->GetBool(OculusSettings, TEXT("bCompositeDepth"), v, GEngineIni))
 		{
 			Settings->Flags.bCompositeDepth = v;
+		}
+		if (GConfig->GetBool(OculusSettings, TEXT("bSupportsDash"), v, GEngineIni))
+		{
+			Settings->Flags.bSupportsDash = v;
 		}
 	}
 
