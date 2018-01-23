@@ -10,10 +10,11 @@ Welcome to NVIDIA's Unreal Engine 4 GitHub fork.  This fork contains many branch
 * [HairWorks](https://developer.nvidia.com/hairworks) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/HairWorks)
 * [HBAO+](http://www.geforce.com/hardware/technology/hbao-plus) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/HBAO+)
 * [Turbulence](https://developer.nvidia.com/turbulence) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/Turbulence-4.13)
+* [TXAA](https://www.geforce.com/hardware/technology/txaa) - [4.16 branch](https://github.com/NvPhysX/UnrealEngine/tree/TXAA3-4.16)
 * [Volumetric Lighting](https://developer.nvidia.com/VolumetricLighting) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/VolumetricLighting-4.16)
 * [VR Funhouse](https://developer.nvidia.com/vr-funhouse-mod-kit) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/VRFunhouse-4.11)
 * [VRWorks](https://developer.nvidia.com/vrworks) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/VRWorks-Graphics-4.15)
-* [VXGI](https://developer.nvidia.com/vxgi) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/VXGI-4.15)
+* [VXGI](https://developer.nvidia.com/vxgi) - [4.17 branch](https://github.com/NvPhysX/UnrealEngine/tree/VXGI-4.17) [4.18 branch](https://github.com/NvPhysX/UnrealEngine/tree/VXGI-4.18)
 * [WaveWorks](https://developer.nvidia.com/waveworks) - [branch](https://github.com/NvPhysX/UnrealEngine/tree/WaveWorks)
 
 If you need to file an issue, please note which branch you are using.
