@@ -1,4 +1,4 @@
-// Copyright 1998-2017 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright 1998-2017 Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/Pawn.h"
@@ -173,9 +173,19 @@ void USpringArmComponent::UpdateDesiredArmLocation(bool bDoTrace, bool bDoLocati
 	if (bDoTrace && (TargetArmLength != 0.0f))
 	{
 		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SpringArm), false, GetOwner());
+		FCollisionQueryParams QueryParams2(SCENE_QUERY_STAT(SpringArm), true, GetOwner());	//CarbonEdit
 
 		FHitResult Result;
-		GetWorld()->SweepSingleByChannel(Result, ArmOrigin, DesiredLoc, FQuat::Identity, ProbeChannel, FCollisionShape::MakeSphere(ProbeSize), QueryParams);
+
+		//CarbonEdit
+		if (UseBox)
+		{
+			GetWorld()->SweepSingleByChannel(Result, ArmOrigin, DesiredLoc, USpringArmComponent::GetWorldRotation(), ProbeChannel, FCollisionShape::MakeBox(ProbeBoxSize), QueryParams);
+		}
+		else
+		{
+			GetWorld()->SweepSingleByChannel(Result, ArmOrigin, DesiredLoc, FQuat::Identity, ProbeChannel, FCollisionShape::MakeSphere(ProbeSize), QueryParams);
+		}
 
 		ResultLoc = BlendLocations(DesiredLoc, Result.Location, Result.bBlockingHit, DeltaTime);
 	}
@@ -195,6 +205,16 @@ void USpringArmComponent::UpdateDesiredArmLocation(bool bDoTrace, bool bDoLocati
 
 	UpdateChildTransforms();
 }
+
+//CarbonEdit
+FQuat USpringArmComponent::GetWorldRotation()
+{
+	FQuat TEMP;
+	Rotator = this->GetComponentRotation();
+	TEMP = this->GetComponentRotation().Quaternion();
+	return TEMP;
+}
+//EndCarbonEdit
 
 FVector USpringArmComponent::BlendLocations(const FVector& DesiredArmLocation, const FVector& TraceHitLocation, bool bHitSomething, float DeltaTime)
 {

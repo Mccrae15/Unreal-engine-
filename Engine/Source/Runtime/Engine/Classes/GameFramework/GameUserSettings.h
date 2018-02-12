@@ -1,4 +1,4 @@
-// Copyright 1998-2017 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright 1998-2017 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,6 +28,25 @@ namespace EWindowMode
 }
 
 #endif
+
+//Language enums
+UENUM(BlueprintType)
+enum class VoiceLanguage : uint8
+{
+	English,
+	Deustch,
+	Chineese,
+
+};
+
+UENUM(BlueprintType)
+enum class SubtitlesLanguage : uint8
+{
+	English,
+	Deustch,
+	Chineese,
+
+};
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGameUserSettingsUINeedsUpdate);
 
@@ -308,6 +327,117 @@ public:
 	// cached for the UI, current state if stored in console variables
 	Scalability::FQualityLevels ScalabilityQuality;
 
+	//CarbonEdit Skubert
+
+	// Sets the HMD Scaling
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetHMDScaling(int32 Value);
+
+	// Returns the HMD Scaling from config
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		int32 GetHMDScaling() const;
+
+	// Sets the mirroring
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetHMDMirrorEnabled(int32 Value);
+
+	// Returns the mirroring from config
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		int32 GetHMDMirrorEnabled() const;
+
+	// Sets the ImmersiveMode
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetUIimmersiveMode(int32 Value);
+
+	// Returns the ImmersiveMode from config
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		int32 GetUIimmersiveMode() const;
+
+	//Sets subtitles visibility
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetSubtitlesHidden(bool Value);
+
+	// Returns subtitles visibility
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		bool GetSubtitlesHidden() const;
+
+	//Sets subtitles visibility
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetRotationHidden(bool Value);
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		bool GetRotationHidden() const;
+
+	//Set Master Soundclass Volume
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetMasterLevel(float Value);
+
+	// Get Master Soundclass Volume
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		float GetMasterLevel() const;
+
+	//Set Music Soundclass Volume
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetMusicLevel(float Value);
+
+	// Get Music Soundclass Volume
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		float GetMusicLevel() const;
+
+	//Set SFX Soundclass Volume
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetSFXLevel(float Value);
+
+	// Get SFX Soundclass Volume
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		float GetSFXLevel() const;
+
+	//Set Voice Soundclass Volume
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetVoiceLevel(float Value);
+
+	// Get Voice Soundclass Volume
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		float GetVoiceLevel() const;
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetMonsterFootstepsLevel(float Value);
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		float GetMonsterFootstepsLevel() const;
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetPlayerFootstepsLevel(float Value);
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		float GetPlayerFootstepsLevel() const;
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetVersion(int32 Value);
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		int32 GetVersion() const;
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		VoiceLanguage GetVoiceLanguage();
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetVoiceLanguage(VoiceLanguage Language);
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		SubtitlesLanguage GetSubtitlesLanguage();
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetSubtitlesLanguage(SubtitlesLanguage Language);
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		bool GetFreeMovementInfoShown() const;
+
+	UFUNCTION(BlueprintCallable, Category = Settings)
+		void SetFreeMovementInfoShown(bool Value);
+
+	//Skubert Edit End
+
 protected:
 	/** Game screen resolution width, in pixels. */
 	UPROPERTY(config)
@@ -413,6 +543,53 @@ protected:
 	/** HDR */
 	UPROPERTY(config)
 	int32 HDRDisplayOutputNits;
+
+	//Skubert
+	UPROPERTY(config)
+		int32 HMDScale;
+
+	UPROPERTY(config)
+		int32 ImmersiveMode;
+
+	UPROPERTY(config)
+		int32 bShowMirror = 2;
+
+	UPROPERTY(config)
+		bool bHideSubs;
+
+	UPROPERTY(config)
+		bool bHideRotation;
+
+	UPROPERTY(config)
+		float MasterVolume = 1.0;
+
+	UPROPERTY(config)
+		float MusicVolume = 1.0;
+
+	UPROPERTY(config)
+		float SFXVolume = 1.0;
+
+	UPROPERTY(config)
+		float VoiceVolume = 1.0;
+
+	UPROPERTY(config)
+		float MonsterFootstepsVolume = 1.0;
+
+	UPROPERTY(config)
+		float PlayerFootstepsVolume = 1.0;
+
+	//0=English 1=Deustch 2=Chineese
+	UPROPERTY(config)
+		VoiceLanguage VLanguage = VoiceLanguage::English;
+	//0=English 1=Deustch 2=Chineese
+	UPROPERTY(config)
+		SubtitlesLanguage SLanguage = SubtitlesLanguage::English;
+	UPROPERTY(config)
+		bool FreeMovementUpdateInfoPlayed;
+
+	UPROPERTY(config)
+		int32 WizardsVersion;
+	//Skubert Edit End
 
 public:
 	/** Returns the last CPU benchmark result (set by RunHardwareBenchmark) */

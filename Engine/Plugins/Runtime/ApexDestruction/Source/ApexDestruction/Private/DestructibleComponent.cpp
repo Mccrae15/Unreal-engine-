@@ -1,4 +1,4 @@
-// Copyright 1998-2017 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright 1998-2017 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DestructibleComponent.cpp: UDestructibleComponent methods.
@@ -285,8 +285,11 @@ void UDestructibleComponent::OnCreatePhysicsState()
 		CollResponse = GetCollisionResponseToChannels();
 
 		LargeChunkCollisionResponse.SetCollisionResponseContainer(CollResponse);
+		//LargeChunkCollisionResponse.SetResponse(ECC_Pawn, ECR_Ignore);
+		//LargeChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);	//CarbonEdit
 		SmallChunkCollisionResponse.SetCollisionResponseContainer(CollResponse);
-		SmallChunkCollisionResponse.SetResponse(ECC_Pawn, ECR_Overlap);
+		SmallChunkCollisionResponse.SetResponse(ECC_Pawn, ECR_Ignore);
+		SmallChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);
 	}
 	else
 	{
@@ -699,13 +702,13 @@ void UDestructibleComponent::OnDamageEvent(const apex::DamageEventReportData& In
 	}
 
 	SpawnFractureEffectsFromDamageEvent(InDamageEvent);
-
+	//CarbonEdit
 	// After receiving damage, no longer receive decals.
-	if (bReceivesDecals)
+	/*if (bReceivesDecals)
 	{
 		bReceivesDecals = false;
 		MarkRenderStateDirty();
-	}
+	}*/
 }
 
 void UDestructibleComponent::OnVisibilityEvent(const apex::ChunkStateEventData & InVisibilityEvent)
