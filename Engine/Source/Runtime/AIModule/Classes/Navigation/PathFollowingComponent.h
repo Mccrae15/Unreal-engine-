@@ -1,3 +1,4 @@
+﻿
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
@@ -493,6 +494,7 @@ protected:
 	const INavAgentInterface* DestinationAgent;
 
 	/** destination for current path segment */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Path")
 	FBasedPosition CurrentDestination;
 
 	/** last MoveInput calculated and passed over to MovementComponent. Valid only if MovementComp->UseAccelerationForPathFollowing() == true */
@@ -549,15 +551,19 @@ protected:
 	uint32 bIsDecelerating : 1;
 
 	/** timeout for Waiting state, negative value = infinite */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path")
 	float WaitingTimeout;
 
 	/** detect blocked movement when distance between center of location samples and furthest one (centroid radius) is below threshold */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path")
 	float BlockDetectionDistance;
 
 	/** interval for collecting location samples */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path")
 	float BlockDetectionInterval;
 
 	/** number of samples required for block detection */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path")
 	int32 BlockDetectionSampleCount;
 
 	/** timestamp of last location sample */

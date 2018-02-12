@@ -1,3 +1,4 @@
+﻿
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/GameUserSettings.h"
@@ -201,6 +202,7 @@ bool UGameUserSettings::IsDynamicResolutionDirty() const
 
 bool UGameUserSettings::IsDirty() const
 {
+
 	return IsScreenResolutionDirty() || IsFullscreenModeDirty() || IsVSyncDirty() || IsDynamicResolutionDirty();
 }
 
@@ -250,6 +252,13 @@ void UGameUserSettings::SetToDefaults()
 	bUseDynamicResolution = false;
 	bUseHDRDisplayOutput = GUserSettingsDefaultHDRValue;
 	HDRDisplayOutputNits = 1000;
+	//CarbonEdit Skubert Edit
+	HMDScale = 100;
+	bShowMirror = 2;
+	bHideSubs = false;
+	bHideRotation = false;
+	WizardsVersion = 0;
+	//CarbonEdit end
 }
 
 bool UGameUserSettings::IsVersionValid()
@@ -391,6 +400,7 @@ void UGameUserSettings::ValidateSettings()
 		{
 			// Force reset if there aren't any default .ini settings.
 			SetToDefaults();
+
 			static const auto CVarVSync = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VSync"));
 			SetVSyncEnabled(CVarVSync->GetValueOnGameThread() != 0 );
 
@@ -662,6 +672,7 @@ void UGameUserSettings::ResetToCurrentSettings()
 		SetScreenResolution(FIntPoint(GSystemResolution.ResX, GSystemResolution.ResY));
 
 		// Set the current VSync state
+
 		static const auto CVarVSync = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VSync"));
 		SetVSyncEnabled(CVarVSync->GetValueOnGameThread() != 0 );
 
@@ -956,3 +967,157 @@ bool UGameUserSettings::IsHDREnabled() const
 {
 	return bUseHDRDisplayOutput;
 }
+
+//Skubert Edit
+
+void UGameUserSettings::SetHMDScaling(int32 Value)
+{
+	HMDScale = Value;
+}
+
+int32 UGameUserSettings::GetHMDScaling() const
+{
+	return HMDScale;
+}
+
+void UGameUserSettings::SetHMDMirrorEnabled(int32 Value)
+{
+	bShowMirror = Value;
+}
+
+int32 UGameUserSettings::GetHMDMirrorEnabled() const
+{
+	return bShowMirror;
+}
+
+void UGameUserSettings::SetUIimmersiveMode(int32 Value)
+{
+	ImmersiveMode = Value;
+}
+
+int32 UGameUserSettings::GetUIimmersiveMode() const
+{
+	return ImmersiveMode;
+}
+
+void UGameUserSettings::SetSubtitlesHidden(bool Value)
+{
+	bHideSubs = Value;
+}
+
+bool UGameUserSettings::GetSubtitlesHidden() const
+{
+	return bHideSubs;
+}
+
+void UGameUserSettings::SetRotationHidden(bool Value)
+{
+	bHideRotation = Value;
+}
+
+bool UGameUserSettings::GetRotationHidden() const
+{
+	return bHideRotation;
+}
+
+void UGameUserSettings::SetMasterLevel(float Value)
+{
+	MasterVolume = Value;
+}
+
+float UGameUserSettings::GetMasterLevel() const
+{
+	return MasterVolume;
+}
+
+void UGameUserSettings::SetMusicLevel(float Value)
+{
+	MusicVolume = Value;
+}
+
+float UGameUserSettings::GetMusicLevel() const
+{
+	return MusicVolume;
+}
+
+void UGameUserSettings::SetSFXLevel(float Value)
+{
+	SFXVolume = Value;
+}
+
+float UGameUserSettings::GetSFXLevel() const
+{
+	return SFXVolume;
+}
+
+void UGameUserSettings::SetVoiceLevel(float Value)
+{
+	VoiceVolume = Value;
+}
+
+float UGameUserSettings::GetVoiceLevel() const
+{
+	return VoiceVolume;
+}
+
+void UGameUserSettings::SetPlayerFootstepsLevel(float Value)
+{
+	PlayerFootstepsVolume = Value;
+}
+
+float UGameUserSettings::GetPlayerFootstepsLevel() const
+{
+	return PlayerFootstepsVolume;
+}
+
+void UGameUserSettings::SetMonsterFootstepsLevel(float Value)
+{
+	MonsterFootstepsVolume = Value;
+}
+
+float UGameUserSettings::GetMonsterFootstepsLevel() const
+{
+	return MonsterFootstepsVolume;
+}
+
+void UGameUserSettings::SetVersion(int32 Value)
+{
+	WizardsVersion = Value;
+}
+
+int32 UGameUserSettings::GetVersion() const
+{
+	return WizardsVersion;
+}
+
+VoiceLanguage UGameUserSettings::GetVoiceLanguage()
+{
+	return VLanguage;
+}
+
+void UGameUserSettings::SetVoiceLanguage(VoiceLanguage Language)
+{
+	VLanguage = Language;
+}
+
+SubtitlesLanguage UGameUserSettings::GetSubtitlesLanguage()
+{
+	return SLanguage;
+}
+
+void UGameUserSettings::SetSubtitlesLanguage(SubtitlesLanguage Language)
+{
+	SLanguage = Language;
+}
+
+bool UGameUserSettings::GetFreeMovementInfoShown() const
+{
+	return FreeMovementUpdateInfoPlayed;
+}
+
+void UGameUserSettings::SetFreeMovementInfoShown(bool Value)
+{
+	FreeMovementUpdateInfoPlayed = Value;
+}
+
+// Skubert Edit End

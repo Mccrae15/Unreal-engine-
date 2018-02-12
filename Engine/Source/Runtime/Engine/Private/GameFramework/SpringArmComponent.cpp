@@ -1,3 +1,4 @@
+﻿
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/SpringArmComponent.h"
@@ -176,11 +177,21 @@ void USpringArmComponent::UpdateDesiredArmLocation(bool bDoTrace, bool bDoLocati
 	{
 		bIsCameraFixed = true;
 		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SpringArm), false, GetOwner());
+		FCollisionQueryParams QueryParams2(SCENE_QUERY_STAT(SpringArm), true, GetOwner());	//CarbonEdit
 
 		FHitResult Result;
-		GetWorld()->SweepSingleByChannel(Result, ArmOrigin, DesiredLoc, FQuat::Identity, ProbeChannel, FCollisionShape::MakeSphere(ProbeSize), QueryParams);
 		
 		UnfixedCameraPosition = DesiredLoc;
+
+		//CarbonEdit
+		if (UseBox)
+		{
+			GetWorld()->SweepSingleByChannel(Result, ArmOrigin, DesiredLoc, USpringArmComponent::GetWorldRotation(), ProbeChannel, FCollisionShape::MakeBox(ProbeBoxSize), QueryParams);
+		}
+		else
+		{
+			GetWorld()->SweepSingleByChannel(Result, ArmOrigin, DesiredLoc, FQuat::Identity, ProbeChannel, FCollisionShape::MakeSphere(ProbeSize), QueryParams);
+		}
 
 		ResultLoc = BlendLocations(DesiredLoc, Result.Location, Result.bBlockingHit, DeltaTime);
 
@@ -207,6 +218,16 @@ void USpringArmComponent::UpdateDesiredArmLocation(bool bDoTrace, bool bDoLocati
 
 	UpdateChildTransforms();
 }
+
+//CarbonEdit
+FQuat USpringArmComponent::GetWorldRotation()
+{
+	FQuat TEMP;
+	Rotator = this->GetComponentRotation();
+	TEMP = this->GetComponentRotation().Quaternion();
+	return TEMP;
+}
+//EndCarbonEdit
 
 FVector USpringArmComponent::BlendLocations(const FVector& DesiredArmLocation, const FVector& TraceHitLocation, bool bHitSomething, float DeltaTime)
 {

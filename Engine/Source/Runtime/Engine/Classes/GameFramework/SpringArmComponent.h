@@ -1,3 +1,4 @@
+﻿
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
@@ -36,6 +37,16 @@ class ENGINE_API USpringArmComponent : public USceneComponent
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=CameraCollision, meta=(editcondition="bDoCollisionTest"))
 	float ProbeSize;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = CameraCollision, meta = (editcondition = "bDoCollisionTest"))
+	FRotator Rotator;
+
+	/**How big should the query BOX probe sphere be (in unreal units)*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = CameraCollision, meta = (editcondition = "bDoCollisionTest"))
+	FVector ProbeBoxSize;
+
+	/**How big should the query probe sphere be(in unreal units)*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = CameraCollision, meta = (editcondition = "bDoCollisionTest"))
+	bool UseBox;
 	/** Collision channel of the query probe (defaults to ECC_Camera) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=CameraCollision, meta=(editcondition="bDoCollisionTest"))
 	TEnumAsByte<ECollisionChannel> ProbeChannel;
@@ -152,6 +163,8 @@ class ENGINE_API USpringArmComponent : public USceneComponent
 
 	/** The name of the socket at the end of the spring arm (looking back towards the spring arm origin) */
 	static const FName SocketName;
+
+	FQuat GetWorldRotation();
 protected:
 	/** Cached component-space socket location */
 	FVector RelativeSocketLocation;

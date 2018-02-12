@@ -1,4 +1,4 @@
-// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright 1998-2017 Epic Games, Inc. All Rights Reserved.// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -33,7 +33,8 @@ enum class ECrowdSimulationState : uint8
 	Disabled		UMETA(DisplayName="Disabled, ignored by others"),
 };
 
-UCLASS(BlueprintType)
+//CarbonEdit Exposing Variables
+UCLASS(Blueprintable)
 class AIMODULE_API UCrowdFollowingComponent : public UPathFollowingComponent, public ICrowdAgentInterface
 {
 	GENERATED_UCLASS_BODY()
@@ -169,56 +170,85 @@ protected:
 	FNavAvoidanceMask GroupsToIgnore_DEPRECATED;
 
 	/** if set, velocity will be updated even if agent is falling */
+	UPROPERTY(EditAnywhere,BlueprintReadWrite,Category="Crowd")
 	uint32 bAffectFallingVelocity : 1;
 
 	/** if set, move focus will match velocity direction */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bRotateToVelocity : 1;
 
 	/** if set, move velocity will be updated in every tick */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bUpdateDirectMoveVelocity : 1;
 
 	DEPRECATED(4.11, "Please use IsCrowdSimulationEnabled(), SetCrowdSimulationState() and SimulationState member for initialization.")
 	uint32 bEnableCrowdSimulation : 1;
 
 	/** set when agent is registered in crowd simulation (either controlled or an obstacle) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bRegisteredWithCrowdSimulation : 1;
 
 	/** if set, avoidance and steering will be suspended (used for direct move requests) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bSuspendCrowdSimulation : 1;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bEnableAnticipateTurns : 1;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bEnableObstacleAvoidance : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bEnableSeparation : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bEnableOptimizeVisibility : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bEnableOptimizeTopology : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bEnablePathOffset : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bEnableSlowdownAtGoal : 1;
 
 	/** if set, agent if moving on final path part, skip further updates (runtime flag) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bFinalPathPart : 1;
 
 	/** if set, destination overshot can be tested */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bCanCheckMovingTooFar : 1;
 
 	/** if set, path parts can be switched in UpdatePathSegment, based on distance */
 	uint32 bCanUpdatePathPartInTick : 1;
 
 	/** if set, movement will be finished when velocity is opposite to path direction (runtime flag) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bCheckMovementAngle : 1;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	uint32 bEnableSimulationReplanOnResume : 1;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	float SeparationWeight;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	float CollisionQueryRange;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	float PathOptimizationRange;
 
 	/** multiplier for avoidance samples during detection, doesn't affect actual velocity */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	float AvoidanceRangeMultiplier;
 
 	/** start index of current path part */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	int32 PathStartIndex;
 
 	/** last visited poly on path */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crowd")
 	int32 LastPathPolyIndex;
 
 	TEnumAsByte<ECrowdAvoidanceQuality::Type> AvoidanceQuality;

@@ -1,3 +1,4 @@
+﻿
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
@@ -287,8 +288,12 @@ void UDestructibleComponent::OnCreatePhysicsState()
 		CollResponse = GetCollisionResponseToChannels();
 
 		LargeChunkCollisionResponse.SetCollisionResponseContainer(CollResponse);
+		//LargeChunkCollisionResponse.SetResponse(ECC_Pawn, ECR_Ignore);
+		//LargeChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);	//CarbonEdit
 		SmallChunkCollisionResponse.SetCollisionResponseContainer(CollResponse);
-		SmallChunkCollisionResponse.SetResponse(ECC_Pawn, ECR_Overlap);
+
+		SmallChunkCollisionResponse.SetResponse(ECC_Pawn, ECR_Ignore);
+		SmallChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);
 	}
 	else
 	{
@@ -430,6 +435,7 @@ void UDestructibleComponent::OnDestroyPhysicsState()
 #if WITH_APEX
 	if(ApexDestructibleActor != NULL)
 	{
+
 		GPhysCommandHandler->DeferredRelease(ApexDestructibleActor);
 		ApexDestructibleActor = NULL;
 		
@@ -694,13 +700,14 @@ void UDestructibleComponent::OnDamageEvent(const apex::DamageEventReportData& In
 	}
 
 	SpawnFractureEffectsFromDamageEvent(InDamageEvent);
-
+	//CarbonEdit
 	// After receiving damage, no longer receive decals.
-	if (bReceivesDecals)
+
+	/*if (bReceivesDecals)
 	{
 		bReceivesDecals = false;
 		MarkRenderStateDirty();
-	}
+	}*/
 }
 
 void UDestructibleComponent::OnVisibilityEvent(const apex::ChunkStateEventData & InVisibilityEvent)
@@ -931,6 +938,8 @@ void UDestructibleComponent::SetChunkVisible( int32 ChunkIndex, bool bInVisible 
 	MarkRenderDynamicDataDirty();
 #endif
 }
+
+..
 
 
 void UDestructibleComponent::SetChunksWorldTM(const TArray<FUpdateChunksInfo>& UpdateInfos)
@@ -1631,4 +1640,5 @@ void UDestructibleComponent::SetMaterial(int32 ElementIndex, UMaterialInterface*
 	}
 #endif
 }
+
 

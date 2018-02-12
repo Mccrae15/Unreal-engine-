@@ -1,3 +1,4 @@
+﻿
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "Navigation/CrowdManager.h"
@@ -38,12 +39,16 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("Num Agents"), STAT_AI_Crowd_NumAgents, STATGROU
 namespace FCrowdDebug
 {
 	/** if set, debug information will be displayed for agent selected in editor */
-	int32 DebugSelectedActors = 0;
+
+	//CarbonEdit False->True 0->1
+	int32 DebugSelectedActors = 1;
 	FAutoConsoleVariableRef CVarDebugSelectedActors(TEXT("ai.crowd.DebugSelectedActors"), DebugSelectedActors,
 		TEXT("Enable debug drawing for selected crowd agent.\n0: Disable, 1: Enable"), ECVF_Default);
 
 	/** if set, basic debug information will be recorded in VisLog for all agents */
-	int32 DebugVisLog = 0;
+
+	//CarbonEdit False->True 0->1
+	int32 DebugVisLog = 1;
 	FAutoConsoleVariableRef CVarDebugVisLog(TEXT("ai.crowd.DebugVisLog"), DebugVisLog,
 		TEXT("Enable detailed vislog recording for all crowd agents.\n0: Disable, 1: Enable"), ECVF_Default);
 
@@ -1183,6 +1188,7 @@ void UCrowdManager::DebugTick() const
 				FString LogData = DetourAgentDebug->agentLog.FindRef(AgentData.AgentIndex);
 				if (LogData.Len() > 0)
 				{
+
 					UE_VLOG(LogOwner, LogCrowdFollowing, Log, TEXT("%s"), *LogData);
 				}
 
