@@ -8,6 +8,9 @@
 #include "RHI.h"
 #include "RHICommandList.h"
 #include "RenderingThread.h"
+//CarbonEdit 10.04 Start
+#include "ScopeLock.h"
+//CarbonEdit 10.04 End
 
 DEFINE_LOG_CATEGORY_STATIC(LogPS4SaveGame, Log, All);
 
@@ -23,7 +26,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogPS4SaveGame, Log, All);
 // Is was chosen, based on empirical write speed test data, to take slightly less than 15 seconds to write out
 // at full size.
 // An alternative would be 1200, which is slightly less than 5 seconds of writing time
-#define DEFAULT_BLOCK_COUNT 3000
+#define DEFAULT_BLOCK_COUNT 35
 
 // The maximum allowed save game size.
 // NOTE: This is less than Sony's mandated 1GB limit. It is set based on empirical measurements of 
@@ -144,6 +147,9 @@ bool FPS4SaveGameSystem::PlatformHasNativeUI()
 
 ISaveGameSystem::ESaveExistsResult FPS4SaveGameSystem::DoesSaveGameExistWithResult(const TCHAR* Name, const int32 UserIndex)
 {
+	//CarbonEdit 10.04 Start
+	FScopeLock ScopeLock(&CriticalSection);
+	//CarbonEdit 10.04 End
 	// Attempt to mount the directory
 	SceUserServiceUserId Id = GetSaveGameUserId(UserIndex);
 	if (!IsUserIdValid(Id))
@@ -509,6 +515,9 @@ bool FPS4SaveGameSystem::DisplayDeleteDialog()
 //
 bool FPS4SaveGameSystem::SaveGame(bool bAttemptToUseUI, const TCHAR* Name, const int32 UserIndex, const TArray<uint8>& Data)
 {
+	//CarbonEdit 10.04 Start
+	FScopeLock ScopeLock(&CriticalSection);
+	//CarbonEdit 10.04 End
 	// If the data is > 1GB, fail. The limit is per TRC[R4100].
 	if (Data.Num() > 1024 * 1024 * 1024)
 	{
@@ -907,6 +916,9 @@ bool FPS4SaveGameSystem::SaveGame(bool bAttemptToUseUI, const TCHAR* Name, const
 
 bool FPS4SaveGameSystem::LoadGame(bool bAttemptToUseUI, const TCHAR* Name, const int32 UserIndex, TArray<uint8>& Data)
 {
+	//CarbonEdit 10.04 Start
+	FScopeLock ScopeLock(&CriticalSection);
+	//CarbonEdit 10.04 End
 	bool bWasGameLoaded = false;
 	int32 Result;
 
@@ -1063,6 +1075,9 @@ FPS4SaveGameSystem::~FPS4SaveGameSystem()
 
 bool FPS4SaveGameSystem::Initialize()
 {
+	//CarbonEdit 10.04 Start
+	FScopeLock ScopeLock(&CriticalSection);
+	//CarbonEdit 10.04 End
 	// Initialize the save data library
 	int32 Result = sceSaveDataInitialize3(nullptr);
 	if (Result < SCE_OK)
@@ -1117,6 +1132,9 @@ bool FPS4SaveGameSystem::Initialize()
 
 void FPS4SaveGameSystem::Shutdown()
 {
+	//CarbonEdit 10.04 Start
+	FScopeLock ScopeLock(&CriticalSection);
+	//CarbonEdit 10.04 End
 	int32 Result;
 	if (bHasNativeUI)
 	{
