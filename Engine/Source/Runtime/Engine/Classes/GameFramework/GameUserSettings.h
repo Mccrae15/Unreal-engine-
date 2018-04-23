@@ -1,4 +1,3 @@
-﻿
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
@@ -47,9 +46,7 @@ enum class SubtitlesLanguage : uint8
 	Deustch,
 	Chineese,
 
-};
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGameUserSettingsUINeedsUpdate);
+};DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGameUserSettingsUINeedsUpdate);
 
 /**
  * Stores user settings for a game (for example graphics and sound settings), with the ability to save and load to and from a file.
@@ -344,7 +341,7 @@ public:
 	// cached for the UI, current state if stored in console variables
 	Scalability::FQualityLevels ScalabilityQuality;
 
-	//CarbonEdit Skubert
+// Skubert
 
 	// Sets the HMD Scaling
 	UFUNCTION(BlueprintCallable, Category = Settings)
@@ -453,9 +450,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Settings)
 		void SetFreeMovementInfoShown(bool Value);
 
-	//Skubert Edit End
-
-protected:
+	// Skubert Edit Endprotected:
 	/** Game screen resolution width, in pixels. */
 	UPROPERTY(config)
 	uint32 ResolutionSizeX;
@@ -561,10 +556,10 @@ protected:
 	UPROPERTY(config)
 	int32 HDRDisplayOutputNits;
 
-	//Skubert
+//Skubert
 	UPROPERTY(config)
 		int32 HMDScale;
-
+	
 	UPROPERTY(config)
 		int32 ImmersiveMode;
 
@@ -578,16 +573,16 @@ protected:
 		bool bHideRotation;
 
 	UPROPERTY(config)
-		float MasterVolume = 1.0;
+		float MasterVolume=1.0;
 
 	UPROPERTY(config)
-		float MusicVolume = 1.0;
+		float MusicVolume=1.0;
 
 	UPROPERTY(config)
-		float SFXVolume = 1.0;
+		float SFXVolume=1.0;
 
 	UPROPERTY(config)
-		float VoiceVolume = 1.0;
+		float VoiceVolume=1.0;
 
 	UPROPERTY(config)
 		float MonsterFootstepsVolume = 1.0;
@@ -597,7 +592,7 @@ protected:
 
 	//0=English 1=Deustch 2=Chineese
 	UPROPERTY(config)
-		VoiceLanguage VLanguage = VoiceLanguage::English;
+		 VoiceLanguage VLanguage = VoiceLanguage::English;
 	//0=English 1=Deustch 2=Chineese
 	UPROPERTY(config)
 		SubtitlesLanguage SLanguage = SubtitlesLanguage::English;
@@ -607,7 +602,6 @@ protected:
 	UPROPERTY(config)
 		int32 WizardsVersion;
 	//Skubert Edit End
-
 public:
 	/** Returns the last CPU benchmark result (set by RunHardwareBenchmark) */
 	float GetLastCPUBenchmarkResult() const

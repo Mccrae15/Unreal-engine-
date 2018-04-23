@@ -1,4 +1,3 @@
-﻿
 // Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/GameUserSettings.h"
@@ -202,7 +201,6 @@ bool UGameUserSettings::IsDynamicResolutionDirty() const
 
 bool UGameUserSettings::IsDirty() const
 {
-
 	return IsScreenResolutionDirty() || IsFullscreenModeDirty() || IsVSyncDirty() || IsDynamicResolutionDirty();
 }
 
@@ -252,14 +250,12 @@ void UGameUserSettings::SetToDefaults()
 	bUseDynamicResolution = false;
 	bUseHDRDisplayOutput = GUserSettingsDefaultHDRValue;
 	HDRDisplayOutputNits = 1000;
-	//CarbonEdit Skubert Edit
+	// Skubert Edit
 	HMDScale = 100;
 	bShowMirror = 2;
 	bHideSubs = false;
 	bHideRotation = false;
-	WizardsVersion = 0;
-	//CarbonEdit end
-}
+	WizardsVersion = 0;}
 
 bool UGameUserSettings::IsVersionValid()
 {
@@ -400,7 +396,6 @@ void UGameUserSettings::ValidateSettings()
 		{
 			// Force reset if there aren't any default .ini settings.
 			SetToDefaults();
-
 			static const auto CVarVSync = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VSync"));
 			SetVSyncEnabled(CVarVSync->GetValueOnGameThread() != 0 );
 
@@ -672,7 +667,6 @@ void UGameUserSettings::ResetToCurrentSettings()
 		SetScreenResolution(FIntPoint(GSystemResolution.ResX, GSystemResolution.ResY));
 
 		// Set the current VSync state
-
 		static const auto CVarVSync = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VSync"));
 		SetVSyncEnabled(CVarVSync->GetValueOnGameThread() != 0 );
 
