@@ -939,7 +939,7 @@ void UDestructibleComponent::SetChunkVisible( int32 ChunkIndex, bool bInVisible 
 #endif
 }
 
-..
+
 
 
 void UDestructibleComponent::SetChunksWorldTM(const TArray<FUpdateChunksInfo>& UpdateInfos)
