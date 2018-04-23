@@ -1,0 +1,73 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:6. PlayStation VR 용 UE4 프로젝트 생성
+Crumbs:%ROOT%, Platforms
+Description:UE4 PlayStation VR 프로젝트 생성 및 셋업 방법을 살펴봅니다.
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 6
+tags: VR
+tags: PlayStation VR
+
+[nav]
+
+UE4 엔진 코드가 빌드되었으니, 이제 PlayStation VR 작업이 가능한 UE4 프로젝트를 새로 만들 수 있습니다. 
+
+## 단계
+
+1. **UE4** 프로젝트에 **우클릭** 하고 맥락 메뉴에서 **Set as StartUp Project** (시작 프로젝트로 설정)을 선택합니다.
+
+    ![](PSVR_Set_As_Start_Up_Project.png)
+
+1. Solution Platform 을 다시 **Win64** 로 선택한 뒤, **CTRL + F5** 키를 눌러 UE4 에디터를 실행합니다.
+    
+    [region:note]
+    여기서 무언가를 컴파일하라 묻는 창이 뜨면, 컴파일 한 뒤 계속하세요.
+    [/region]
+
+1. **언리얼 프로젝트 브라우저** 창이 열리면, **새 프로젝트** 탭으로 가 **블루프린트** 탭을 선택합니다. 없다면 템플릿 섹션에서 **Virtual Reality** 템플릿을 선택합니다. 세팅은 기본으로 놔둬도 되지만, **시작용 콘텐츠** 는 필요치 않으니 지우세요. 모두 설정이 완료되었으면, **프로젝트 생성** 버튼을 눌러 새 프로젝트를 생성합니다.
+
+    [REGION:lightbox]
+    [![](PSVR_New_Project_Settings.png)(w:555)](PSVR_New_Project_Settings.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+1. 프로젝트가 시작되면 **편집** > **플러그인** 에서 플러그인 메뉴를 엽니다.
+
+    ![](PSVR_Plugins_Menu.png)
+
+1. 플러그인 메뉴 측면의 **Virtual Reality** 카테고리를 선택하고, **Morpheus** 플러그인 옆 박스를 체크한 뒤 **Restart Now** 버튼을 눌러 에디터를 재시작합니다.
+
+    [REGION:lightbox]
+    [![](PSVR_Enable_Morpheus.png)(w:613)](PSVR_Enable_Morpheus.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+1. 에디터가 재시작되면 **편집** > **프로젝트 세팅** 에서 다음 옵션을 켜줍니다.
+
+* **프로젝트 세팅** **프로젝트** > **Description** > **Settings**  Start in VR = True
+
+    ![](PSVR_Project_Settings_00.png)
+
+* **프로젝트 세팅** > **플러그인** > **Morpheus**  Enable Morpheus = True
+
+    ![](PSVR_Project_Settings_01.png)
+
+이제 프로젝트에 PlayStation VR 지원이 활성화되었으니, 다음에는 프로젝트를 PS4 에 디플로이하는 법을 살펴보겠습니다.
+
+
+
+
+
+
+
+[nav]

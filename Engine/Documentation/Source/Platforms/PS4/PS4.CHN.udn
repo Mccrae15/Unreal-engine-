@@ -1,0 +1,18 @@
+﻿INTSourceChangelist:3429260
+Availability:Licensee
+Title:PlayStation 4 平台
+Crumbs:%ROOT%, Platforms
+Description:开发 PlayStation 4 主机的游戏。
+Platform:PS4
+Navigation:platform
+type:landing
+parent:Platforms
+tags:Console
+
+## 开始
+
+[DIR(output:"topic" parent:"Platforms/PS4" type:"quick start" type:"landing")]
+
+## PS4 开发要点
+
+[DIR(output:"topic" parent:"Platforms/PS4" type:"!quick start" end:"1")]

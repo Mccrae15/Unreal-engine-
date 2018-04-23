@@ -1,0 +1,76 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:PlayStation VR 개발 레퍼런스
+Crumbs:%ROOT%, Platforms
+Description:PSVR 세팅 레퍼런스입니다.
+Platform:PS4
+Navigation:platform
+type:reference
+parent:Platforms/PS4/PSVR
+version:4.14
+order:3
+tags: VR
+tags: PlayStation VR
+topic-image:PSVR_Header.png
+
+UE4 에서 찾을 수 있는 PlayStation VR 세팅 전부에 대한 레퍼런스 정보 페이지입니다. PlayStation VR 세팅은 **편집** > **프로젝트 세팅** > **플러그인** > **Morpheus** 에서 열 수 있습니다.
+
+![](PSVR_Settings.png)
+
+## 세팅
+
+|항목|설명|
+|-------|-----------------|
+|Enable Morpheus|모피우스 활성화 - 이 프로젝트에 모피우스 플러그인을 켭니다.|
+|Screen Percentage|화면 백분율 - 렌더링할 표준 렌더링 크기 백분율입니다. 기본값은 100 입니다. bOverrideScreenPercentage 옵션이 설정되었을 때만 활성화됩니다.|
+|Override Screen Percentage| 화면 백분율 오버라이드 - 활성 화면 백분율 세팅입니다.| 
+|IPD| IPD - 동공 사이 거리입니다.|
+|Reprojection Sampler Wrap Mode| 재투영 샘플러 래핑 모드 - 렌더링 영역 밖의 픽셀을 채우는 방식입니다. Mirro 는 대부분의 콘텐츠에 잘 통합니다. 매우 검은 센서 디버깅은 ClampBorder 가 좋을 수 있습니다. 자세한 정보는 Sony 의 sceHmdReprojectionInitialize 관련 문서를 참고하세요. |
+|Position Tracking| 머리 위치 추적 기능을 켜고 끕니다.|
+|Disable HMDOrientation Until HMDHas Been Tracked | HMD 트래킹 전까지 HMD 방향 끄기 - 카메라가 HMD 트래킹을 하기 전까지 HMD 방향 트래킹 기능을 끕니다. 즉 그 전까지 재투영 작업이 일어나지 않습니다. |
+|HMD Setup Dialog Canceled Behavior| HMD 셋업 대화창 취소 작동방식 - 사용자가 (HMD 접속이 끊기면 뜨는) HmdSetupDialog 을 취소했을 경우 앱 작동방식입니다. |
+|Desktop Offset| 데스크탑 오프셋 - 게임을 PC 에서 실행할 때 게임 창 데스크탑 초기 위치입니다. 게임 창을 모피우스 헤드셋 '모니터'에 자동으로 옮기는 데 사용됩니다. |
+|Enable Controller Pitch| 컨트롤러 피치 활성화 - 카메라에 사용자의 머리 피치를 적용하도록 합니다.|
+|Enable Controller Roll| 컨트롤러 롤 활성화 - 카메라에 사용자의 머리 롤을 적용하도록 합니다.|
+|Change Player View| 플레이어 뷰 변경 - 카메라에 사용자의 머리 방향을 적용하도록 합니다.|
+|HMDServer Address| HMD 서버 주소 - HMD 서버에서의 IP 주소입니다.|
+
+## 실험단계
+	
+Experimental (실험단계) PSVR Frame Sequence 옵션은 PSVR 에서 네이티브 90Hz 에서 90Hz 재투영 및 120Hz 에서 120Hz 재투영 옵션을 제공합니다. 즉 보다 높은 속도로 실행시켜 지연시간 및 재투영 부작용을 최소화시킬 수 있다는 뜻입니다. 엔진에서는 프레임 속도를 선택된 옵션으로 제한시켜 주기는 하지만, 그 프레임 속도를 일관적으로 유지하도록 직접 신경써야 합니다!
+
+|항목|설명|
+|-------|-----------------|
+|PSVR Frame Sequence| 렌더링, 재투영, HMD 위치/방향 샘플링의 프레임 속도를 정의합니다. Sony 'VRTracker Library Overview' 문서의 'Usage' 섹션을 참고하세요. Render60Scanout120 이외 모든 모드는 실험단계입니다. |
+|PSVR Frame Sequence - Render 60Scanout 120| 렌더 60 스캔출력 120 - 언리얼에서는 프레임을 60Hz 에 렌더링하고, PlayStation VR HMD 에서는 120Hz 에 재투영합니다. |
+|PSVR Frame Sequence - Render 90Scanout 90| 렌더 90 스캔출력 90 - 언리얼에서는 프레임을 90Hz 에 렌더링하고, PlayStation VR HMD 에서는 90Hz 에 재투영합니다. |
+|PSVR Frame Sequence - Render 120Scanout 120| 렌더 120 스캔출력 120 - 언리얼에서는 프레임을 120 Hz 에 렌더링하고, PlayStation VR HMD 에서는 120Hz 에 재투영합니다. |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,99 @@
+﻿<html>
+<title>UE4</title>
+<script type="text/javascript">
+<!--
+    var httpObj = null;
+
+    function $(tagId) {
+        return document.getElementById(tagId);
+    }
+
+    function init() {
+        updateStatsProc();
+        setInterval('updateStatsProc()', 1000);
+    }
+
+    function updateStatsProc() {
+        if (!httpObj) {
+            getStats();
+        }
+    }
+
+    function updateStats(params)
+    {
+        var GameName = userinfo_table.rows[0].cells[1];
+        var MapName = userinfo_table.rows[1].cells[1];
+        var Stat = userinfo_table.rows[2].cells[1];
+        GameName.innerText = params["gamename"];
+        MapName.innerText = params["map"];
+        Stat.innerText = params["stats"];
+    }
+
+    function getStats()
+    {
+        httpObj = createXMLHttpRequest(displayResult);
+
+        if (httpObj)
+        {
+            httpObj.open("GET", "/index.html?stats", true);
+            httpObj.send(null);
+        }
+    }
+
+    function displayResult()
+    {
+        if ((httpObj.readyState == 4) && (httpObj.status == 200))
+        {
+            var param = eval("(" + httpObj.responseText + ")");
+            updateStats(param);
+            httpObj = null;
+        }
+    }
+
+    function sendConsoleCommandInner(command)
+    {
+        var request = createXMLHttpRequest(null);
+        if (request) {
+            request.open("POST", "/console.cgi", true);
+            request.send(command);
+        }
+    }
+
+    function sendConsoleCommand()
+    {
+        var Commands = $('commands_table');
+        Commands.insertRow(0);
+        var Row = Commands.rows[0];
+        var Cells = Row.insertCell(0);
+        Cells.innerText = $('inputtext').value;
+        var Command = $('inputtext').value;
+        Cells.onclick = function () { sendConsoleCommandInner(Command); }
+
+        sendConsoleCommandInner(Command);
+    }
+// -->
+</script>
+<script src="./request.js"></script>
+<body onload="init()">
+<h2 align="center">UE4 Stats Second Screen</h1>
+<table id = "userinfo_table" style="font-size: 100%;" align= "center" width="100%" border="1" cellpadding="5" cellspacing="0">
+    <tr>
+        <td align="center" width="20%" bgcolor="#aaaaff"><b>Game:</b></td>
+        <td align="center" width="80%">-</td>
+    </tr>
+    <tr>
+        <td align="center" width="20%" bgcolor="#aaaaff"><b>Map:</b></td>
+        <td align="center" width="80%">-</td>
+    </tr>
+    <tr>
+        <td align="center" width="20%" bgcolor="#aaaaff"><b>Stats:</b></td>
+        <td align="center" width="80%">-</td>
+    </tr>
+</table>
+    <input type="search" id="inputtext" style="font-size: 100%;" value="stat detailed" />
+	<input type="button" value="Submit" style="font-size: 100%;border: 3px #85B9E9 double;" onClick="javascript:sendConsoleCommand();" />
+<h2>Recent Commands:</h2>
+<table id = "commands_table" style="font-size: 100%;" align= "center" width="100%" border="1" cellpadding="5" cellspacing="0">
+</table>
+</body>
+</html>

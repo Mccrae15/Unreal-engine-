@@ -1,0 +1,147 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:デバッグ処理に Visual Studio を使用する
+Description:利用可能なメソッドを使って Visual Studio でデバッグする
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version:4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:4
+
+[TOC(start:2 end:2)]
+
+[nav]
+
+[EXCERPT:main]
+Visual Studio を使ったゲームのデバッグ方法は 2 種類あります。
+ゲームを起動するか、エディタを起動するかのいずれかです。同時に両方を実行することはお勧めしません。Visual Studio 内で既に起動しているエディタからゲームを起動すると、
+Visula Studio コンテキストの外部での起動になるので、適用されるデバッガが存在しません。ただし、Visual Studio のインスタンスを好きなだけ持ち、自由に実行プロセスにアタッチすることができます。これにより、エディタから起動して、 
+Visual Studio の別のインスタンスにアタッチすることが可能になります。 
+
+## Visual Studio からゲームを実行する
+
+Visual Studio からゲームを実行するには、アセットを **クックして Visual Studio 外にデプロイ** する必要があります。Cook By The Book を使用するか、Cook On The Fly を使用するか、またはクック処理をまとめてスキップするかによって
+処理は異なります。
+
+ワークフローに最適なメソッドをクリックして展開し、手順に従ってください。
+
+### Cook by the Book からゲームを実行する
+
+このメソッドは、デベロッパーのマシン上のゲームをすべてクックし、それをデバッグ セッションの開始前にコンソールにデプロイします。クック済みコンテンツがないがめ、最善のレートでゲームを実行するようにしたい場合は、
+このメソッドを選択します。 
+
+1. エディタを開き、プロジェクト ランチャーの **Cook by the Book** を使って PS4 でコンテンツをビルド、クック、デプロイします。
+1. **Development | PS4** あるいは **Debug Game | PS4** などのビルド コンフィギュレーションを選択します。
+1. Visual Studio の **[Solution Explorer]** ウィンドウでゲーム プロジェクトを右クリックし、**[Properties]** > **[Debugging]** を選択します。
+1. 次に、実行ファイルの引数を設定します。	
+	* [RelativePathFromElfToProject.uproject] [MapName]
+	* ../../../MyProject/MyProject.uproject myMap
+1. 最後に、プロジェクトを **ビルド** して **実行** します。
+
+[REGION:notes]
+以下の点に留意してください。 
+
+* 指定された .uproject は PS4 上の .elf / .self ファイルに関連し Visual Studio ディレクトリには関連しません。
+* Visual Studio はゲーム アセットをデプロイしません。以前のクックおよびデプロイによって既にデプロイされているはずです。 
+[/REGION]
+
+### Cook on the fly でゲームを実行する
+
+このメソッドは指定した "Cook on the Fly" マシン (ローカルまたはリモートのいずれか) でゲーム全体をクックし、ゲームをすぐに開始します。アセットがオンデマンドでクックされるので、 
+ランタイム パフォーマンスに影響します。クック済みコンテンツがなく、ゲームを実行するために最低限のアセットだけクックしたい場合に理想的なメソッドです。
+
+
+1. Cook on the Fly サーバーが実行中であることを確認します。
+1. **Development | PS4** あるいは **Debug Game | PS4** などのビルド コンフィギュレーションを選択します。
+1. Visual Studio の **[Solution Explorer]** ウィンドウでゲーム プロジェクトを右クリックし、**[Properties]** > **[Debugging]** を選択します。
+1. 次に、実行ファイルの引数を以下のように設定します。
+	* [RelativePathFromElfToProject.uproject][MapName][-filehostip=COTFServerAddress]
+	* ../../../MyProject/MyProject.uproject myMap -filehostip=192.168.0.1
+	[REGION:note]
+	`-filehostip` が Cook Server の IP アドレスを ゲームを実行中の PS4 ハードウェアで表示されるように指定します。
+	[/REGION]
+1. 最後に、プロジェクトを **ビルド** して **実行** します。
+
+
+[COMMENT:none]
+- Commented out since this method should NOT be used in its current state, but may be useful in the future as an update to the doc ---
+
+#### 既存のクック済みビルドでゲームを実行する
+
+このメソッドは、既存のクック済みビルドをデベロッパーのマシンからデプロイします。最後にビルドをクックして以来、アセットの変更がない場合に適しています。Sony のホスト PC ソフトウェア (Neighborhood) が
+内部でデプロイを実行します。デフォルト設定ではないため、様々なアプローチが存在しますが、各ステップを確実に実行するようにしてください。 
+
+1. Sony は "working directory" を PS4 の /app0 フォルダへマップします。ローカル ステージ ディレクトリを使用するために、以下の操作で上書きします。
+
+	* [Properties] > [Debugging] > [Working Directory] を選択し、ステージング ビルド ポイントを変更します。 
+
+		MyGame/Saved/StagedBuild/PS4/
+
+1. PS4Launch.cpp は、コマンドライン "-deployedbuild" によって、UE4 が使うルートパスを "/app0" か "/data/[gamename]" に変更します。
+1. sce_module ディレクトリの prx が正しいことを確認します。
+1. minefield! 
+
+----- Commented out since this method should NOT be used in its current state, but may be useful in the future as an update to the doc -
+[/COMMENT]
+
+### 事前にビルドされたパッケージでゲームを実行する
+
+このメソッドは、事前にフルパッケージしてあるビルドを PS4 にインストールしてからデバッグを実行します。 
+
+パッケージ化された (.pkg) バイナリのデバッグに使用したり、コード変更をしてパッケージ化の他にこれらを実行することができます。このワークフローにより、チームはゲームの再クックや再パッケージ化をせずに 
+一般的なビルドのデバッグやコード変更ができるようになります。 
+
+1. 使用する基本パッケージを PS4 にインストールします。
+1. **Development | PS4** あるいは **Debug Game | PS4** などのビルド コンフィギュレーションを選択します。
+1. Visual Studio の **[Solution Explorer]** ウィンドウでゲーム プロジェクトを右クリックし、**[Properties]** > **[Debugging]** を選択します。
+1. **[Debugger to launch]** ドロップダウンの選択項目を [PS4 Standard Debugger] から **[PS4 Application Debugger]** へ変更し、以下の欄に値を入力します。 
+	* **TitleID** -正しい TitleID に変更します。
+	* **Executable Load Location** - 次のいずれかを入力します。
+		* **Auto** - デプロイ済みパッケージ内で定義された .self を使用するように設定します。Visual Studio はバイナリがパッケージにビルドされるようにアタッチします。
+		* **Host** - 表示された **[Host Executable]** 欄の .self バイナリ ファイルをホスト PC から直にロードするように Visual Studio を指定します。ローカルにビルドしたバイナリは、例えば以下を使います。 
+			`MyGameProject\Binaries\PS4\MyGameProject.self` 
+		Visual Studio は、デプロイされたパッケージだけでなく、実行中のローカルマシン上でコンパイルされたバイナリにアタッチします。 
+		* **PS4** - "PS4 Executable" で指定したパスは PS4 のハードディスク上の **/data/** に関連していること以外は、[Host] オプションと同じです。このフォルダは、Windows Explorer の dev kit フォルダにマップされたネットワーク経由でアクセスできます。
+			Visual Studio は、デプロイされたパッケージだけでなく、ここで実行するように指定されたバイナリを起動およびアタッチします。 
+	* または、**[Executable Arguments]** にゲーム コマンドライン引数を追加することも可能です。
+1. Visual Studio で [PS4 Standard Debugger] を **[Play]** (緑)	矢印の隣の **PS4 Application Debugger** に変更します。		
+1. デバッグはショートカット **F5** でも開始することができます。 	
+
+
+[REGION:note]
+「Visual Studio からゲームを実行する」メソッドを使用する場合、留意すべき重要な点がいくつかあります。
+
+* 指定された .uproject ファイルは PS4 上の .self ファイルに関連し Visual Studio ディレクトリには関連しません。
+* `-filehostip` を使用するのは、**Cook On The Fly** メソッドを使用し、Cook Server の IP アドレスがゲームを実行中のハードウェアで表示されるように指定する場合のみです。 
+* Visual Studio はゲーム アセットをデプロイしないので、予めデプロイしておくか、または Cook On The Fly サーバーを使用する必要があります。 
+[/REGION]
+
+[COMMENT:none]
+-
+[REGION:tip]
+PS4 上では、ゲーム実行ファイルの拡張子は .self で、デバッグ シンボルのファイル拡張子は dwarf です。"elf" がクラッシュすると、原因を知るために dwarf が必要になります。
+[/REGION]
+-
+[/COMMENT]
+
+## Visual Studio からエディタを実行する
+
+エディタそのものを Visual Studio で実行するには、**Development Editor** や **Debug Editor** などの Win64 向けの "Editor" ビルド コンフィギュレーションでゲーム プロジェクトをビルドします。
+
+エディタが Visual Studio を実行中の場合は、**[Edit and Continue (編集して続行)]** を無効にしない限り、エディタからプロジェクト ランチャーを使ってゲームを実行することはできません。無効にするには、以下の操作を行います。
+**[Tools]** > **[Options]** > **[Debugging]** > **[General]** を選択し、**[Enable Edit and Continue]** のオプションのチェックを外します。
+[/EXCERPT:main]
+
+## 結果
+
+このステップでは、ゲームを実行する、あるいはエディタを実行して Visual Studio からゲームをデバッグする方法を説明しました。これらのメソッドは、理解を深め、
+PS4 Dev Kit へデプロイするコンテンツをデバッグしやすくします。  
+
+最後のステップへ進む 
+
+
+[nav]

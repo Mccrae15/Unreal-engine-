@@ -1,0 +1,111 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:PS4 개발 키트 연결
+Description:PlayStation 4 개발 키트 연결법입니다.
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version: 4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:2
+
+[nav]
+
+[EXCERPT:main]
+PS4 Neighborhood 또는 Device Manager 를 통해 PS4 에 연결하기 전, 먼저 사용가능 타겟 리스트에 개발 키트 추가 작업을, Neighborhood 에서 초기 구성해 줘야 합니다. 
+그 후 자신의 작업방식에 가장 잘 맞는 연결 방법을 선택하면 됩니다.
+
+## Neighborhood 에 PS4 추가
+
+![](PS4Neighborhood.png)(w:700)
+
+1. **Neighborhood for PlayStation 4** 어플리케이션을 연 뒤 **Navigate** 섹션에서 **Add Network Target** 을 클릭합니다.
+
+	![](AddNetworkTarget.png)(w:450)
+
+1. Network Target 창이 열립니다. 여기서 발견한 타겟을 선택하거나, 네트워크 상에서 개발 키트를 "발견"할 수 있는 **Host Adress** 를 지정해 주면 됩니다.
+	
+	![](SpecifyHostIP.png)(w:450)
+
+1. PS4 개발 키트를 "발견"했으면, **Status** 열에 "available"(사용가능), "unavailable"(사용불가), "connected"(연결됨). 
+	
+	[REGION:lightbox]
+	[![](PS4Status.png)(w:500)](PS4Status.png)
+	[/REGION]
+	[REGION:caption]
+	_클릭하면 이미지 원본을 확인합니다._
+	[/REGION]
+
+## Neighborhood 로 연결
+
+1. Neighborhood 로 연결하려면, 나열된 개발 키트에 우클릭한 뒤 메뉴에서 **Connect** 를 선택하면 됩니다.
+	
+	[REGION:lightbox]	
+	[![](PS4Connect.png)(w:500)](PS4Connect.png)
+	[/REGION]
+	[REGION:caption]
+	_클릭하면 이미지 원본을 확인합니다._
+	[/REGION]
+
+[REGION:note]
+Neighborhood 툴 관련 부가 정보는, [Sony Documentation](https://ps4.scedev.net/resources/documents/SDK/4.500/Neighborhood_and_Utilities-Users_Guide/__document_toc.html) 을 참고하시기 바랍니다.
+[/REGION]
+
+
+
+## UE4 의 디바이스 매니저로 연결
+
+![](DeviceManager.png)(w:700)
+
+1. UE4 에디터를 연 상태에서 두 가지 방법으로 디바이스 매니저에 접근할 수 있습니다. 하나는 메인 메뉴의 **창** > **개발자 툴** 에서 **디바이스 매니저** 를 선택하거나, 
+메인 툴바에서 **실행** 옆의 화살표를 클릭한 뒤, 메뉴 목록에서 **디바이스 매니저** 를 선택하면 됩니다.
+
+	[REGION:imagetable]
+	| ![](MainMenuDeviceManager.png)(w:325) | ![](ToolbarDeviceManager.png)(w:325) |
+	| --- | --- |
+	| 메인 메뉴 | 메인 툴바 |
+	[/REGION]
+	
+1. 디바이스 매니저에서 사용가능한 플랫폼 목록이 보입니다. PS4 가 디바이스 목록에 나열되어 있을 것입니다.
+	
+	[REGION:lightbox]
+	[![](DeviceManagerList.png)(w:500)](DeviceManagerList.png)
+	[/REGION]
+	[REGION:caption]
+	_클릭하면 이미지 원본을 확인합니다._
+	[/REGION]
+
+1. 연결하고자 하는 PS4 디바이스를 선택한 뒤, 메인 툴바에서 **Connect** (연결)을 선택하거나, 디바이스에 우클릭한 뒤 맥락 메뉴에서 **Connect** (연결)을 선택합니다.
+
+	[REGION:imagetable]
+	| ![](DMRightClickConnect.png)(w:350) | ![](DMToolbarConnect.png)(w:450) |
+	| --- | --- |
+	| 우클릭 맥락 메뉴 | 메인 툴바 |
+	[/REGION]
+	
+	이제 디바이스 목록 PS4 옆 **Status** 열에 "Connected" (연결됨)이 보일 것입니다.
+	
+	[REGION:lightbox]
+	[![](DM_Connected.png)(w:500)](DM_Connected.png)
+	[/REGION]
+	[REGION:caption]
+	_클릭하면 이미지 원본을 확인합니다._
+	[/REGION]
+[/EXCERPT:main]
+
+## 최종 결과
+
+[REGION:lightbox]
+[![](PS4Step2_EndResult.png)(w:1280)](PS4Step2_EndResult.png)
+[/REGION]
+[REGION:caption] 클릭하면 이미지 원본을 확인합니다. [/REGION]
+
+지금쯤 Neighborhood 에서 구성해 둔 타겟 개발 키트가 나열된 것이 보일 것이며, Neighborhood 또는 디바이스 매니저로 연결할 수 있을 것입니다.
+
+다음 단계에서는 가능한 빌드 작업과 여러가지 콘텐츠 쿠킹 방법을 살펴보고, 개발 키트에서 프로젝트를 디플로이하고 테스트하는 방법을 알아보겠습니다.
+
+
+[nav]

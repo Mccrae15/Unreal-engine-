@@ -1,0 +1,107 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:빌드 작업 및 콘텐츠 쿠킹
+Description:가능한 빌드 작업 방식을 통해 콘텐츠에 맞는 최적의 쿠킹 방법을 선택합니다.
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version: 4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:3
+
+[nav]
+
+[EXCERPT:main]
+모든 Build Operation (빌드 작업, 예를 들어 빌드, 쿠킹, 패키징, 디플로이, 실행)은 [Unreal Automation Tool](Programming/Automation) 을 통해 이루어집니다. 이 툴은 유효한 인수와 함께 
+명령줄에서도 사용 가능한데, 다음과 같습니다:
+
+`[UE4Directory]/Engine/Build/BatchFiles/RunUAT.bat`
+
+에디터에서 (**창** >) **프로젝트 런처** 를 사용하면, 명령줄을 대신 생성한 뒤 `RunUAT.bat` 에 자동으로 전해줍니다.
+
+[REGION:tip]
+에디터의 프로젝트 런처에서 프로파일을 실행하면 로그에 생성된 명령줄이 출력됩니다. **BuildCookRun** 이후의 텍스트는 `RunUAT.bat` 에 전달 가능합니다.
+[/REGION]
+
+**프로젝트 런처 생성 로그 출력**
+
+`Automation.ParseCommandLine: Parsing commandline: -ScriptsForProject=MyProject.uproject BuildCookRun -project=MyProject.uproject -clientconfig=Development ...`
+
+**그에 해당하는 명령줄**
+
+`[UE4Directory]/Engine/Build/BatchFiles/RunUAT.bat BuildCookRun -project=MyProject.uproject -clientconfig=Development`
+
+[REGION:tip]
+"실전 사례"로 보면, UAT 에 붙는 인수가 꽤 복잡할 수 있으므로, 프로젝트 런처의 커스텀 프로파일을 사용해서 빌드를 만들 것을 추천합니다. 명령줄에서 UAT 를 실행하는 것을 선호한다 할지라도, 
+가장 좋은 방법은 직접 작성하려 하는 것보다는, 최소한 프로젝트 런처를 사용하여 제대로 된 명령줄을 생성하는 것입니다.
+[/REGION]
+
+
+## 콘텐츠 쿠킹
+
+PS4 에서 콘텐츠를 사용하려면 반드시 쿠킹을 해야 합니다. [콘텐츠 쿠킹](Engine/Deployment/Cooking) 이란 파일들을 타겟 플랫폼에 최적화된 최종 포맷으로 컴파일 및 변환시키는 것을 말합니다.
+콘텐츠 쿠킹 작업은 **프로젝트 런처** 에서 두 가지 방법으로 가능한데, 하나는 **By the Book** 다른 하나는 **on the fly** 입니다. 
+
+프로젝트 런처는 메인 메뉴 > **창** > **프로젝트 런처** 에서 열 수 있습니다.
+
+![](ProjectLauncher.png)(w:700)
+
+이 쿠킹 메소드를 사용하려면, 먼저 **Custom Launch Profile** (커스텀 실행 프로파일)을 만들어줘야 합니다.
+
+### 커스텀 실행 프로파일
+
+1. 프로젝트 런처 창에서 **Custom Launch Profile** (커스텀 실행 프로파일) 섹션의 **추가** (**+**) 부호를 클릭합니다.
+
+	![](AddCustomLaunchProfile.png)(w:700)
+1. 같은 창에 보면 새로운 "커스텀 실행 프로파일"에 사용할 수 있는 옵션이 표시될 것입니다. 프로파일에 **이름** 및 필요한 경우 **프로젝트** 를 지정해 줘야 합니다.
+
+	![](NewCustomProfile.png)(w:700)
+
+1. 별도의 커스텀 실행 프로파일이 만들어졌으면, 아래 **Cook By the Book** 와 **Cook on the fly** 중에서 작업 환경과 개발상의 필요에 가장 잘 맞는 메소드를 선택합니다.
+
+## Cook By The Book
+
+콘텐츠 쿠킹을 **By the Book** 방식으로 한다는 것은, 쿠킹 전체를 미리 해 두어, 빌드가 쿠킹된 애셋을 한꺼번에 디플로이할 수 있도록 하는 것을 말합니다. 개별 애셋에 대한 반복작업을 하는 것이 아니거나, 
+서버에서 쿠킹된 콘텐츠를 로드할 때까지 기다릴 필요 없이 최대 속도로 게임을 실행시키고자 할 때 좋습니다. 보통 퍼포먼스 테스트나 플레이 테스트에서 이 메소드를 사용합니다.
+
+By the book 빌드 쿠킹을 하는 데는 별도의 작업이 필요치 않습니다. 프로젝트 런처에서 **커스텀 실행 프로파일** 아래 **Cook** 메소드 드롭다운 선택을 **By The Book** 으로 변경해 주면 됩니다.
+
+![](CookByTheBook.png)(w:900)
+
+
+## Cook On The Fly
+
+콘텐츠 쿠킹을 **on the fly** 방식으로 한다는 것은 쿠킹을 게임 디플로이 이후 시점으로 미룬다는 뜻입니다. 실행파일과 몇 가지 기본적인 파일만 설치한 뒤 Cook Server 와의 네트워크 통신으로 필요할 때마다 요청을 합니다.
+Cook on the fly 는 콘텐츠를 주기적으로 변경하는 작업을 하는 개발자의 빠른 반복작업이나, 게임의 특정 부분을 탐험하는 (즉 쿠킹할 필요가 없는) 경우에 좋습니다.
+
+Cook on the fly 를 위해서는, 전체 프로젝트가 들어있는 머신에서 Cook Server 를 실행시켜야 합니다. 로컬 머신이 될 수도 있고, 쿠킹을 하는 원격 서버가 될 수도 있습니다. Cook Server 는 
+UE4 에디터를 실행할 때 다음과 같은 명령줄로 실행 가능합니다:
+
+`UE4Editor-cmd.exe [fullAbsolutePathToProject.uproject] -run=cook -targetplatform=PS4 -cookonthefly`
+		
+개발자 머신에서 프로젝트 런처의 커스텀 실행 프로파일 아래, **Deploy** 메소드 드롭다운을 **File Server** 로 변경합니다. 드롭다운을 통해 타겟을 **Default Deploy Platform: PS4** 로 설정합니다.
+
+![](DeploySettings.png)(w:900)
+
+PS4 에서 실행파일을 실행한 상태에서, 쿠킹 서버를 실행중인 머신에서 IP 주소를 알 수 있도록 해줘야 합니다. 그 방법은 클라이언트 명령줄의 인수에 다음과 같이 붙여주면 됩니다 (x.x.x.x 는 호스트 IP 를 나타냅니다):
+
+`-filehostip=x.x.x.x`
+
+이 부분은 커스텀 실행 프로파일의 **Launch** (실행) 섹션 아래 **Additional Command Line Parameters** (부가 명령줄 인수) 부분에 지정할 수 있습니다. 기본값은 0.0.0.0 (로컬 호스트) 입니다.
+
+![](LaunchSettings.png)(w:900)
+[/EXCERPT:main]
+
+## 최종 결과
+
+![](ProjectLauncher_EndResult.png)(w:900)
+
+지금까지 사용할 수 있는 빌드 작업과 아울러 PS4 개발 키트에 디플로이할 콘텐츠 쿠킹 방식 설정을 위한 커스텀 실행 프로파일 구성 방법을 살펴봤습니다.
+다음 마지막 단계에서는 Visual Studio 에서 사용할 수 있는 디버깅 옵션에 대해 알아보겠습니다.
+
+
+
+[nav]

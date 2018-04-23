@@ -1,0 +1,55 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:追加情報
+Description:アンリアル エンジン 4 で PS4 を使用するための設定に関する追加情報およびクイック リファレンス
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version:4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:5
+
+
+[nav]
+
+[EXCERPT:main]
+アンリアル エンジン 4 で PlayStation 4 Developer Kit を使用するための設定に関する追加情報およびクイック リファレンスです。 
+
+## PlayStation 4 サポート ファイルへのアクセス方法
+
+[PUBLISH:rocket]
+1. PlayStation 4 デベロッパーとして登録をした時にエピック ゲームズから送られてきた FTP 認証を使って http://ftp.epicgames.com/ へログインします。
+1. FTP の **UE4PS4** ディレクトリから **PS4-xxxx.zip** (`xxxx` は同期した Github ブランチ) をダウンロードします。
+[/PUBLISH:rocket]
+
+[PUBLISH:licensee]
+PS4 へのアクセス権のあるアカウントをお持ちであれば、すべての PlayStation 4 サポート ファイルが表示されます。
+[/PUBLISH:licensee]
+
+## セットアップに関する注意
+
+* その他のプラットフォーム用に開発を行う場合、プロジェクト ファイルを生成する前にプラットフォームのすべての必要項目をインストールしてください。
+* プラットフォームがサポート対象かどうかは、プロジェクトファイル生成時にインストールされた SDK の種類によります。従って、SDK バージョンをアップデートする時は必ず `[UE4Directory]/GenerateProjectFiles.bat` を実行する必要があります。 
+* SDK をインストールする場合、SDK バージョンが `[UE4Directory]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs` ファイルの **PS4PlatformSDK::ExpectedSDKVersion** に割り当てられている値と一致していることを確認してください。
+
+## Visual Studio で Batch Building を使う
+
+ビルド プロセスを簡単にするために、**[Build]** メニューから **[Batch Build]** オプションを使ってプロジェクトのコンフィギュレーションを複数ビルドすることができます。 
+
+ステップ 6 の例は [必要な設定](Platforms/PS4/GettingStarted/1) を参照してください。
+
+## 追加のリソース
+
+* アンリアル エンジンの各バージョンに必要な SDK については [Release and HotFix Notes](Support/Builds) を参照してください。 
+* [PlayStation 4 Neighborhood ツールに関する Sony のドキュメント](https://ps4.scedev.net/resources/documents/SDK/4.500/Neighborhood_and_Utilities-Users_Guide/__document_toc.html)
+[PUBLISH:licensee]
+* PlayStation 4 サポート ファイルの Perforce アクセスに関する問題については、エピック ゲームズのアカウント責任者までお問合せください。 
+[/PUBLISH:licensee]
+[/EXCERPT:main]
+
+[nav]
+
+

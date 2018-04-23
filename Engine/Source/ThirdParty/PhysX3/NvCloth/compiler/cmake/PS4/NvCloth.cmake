@@ -1,0 +1,29 @@
+#
+# Build NvCloth
+#
+
+SET(GW_DEPS_ROOT $ENV{GW_DEPS_ROOT})
+
+SET(NVCLOTH_SOURCE_DIR ${PROJECT_SOURCE_DIR}/../../../)
+
+SET(LOWLEVEL_PLATFORM_INCLUDES
+	$ENV{SCE_ORBIS_SDK_DIR}/target/include
+)
+
+# Use generator expressions to set config specific preprocessor definitions
+SET(NVCLOTH_COMPILE_DEFS 
+	${NVCLOTH_PS4_COMPILE_DEFS};
+	
+	NV_ORBIS
+	NV_CLOTH_IMPORT=PX_DLL_EXPORT
+	NV_CLOTH_ENABLE_DX11=0
+	NV_CLOTH_ENABLE_CUDA=0
+
+	$<$<CONFIG:debug>:${NVCLOTH_PS4_DEBUG_COMPILE_DEFS};>
+	$<$<CONFIG:checked>:${NVCLOTH_PS4_CHECKED_COMPILE_DEFS};>
+	$<$<CONFIG:profile>:${NVCLOTH_PS4_PROFILE_COMPILE_DEFS};>
+	$<$<CONFIG:release>:${NVCLOTH_PS4_RELEASE_COMPILE_DEFS};>
+)
+
+# include common low level settings
+INCLUDE(../common/NvCloth.cmake)

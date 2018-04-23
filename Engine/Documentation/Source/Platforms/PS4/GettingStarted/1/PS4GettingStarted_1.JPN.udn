@@ -1,0 +1,91 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:必要なセットアップ
+Description:PlayStation 4 SDK をエンジンで使うために設定およびコンパイルする
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version:4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:1
+
+[nav]
+
+[EXCERPT:main]
+PlayStation 4 の開発を始める前に、PS4 SDK のインストールし、エンジンのソース ビルド設定、ビルドへの統合に必要な PS4 Support ファイルのインストールを行わなければなりません。
+
+[PUBLISH:licensee]
+1. [P4](GettingStarted/DownloadingUnrealEngine/Perforce/Basics) からアンリアル エンジン 4 のソースコードをダウンロードしてください。
+[/PUBLISH:licensee]
+[PUBLISH:rocket]
+1. [GitHub](https://github.com/EpicGames/UnrealEngine) からお持ちのアンリアル エンジン 4 のバージョンのソースコードをダウンロードしてください。
+
+	[REGION:note]
+	エピック ゲームズのランチャーで提供されているバイナリ版はコンソール開発をサポートしていません。 
+	[/REGION]
+[/PUBLISH:rocket]
+
+1. PS4 SDK をインストールし、SDK のバージョンが以下の場所にある **PS4PlatformSDK::ExpectedSDKVersion** に割り当てられている値と一致していることを確認してください。
+
+	`[UE4Directory]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs`
+
+	SDK をアップグレードするには、この値も更新する必要があります。 
+
+	[REGION:note]
+	PS4 SDK アンリアル エンジンのバージョンは、以下のファイルの `HasRequiredSDKsInstalled()` で確認できます。
+
+	`[UE4Directory]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs`
+
+	サポート対象および推奨プラットフォーム SDK の最新情報については、プロジェクトのバージョン [Release and HotFix notes](Support/Builds) をご覧ください。
+	[/REGION]
+[PUBLISH:rocket]
+
+1. http://ftp.epicgames.com/ へログインして、PS4 デベロパーの登録時にエピック ゲームズから与えられた FTP 認証情報を使ってログインし利用可能な PS4 サポートファイルをダウンロードします。FTP の **UE4PS4** ディレクトリから、**PS4-xxxx.zip** (`xxxx` は同期した Github ブランチ) をダウンロードします。
+[/PUBLISH:rocket]
+[PUBLISH:rocket]
+
+1. `setup.bat` を実行し **PS4-xxxx.zip** を `[UE4Directory]` ルート フォルダへ展開します。
+[/PUBLISH:rocket]	
+
+1. `[UE4Directory]/GenerateProjectFiles.bat` を実行します。このステップは、必要な PS4 Support ファイルがインストール済みであることがわかるように SDK のインストール後に行います。 
+
+1. エディタ、関連ツール、プロジェクトをコンパイルします。以下のターゲットから始めてみると良いでしょう。
+
+	| ターゲット| コンフィギュレーション| プラットフォーム|
+	| ------ | ------ | -------- |
+	| [ProjectName] | Development Editor | Win64 |
+	| PS4DevKitUtil | Development Editor | Win64 |
+	| ShaderCompileWorker | Development Editor | Win64 |
+	| UnrealFrontend | Development Editor | Win64 |
+	| [ProjectName] | Development | PS4 |
+
+	[REGION:tip]
+	また、Visual Studio の **Batch Build** 機能を使うと、こうしたプロジェクトをさらに簡単にビルドすることができます。手順は以下の通りです。
+
+	1. * **[Build (ビルド)]** メニューから **[Build (ビルド)] > [Batch Build]** の順序で選択します。
+
+	1. 以下のオプションを設定します。
+
+		| ターゲット| コンフィギュレーション| プラットフォーム|
+		| ------ | ------ | -------- |
+		| [ProjectName] | Development_Editor | x64 |
+		| PS4DevKitUtil | Development Editor | Win64 |
+		| ShaderCompileWorker | Development_Editor | x64 |
+		| UnrealFrontend | Development Editor | x64 |
+		| [ProjectName] | Development | ORBIS |
+
+	1. **[Build]** ボタンまたは **[Rebuild]** ボタンをクリックして、エディタ、関連ツール、プロジェクトをコンパイルします。
+	[/REGION]
+
+[/EXCERPT:main]
+
+## 結果
+
+以上の手順により、PlayStation 4 SDK のインストール、GitHub あるいはエピック ゲームズ Perforce レポジトリからエンジンの新規ソースビルドの設定、
+すべて一緒に機能して正しいコンパイルを行うために必要な PS4 Support ファイルの統合が完了しました。次のステップでは、ビルドをエディタから PS4 Dev Kit へデプロイするために PS4 への接続を設定します。 
+
+
+[nav]

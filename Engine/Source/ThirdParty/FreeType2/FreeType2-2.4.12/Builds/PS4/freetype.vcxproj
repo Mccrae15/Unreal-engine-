@@ -1,0 +1,126 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|ORBIS">
+      <Configuration>Debug</Configuration>
+      <Platform>ORBIS</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ORBIS">
+      <Configuration>Release</Configuration>
+      <Platform>ORBIS</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCTargetsPath Condition="'$(VCTargetsPath11)' != '' and '$(VSVersion)' == '' and '$(VisualStudioVersion)' == ''">$(VCTargetsPath11)</VCTargetsPath>
+    <ProjectGuid>{0C69612E-5E04-4D6C-8F92-32F59A4AD00E}</ProjectGuid>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Condition="'$(DebuggerFlavor)'=='ORBISDebugger'" Label="OverrideDebuggerDefaults">
+    <!--LocalDebuggerCommand>$(TargetPath)</LocalDebuggerCommand-->
+    <!--LocalDebuggerCommandArguments></LocalDebuggerCommandArguments-->
+    <!--LocalDebuggerTarget></LocalDebuggerTarget-->
+    <!--LocalDebuggerWorkingDirectory>$(ProjectDir)</LocalDebuggerWorkingDirectory-->
+    <!--LocalRunCommandLine></LocalRunCommandLine-->
+  </PropertyGroup>
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+    <OutDir>.\..\..\Lib\PS4\</OutDir>
+    <IntDir>.\..\..\objs\$(Configuration)_PS4\</IntDir>
+    <TargetName>libfreetype2412</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+    <OutDir>.\..\..\Lib\PS4\</OutDir>
+    <IntDir>.\..\..\objs\$(Configuration)_PS4\</IntDir>
+    <TargetName>libfreetype2412_D</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions);FT2_BUILD_LIBRARY</PreprocessorDefinitions>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories>..\..\include</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Lib>
+      <OutputFile>.\..\..\Lib\PS4\$(TargetName).a</OutputFile>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions);FT2_BUILD_LIBRARY</PreprocessorDefinitions>
+      <OptimizationLevel>Level2</OptimizationLevel>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories>..\..\include</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Lib>
+      <OutputFile>.\..\..\Lib\PS4\$(TargetName).a</OutputFile>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\Include\freetype\config\ftconfig.h" />
+    <ClInclude Include="..\..\Include\freetype\config\ftheader.h" />
+    <ClInclude Include="..\..\Include\freetype\config\ftmodule.h" />
+    <ClInclude Include="..\..\Include\freetype\config\ftoption.h" />
+    <ClInclude Include="..\..\Include\freetype\config\ftstdlib.h" />
+    <ClInclude Include="..\..\Include\ft2build.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\Src\autofit\autofit.c" />
+    <ClCompile Include="..\..\Src\base\ftbase.c" />
+    <ClCompile Include="..\..\Src\base\ftbbox.c" />
+    <ClCompile Include="..\..\Src\base\ftbitmap.c" />
+    <ClCompile Include="..\..\Src\base\ftdebug.c" />
+    <ClCompile Include="..\..\Src\base\ftfstype.c" />
+    <ClCompile Include="..\..\Src\base\ftgasp.c" />
+    <ClCompile Include="..\..\Src\base\ftglyph.c" />
+    <ClCompile Include="..\..\Src\base\ftgxval.c" />
+    <ClCompile Include="..\..\Src\base\ftinit.c" />
+    <ClCompile Include="..\..\Src\base\ftlcdfil.c" />
+    <ClCompile Include="..\..\Src\base\ftmm.c" />
+    <ClCompile Include="..\..\Src\base\ftotval.c" />
+    <ClCompile Include="..\..\Src\base\ftpatent.c" />
+    <ClCompile Include="..\..\Src\base\ftpfr.c" />
+    <ClCompile Include="..\..\Src\base\ftstroke.c" />
+    <ClCompile Include="..\..\Src\base\ftsynth.c" />
+    <ClCompile Include="..\..\Src\base\ftsystem.c" />
+    <ClCompile Include="..\..\Src\base\fttype1.c" />
+    <ClCompile Include="..\..\Src\base\ftwinfnt.c" />
+    <ClCompile Include="..\..\Src\base\ftxf86.c" />
+    <ClCompile Include="..\..\Src\bdf\bdf.c" />
+    <ClCompile Include="..\..\Src\cache\ftcache.c" />
+    <ClCompile Include="..\..\Src\cff\cff.c" />
+    <ClCompile Include="..\..\Src\cid\type1cid.c" />
+    <ClCompile Include="..\..\Src\gzip\ftgzip.c" />
+    <ClCompile Include="..\..\Src\lzw\ftlzw.c" />
+    <ClCompile Include="..\..\Src\pcf\pcf.c" />
+    <ClCompile Include="..\..\Src\pfr\pfr.c" />
+    <ClCompile Include="..\..\Src\psaux\psaux.c" />
+    <ClCompile Include="..\..\Src\pshinter\pshinter.c" />
+    <ClCompile Include="..\..\Src\psnames\psmodule.c" />
+    <ClCompile Include="..\..\Src\raster\raster.c" />
+    <ClCompile Include="..\..\Src\sfnt\sfnt.c" />
+    <ClCompile Include="..\..\Src\smooth\smooth.c" />
+    <ClCompile Include="..\..\Src\truetype\truetype.c" />
+    <ClCompile Include="..\..\Src\type1\type1.c" />
+    <ClCompile Include="..\..\Src\type42\type42.c" />
+    <ClCompile Include="..\..\Src\winfonts\winfnt.c" />
+  </ItemGroup>
+  <Import Condition="'$(ConfigurationType)' == 'Makefile' and Exists('$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets')" Project="$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

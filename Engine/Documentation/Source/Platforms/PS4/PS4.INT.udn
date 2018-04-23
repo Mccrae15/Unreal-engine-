@@ -1,0 +1,17 @@
+Availability:Licensee
+Title:PlayStation 4 Platform
+Crumbs:%ROOT%, Platforms
+Description:Developing games for PlayStation 4 consoles.
+Platform:PS4
+Navigation:platform
+type:landing
+parent:Platforms
+tags:Console
+
+## Starting Out
+
+[DIR(output:"topic" parent:"Platforms/PS4" type:"quick start" type:"landing")]
+
+## PS4 Development Topics
+
+[DIR(output:"topic" parent:"Platforms/PS4" type:"landing,overview,reference,how-to" end:"1")]

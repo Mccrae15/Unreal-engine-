@@ -1,0 +1,174 @@
+﻿INTSourceChangelist:3612834
+Availability: Licensee
+Crumbs: %ROOT%
+Title: PlayStation VR 의 Virtual Reality Spectator Screen
+Description: 언리얼 엔진 4 의 PlayStation VR 용 Virtual Reality Spectator Screen, 가상 현실 관람자 화면 기능에 대한 개요입니다.
+Type: Overview
+SkillLevel: Advanced
+Version: 4.17
+Parent: Platforms/PS4/PSVR
+Order: 
+Tags: VR
+Tags: PSVR
+topic-image:VRSpecScreen_topic_image.png
+social-image:VRSpecScreen_topic_image.png
+Contributors: Ghost Paint
+
+[TOC(start:2 end:2)]
+
+[EXCERPT:SpectatorScreen_Overview_1]
+다른 사람이 가상 현실(VR) 환경에 (1인칭 시점으로) 처한 상태에서 (3인칭 시점으로) 관람자가 되기를 원했던 적이 있다면, 언리얼 엔진 4(UE4) 의 
+**VR Spectator Screen** (VR 관람자 화면) 기능이 딱입니다. VR 관람자 화면을 실행한 상태에서 컴퓨터 모니터(나 TV)로 다른 플레이어를 관찰할 수 있으므로, 
+몰입형 VR 체험의 피드백을 수집할 때 좋습니다.
+
+<sub>_[GhostPaint.com](http://ghostpaint.com/)_의 Images Courtesy</sub>  
+[REGION:imagetable]
+| ![VRSpecScreen.png](VRSpecScreen.png)(w:600) | ![VRPlayerPerspectiveScreen.png](VRPlayerPerspectiveScreen.png)(w:600) |
+| --- | --- |
+| VR 관람자 화면 시점 | VR 플레이어 HMD 시점 |
+[/REGION]
+_왼쪽은 아티스트가 VR 에서 벽돌 벽을 칠하는 것을 관람자가 보고 있는 반면, 오른쪽은 아티스트가 VR 에서 페인트 작업에 집중하고 있습니다. _  
+
+헤드 마운트 디스플레이(HMD) 제조사에 따라, VR Spectator Screen (VR 관람자 화면)은 VR Social Screen (VR 소셜 화면)과, VR Spectator Mode (VR 관람자 모드)는 VR Mirror Mode (VR 미러 모드)와 동의어가 될 수 있습니다. 
+이 문서 맥락 안에서 **Spectator Screen** (관람자 화면)은 VR 디바이스에 연결된 (컴퓨터 모니터나 TV 같은) 표준 출력 장치입니다. 추가로, 
+**Spectator Mode** (관람자 모드)를 켠다는 것은 플레이어가 HMD 를 사용하여 VR 환경에 있는 동안 그 VR 체험을 관찰(, 특정 상황에서 접)할 수 있다는 뜻입니다.
+
+## 지원 플랫폼
+
+현재 UE4 의 관람자 화면 모드를 지원하는 플랫폼은 다음과 같습니다:
+
+* [HTC Vive](https://www.vive.com/us/) 
+* [Oculus Rift](https://www.oculus.com/rift/)  
+* [Steam VR](http://store.steampowered.com/steamvr) 
+* [PlayStation VR (PS VR)](https://www.playstation.com/en-us/explore/playstation-vr/?emcid=pa-pe-97928)  
+
+이 기능은 다른 PC 디바이스 및 콘솔에서 지원할 수는 있지만, 모바일 VR 디바이스(플랫폼)에서도 지원하지는 못할 것으로 예상하고 있습니다.
+
+## 관람자 화면 모드 시작하기
+
+[REGION:tip]
+PS VR 을 제외하고 관람자 화면 모드는 UE4 에 기본으로 켜집니다.
+[/REGION]
+
+관람자 화면 모드에서 텍스처 작업을 할 때, 좌상단 좌표는 최소 좌표값을, 우하단 좌표는 최대 좌표값을 나타냅니다.
+
+![](VRSpec_BPTextureCoordinate.png)
+[/EXCERPT:SpectatorScreen_Overview_1]
+##Spectator Screen 블루프린트 노드
+
+사용 예로, 다음과 같은 블루프린트 인터페이스를 사용하고 있습니다:
+
+| 노드 | 설명 |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **[](Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenTexture)**                  | %Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenTexture:description%                  |
+| **[](Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenModeTexturePlusEyeLayout)** | %Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenModeTexturePlusEyeLayout:description% |
+| **[](Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenMode)**                     | %Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenMode:description%                     |
+[EXCERPT:SpectatorScreen_Overview_2]
+###사용 예
+
+1.	관람자 화면을 지원하는 플랫폼 중 하나에 대한 VR 프로젝트를 셋업합니다.
+
+[PUBLISH:Licensee]
+
+	[REGION:note]
+	다음은 PS VR 용 단계별 안내입니다.
+	[/REGION]
+
+1.	PS VR 의 경우 **프로젝트 세팅** 창을 열고, **Plugins** 메뉴에서 **Morpheus** 메뉴를 찾습니다.
+
+	![](VR_SpecPSVRSetting_Disabled.png)
+
+1.	PS VR 에 관람자 화면 모드를 켜려면, **Enable Social Screen Separate Mode** 옆 박스를 체크합니다.
+
+	![](VR_SpecPSVRSetting_Enabled.png)
+
+	[REGION:note]
+	미러링은 PS VR 하드웨어 자체적으로 지원합니다. 즉 추가 비용 없이 HMD 디스플레이가 TV 로 미러링된다는 뜻입니다.
+	[/REGION]
+[/PUBLISH:Licensee]
+
+1.	이제 새 블루프린트 스크립트를 만들어, 관람자 화면에 렌더링하려는 이미지를 지정해야 합니다. 예시를 위해, 다음 블루프린트 노드는 세 가지 키보드 입력에 반응합니다:
+
+	1.	예로, **1** 키를 누르면 첫 번째 블루프린트 노드는 스태틱 텍스처를 지정하고, 텍스처 영역에 그립니다.
+
+		![](VRSpec_BP_1.png)
+
+	2.	**2** 키를 누르면 두 번째 블루프린트 노드는 레이아웃을 지정하고, 여기에 HMD 아이 뷰가 전체 화면에 그려집니다 (텍스처는 화면 좌상단 사분면에 그려집니다). 추가로, 이 노드는 눈 레이아웃을 먼저 그리도록 하면서 텍스처 레이아웃을 지정합니다.
+
+		![](VRSpec_BP_2.png) 
+
+		눈 및 텍스처 사각형 최소 및 최대 값은 `[0.0, 1.0]` 범위로 정규화됩니다. 
+		
+	3.	마지막으로 **3** 키를 누르면, 세 번째 블루프린트 노드가 **TexturePlusEye** 모드를 활성화( 및 전환)시킵니다.
+
+		![](VRSpec_BP_3.png)
+
+### 최종 결과
+
+요약하면, 새 블루프린트는 사용하고자 하는 관람자 화면 모드 및 관람자 화면의 (눈과 텍스처 레이아웃을 포함한) 텍스처를 설정합니다.
+
+![](VRSpec_BP.png)
+
+텍스처가 (**SceneCaptureComponent2D** 에서 쓰기 대상으로 삼을 수 있는) 렌더 타겟, 또는 유저 인터페이스 엘리먼트에 대한 컨테이너 역할을 할 수는 있지만, 여기서 한 가지 중요한 점은 **SceneCapture** 계산 비용이 비쌀 수 있다는 점 유의하시기 바랍니다.
+
+[REGION:tip]
+런타임에 다양한 텍스처 또는 레이아웃을 테스트하려면, 관람자 모드 활성화 상태에서 텍스처를 (또는 레이아웃까지도) 전환하면 됩니다.
+[/REGION]
+
+## 모드 전환
+
+새로운 관람자 화면 모드로 전환하려는 경우, 콘솔을 열고 `vr.SpectatorScreenMode` **Value** 를 입력하면 됩니다. 예로 `vr.SpectatorScreenMode 2` 는 **Distorted** (디스토션) 모드로, 현재 Oculus Rift 에 지원되고 있습니다.
+
+![](VRSpec_CVarExample.png)
+
+### 지원 모드
+
+플랫폼에 따라 화면 관람자 모드가 지원되는 것이 다른데, 다음과 같습니다:
+
+|Value|Mode| Oculus Rift | SteamVR | PS VR | 주 |
+|-----|----|------------ |-------- |------ |------ |
+|**0**| Disabled | &#x2713; | &#x2713; | | HMD 최고 퍼포먼스를 위해 관람자 화면 출력을 끄는 모드입니다. |
+|**1**| SingleEyeLetterboxed | &#x2713; | &#x2713; | &#x2713; | 주로 디버깅에 사용되는 모드로, 화면에 한쪽 레터박스 적용된 눈만 표시합니다. |
+|**2**| Undistorted |  &#x2713;| &#x2713; | &#x2713; | 디버그 모드로, 양쪽 눈에 대한 전체 렌더링 영역을 표시합니다. |
+|**3**| Distorted | &#x2713; | | | Oculus 에만 지원되는 모드입니다. 구체적으로, Oculus 전용 디버그 모드로, 색수차 등을 표시합니다. |
+|**4**| SingleEye | &#x2713; | &#x2713; | &#x2713; | **Undistorted** 모드와 매우 유사하게, 한쪽 눈에 대한 디버그 모드입니다. 이 모드에서는 씬이 늘어지므로, 씬의 작은 부작용을 식별하기에도 좋을 수 있습니다. |
+|**5**| SingleEyeCroppedToFit | &#x2713; | &#x2713; | &#x2713; | 눈을 크롭하여 전체 화면을 채우는 모드입니다. |
+|**6**| Texture | &#x2713; | &#x2713; | &#x2713; | 지정된 **UTexture** 전체 화면 뷰를 표시하는 모드입니다. |
+|**7**| TexturePlusMirror | &#x2713; | &#x2713; | &#x2713; | 하나의 렌더 사각형에 텍스처를, 다른 렌더 사각형엔 눈을 표시하는 모드입니다. |
+|**8**| ViewPort | | | | 현재는 아니지만 앞으로 지원할 모드입니다. (분할 화면 멀티플레이어 게임처럼) 분할 화면 출력을 렌더링하는 모드로, 사용자 한명은 HMD 이고 다른 한 명은 관람자인 모드입니다. |
+
+## 관람자 화면 모드 최적화
+
+현재 관람자 화면 모드의 표준 최적화 세팅은 없습니다. 관람자 화면 모드에 쓸 최적화 솔루션을 자체적으로 구현하려면, (VR 어플리케이션을 60, 90, 120 fps 로 실행한다 가정하고) 30 fps 로 씬 캡처를 할 것을 추천합니다.
+또한, 관람자 화면 출력은 30 fps 로 제한할 것을 추천합니다. 특정 하드웨어에서 관람자 화면 출력을 제한하려 하는 경우, VR 프레임 속도가 90 fps 로 실행되는 경우 
+(기본적으로 세 프레임마다 한 프레임씩 드랍되는) 렌더링 이슈가 생길 수 있다는 점 유의하시기 바랍니다.
+
+[PUBLISH:Licensee]
+
+## PS VR 주의사항
+
+PS VR 플랫폼 전용 (구체적으로 PS VR 개발 키트 디버그 기능 관련) 주의사항은 다음과 같습니다:
+
+*	현재 PS VR 은 기본 하드웨어 지원 모드 및 PlayStation 의 기술적 요구사항 확인표(TRC)에 따라 **Disabled** 모드를 구현하지 않습니다.
+*	중요한 점 한가지, PS VR 은 **SingleEyeCroppedToFit** 모드에 대해 내장 하드웨어 지원 미러링을 사용합니다. 하드웨어 지원 미러링은 PS VR 에 지원되지 않는 모드에 대한 예비 모드 역할을 하기도 합니다. **SingleEyeCroppedToFit** 모드가 유연하지 않기는 하지만, 추가적인 계산 비용이 발생하지는 않습니다.
+*	**Undistorted** 모드에서 관람자 화면을 실행시키면 보이는 것과 비슷하게, PS VR 에는 디버그 세팅이 있어 PlayStation 하드웨어가 양쪽 눈에 렌더링되는 전체 영역을 표시하도록 할 수 있습니다. PS VR 디버그 세팅을 켜려면, **DebugSettings > PlayStationVR > SocialScreenOutputSettingForDebug=Bypass** 를 설정하면 됩니다. 
+*	개발 키트에서 다른 모드를 사용하는 도중 기본적으로 하드웨어 지원 미러링을 사용하도록 하려면, **IgnoreSocialScreenSeparateMode** 세팅을 true 로 설정하면 됩니다. 
+
+### PS VR 용 최적화
+
+[REGION:note]
+PS VR 을 제외하고, 다른 모든 플랫폼은 관람자 화면 모드에서 최대 VR 프레임 속도로 출력됩니다.
+[/REGION]
+
+현재, PS VR 의 관람자 화면(PS VR 플랫폼에서는 소셜 화면) 출력은 초당 30 프레임(fps), 즉 소스를 소셜 화면에 복사하는 작업도 30 fps 속도로 벌어지고 있다는 뜻입니다.
+PS VR 디바이스가 관람자 화면 출력을 60 fps 로 하도록 하려면, Sony 측의 문서를 참고해 주세요.
+
+[/PUBLISH:Licensee]
+
+## 현재 알려진 이슈
+
+현재 작업중인 이슈는 다음과 같습니다:
+
+* 실행시간에 생성된 렌더 타겟이 한 프레임 지나기 전까지 관람자 텍스처에 할당되지 않아, 어플리케이션 첫 프레임 렌더링이 이미 완료되기 전까지 소리없이 실패하는 문제가 있습니다.
+* 현재 렌더 타겟이 관람자 텍스처에 할당되어있던 상태에서 소멸(해제)되면, 어플리케이션 크래시가 날 수 있습니다.
+[/EXCERPT:SpectatorScreen_Overview_2]

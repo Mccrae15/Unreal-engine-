@@ -1,0 +1,62 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:PlayStation VR 操作ガイド
+Crumbs:%ROOT%, Platforms
+Description:PlayStation 4 コンソール向け VR ゲーム開発のガイド
+Platform:PS4
+Navigation:platform
+type:how-to
+parent:Platforms/PS4/PSVR
+order:2
+version:4.13
+tags:VR
+tags:PlayStation VR
+topic-image:Platforms/PS4/PSVR/HowTo/PSVRMotionControllers/PSVR_MC_Header_Image.png
+
+
+![](PSVR_Header_Image_00.png)
+
+この **PlayStation Virtuality の操作ガイド** のページでは、UE4 で PlayStation VR を使う方法をサンプルを使いながら順を追って説明します。モーション コントローラーの設定からレンダリング オプションの調整まで、順番に説明します。詳細情報を参照できるように、リファレンスへのリンクも紹介します。
+
+## 初心者向け
+[REGION:wrapper transparent]
+[](FANCY:Platforms\PS4\PSVR\HowTo\PSVRMotionControllers "%Platforms\PS4\PSVR\HowTo\PSVRMotionControllers:description%")
+[/REGION]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

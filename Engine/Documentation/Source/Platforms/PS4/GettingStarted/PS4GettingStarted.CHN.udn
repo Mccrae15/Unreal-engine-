@@ -1,0 +1,44 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:PlayStation 4 开发快速入门
+Description:在 PlayStation 4 上设置并运行虚幻引擎 4 的指南。 
+Crumbs:%ROOT%
+Parent:Platforms/PS4
+Order:1
+Version:4.16
+Tags:Platform
+Type:quick start
+type:landing
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Related:Engine/Deployment
+topic-image:PS4GettingStarted_Topic.png
+
+[REGION:banner]
+![](PS4GettingStarted_Banner.png)
+[/REGION]
+
+
+在虚幻引擎 4 中开始 PlayStation 4 开发之前，首先要对所有必需内容进行设置，然后连接到开发机。 
+此指南将详解开发和部署版本到 PlayStation 4 的所有必要步骤。
+
+## 目标
+
+此指南将指导您在虚幻引擎 4 中设置并进行 PlayStation 4 开发。
+
+## 目的
+
+在此教程的学习中您将了解以下内容： 
+
+* 如何用 UE4 设置并编译 PS4 SDK。
+* 如何连接至 PS4，部署并测试游戏。
+* 如何使用版本操作，烘焙 PS4 使用的内容。
+* 运行游戏或编辑器时如何从 Visual Studio 中进行调试。 
+
+## 步骤
+
+[DIR(output:"checkpoint" parent:"Platforms/PS4/GettingStarted" org:"hierarchy")]
+	
+[REGION:call_to_action]
+	[Click to Start](Platforms\PS4\GettingStarted\1 "%Platforms\PS4\GettingStarted\1:title%")
+[/REGION]

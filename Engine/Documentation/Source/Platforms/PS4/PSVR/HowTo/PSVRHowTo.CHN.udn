@@ -1,0 +1,62 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:PlayStation VR 指南
+Crumbs:%ROOT%, Platforms
+Description:PlayStation 4 主机 VR 游戏的开发指南。
+Platform:PS4
+Navigation:platform
+type:how-to
+parent:Platforms/PS4/PSVR
+order:2
+version:4.13
+tags:VR
+tags:PlayStation VR
+topic-image:Platforms/PS4/PSVR/HowTo/PSVRMotionControllers/PSVR_MC_Header_Image.png
+
+
+![](PSVR_Header_Image_00.png)
+
+**PlayStation VR 指南** 页面中有含详细步骤的范例，说明如何在 UE4 中使用 PlayStation VR。从设置运动控制器到调整渲染选项，这些页面将对每一步进行指导。此外还可通过提供的参考链接了解详细文档或更多信息。
+
+## 初级
+[REGION:wrapper transparent]
+[](FANCY:Platforms\PS4\PSVR\HowTo\PSVRMotionControllers "%Platforms\PS4\PSVR\HowTo\PSVRMotionControllers:description%")
+[/REGION]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

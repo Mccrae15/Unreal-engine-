@@ -1,0 +1,22 @@
+﻿# OnlineSubsystemPS4 Portuguese (Brazil) translation.
+# Copyright 1998-2017 Epic Games, Inc. All Rights Reserved.
+# 
+msgid ""
+msgstr ""
+"Project-Id-Version: OnlineSubsystemPS4\n"
+"POT-Creation-Date: 2017-06-08 04:32\n"
+"PO-Revision-Date: 2017-06-08 04:32\n"
+"Language-Team: \n"
+"Language: pt-BR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+#. Key:	OnlineServiceName
+#. SourceLocation:	Plugins/Online/PS4/OnlineSubsystemPS4/Source/Private/OnlineSubsystemPS4.cpp:912
+#: Plugins/Online/PS4/OnlineSubsystemPS4/Source/Private/OnlineSubsystemPS4.cpp:912
+msgctxt "OnlineSubsystemPS4,OnlineServiceName"
+msgid "PlayStation{0}Network"
+msgstr ""
+

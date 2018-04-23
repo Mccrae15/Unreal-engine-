@@ -1,0 +1,51 @@
+﻿INTSourceChangelist:3339906
+Availability:Licensee
+Title:PlayStation VR 开发
+Crumbs:%ROOT%, Platforms
+Description:开发 PlayStation 4 主机的 VR 游戏。
+Platform:PS4
+Navigation:platform
+type:landing
+parent:Platforms/PS4
+version:4.13
+tags:VR
+tags:PSVR
+
+![](PSVR_Header_Image.png)
+
+Playstation VR 的内容开发与 Playstation 4 的内容开发相似。然而需要对 UE4 项目进行一些操作，使其与 PlayStation VR 兼容。以下部分将说明如何设置 UE4 项目，使其与 PlayStation VR 头戴显示器兼容。
+
+[DIR(end:"1" output:"topic" parent:"Platforms/PS4/PSVR")]
+
+[COMMENT:none]
+
+## 开始
+
+PlayStation VR 快速入门将助您设置项目，使其与 PlayStation VR 兼容。
+
+[DIR(output:"topic" type:"quickstart" parent:"Platforms/PS4/PSVR")]
+
+## 指南
+
+PlayStation VR 指南中包含带详细步骤的范例，说明如何使用 PS VR 的软硬件。
+
+[DIR(end:"1" output:"topic" type:"how-to" parent:"Platforms/PS4/PSVR")]
+
+## 参考 
+
+PlayStation VR 参考页面讲解 PS VR 的可用选项，以及在 PS VR 项目中的使用时机和方法。
+
+[DIR(output:"topic" type:"reference" parent:"Platforms/PS4/PSVR")]
+
+[/COMMENT]
+
+[COMMENT:none]
+--- Will add this section at a later date and time.
+## PlayStation VR 提示和技巧
+
+PlayStation VR 提示和技巧部分包含如何加快 PlayStation VR 开发的信息，以及常见 bug 和修复方法的信息。
+
+
+
+[/COMMENT]
+

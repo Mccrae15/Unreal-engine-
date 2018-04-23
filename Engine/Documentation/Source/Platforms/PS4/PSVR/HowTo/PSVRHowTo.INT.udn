@@ -1,0 +1,61 @@
+Availability:Licensee
+Title:PlayStation VR How To's
+Crumbs:%ROOT%, Platforms
+Description:A guide for developing VR games for PlayStation 4 consoles.
+Platform:PS4
+Navigation:platform
+type:how-to
+parent:Platforms/PS4/PSVR
+order:2
+version: 4.13
+tags: VR
+tags: PlayStation VR
+topic-image:Platforms/PS4/PSVR/HowTo/PSVRMotionControllers/PSVR_MC_Header_Image.png
+
+
+![](PSVR_Header_Image_00.png)
+
+The **PlayStation VR - How To** pages provide step -by-step examples on how to work with PlayStation VR inside of UE4. From setting up Motion Controllers to adjusting rendering options, these pages will guide you each step of the way. Reference links will also be provided for more detailed documentation or further information.
+
+## Beginner
+[REGION:wrapper transparent]
+[](FANCY:Platforms\PS4\PSVR\HowTo\PSVRMotionControllers "%Platforms\PS4\PSVR\HowTo\PSVRMotionControllers:description%")
+[/REGION]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

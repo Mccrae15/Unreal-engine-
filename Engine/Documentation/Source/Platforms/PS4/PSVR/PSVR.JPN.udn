@@ -1,0 +1,51 @@
+﻿INTSourceChangelist:3339906
+Availability:Licensee
+Title:PlayStation VR 開発
+Crumbs:%ROOT%, Platforms
+Description:PlayStation 4 コンソール向け VR ゲームの開発
+Platform:PS4
+Navigation:platform
+type:landing
+parent:Platforms/PS4
+version:4.13
+tags:VR
+tags:PSVR
+
+![](PSVR_Header_Image.png)
+
+Playstation Virtual Reality もしくは Playstation VR 向けコンテンツの開発は、Playstation 4 向けコンテンツの開発と似ています。ただし、Playstation VR が確実に使えるようにするために、UE4 プロジェクトにいくつか設定が必要になります。次のセクションでは、Playstation VR 用 HMD が使えるように UD4 を設定する方法を説明します。
+
+[DIR(end:"1" output:"topic" parent:"Platforms/PS4/PSVR")]
+
+[COMMENT:none]
+
+## はじめよう
+
+UE4 プロジェクトを設定して、PlayStation VR を PlayStaton 4 で使う方法を説明します。
+
+[DIR(output:"topic" type:"quickstart" parent:"Platforms/PS4/PSVR")]
+
+## ガイド
+
+PlayStation VR 向けハードウェアとソフトウェアの操作方法をサンプルを使って順を追って説明します。
+
+[DIR(end:"1" output:"topic" type:"how-to" parent:"Platforms/PS4/PSVR")]
+
+## リファレンス 
+
+PlayStation VR で使用できるオプション、それらを PlayStation VR プロジェクトで使う方法とタイミングに関するリファレンスを紹介します。
+
+[DIR(output:"topic" type:"reference" parent:"Platforms/PS4/PSVR")]
+
+[/COMMENT]
+
+[COMMENT:none]
+--- Will add this section at a later date and time.
+## PlayStation VR のヒントとコツ
+
+PlayStation VR 開発をスピードアップし、直面する可能性のある最も一般的なバグ情報および回避方法を説明しています。
+
+
+
+[/COMMENT]
+

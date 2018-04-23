@@ -1,0 +1,70 @@
+Availability:Licensee
+Title:Media Framework PS4
+Crumbs:%ROOT%, Platforms, Platforms/PS4
+Description:Describes PS4 specific considerations with using Media Framework for video playback.
+Platform:PS4
+parent:Platforms/PS4
+order:2
+Version: 4.13
+Related: Engine\MediaFramework\Overview
+Related: Engine\MediaFramework\HowTo
+Related: Engine\MediaFramework\TechReference
+
+This page consists of PS4 related aspects of development when using the **Media Framework** in Unreal Engine 4. 
+
+[REGION:note]
+Please see the [Media Framework](Engine\MediaFramework\Overview) page for more generalized information. 
+[/REGION]
+
+
+## Enabling the PS4Media Player
+
+The PS4Media player plug-in is disabled by default and must be enabled in the project’s [Plugin Settings](Programming/Plugins/).
+
+The video decoder on PS4 consumes a lot of Onion memory, especially with HLS. You may run out of memory when trying to play more than one video at the same time, because we allocate only 200 MB by default. 
+Currently, these default settings are not exposed in the UI but you can modify them by hand.
+
+To enable, add the following to the **PS4Engine.ini**: 
+
+	[SystemSettings]
+	r.GarlicHeapSizeMB=2600
+	r.OnionHeapSizeMB=200
+
+In your game's ** *.Target.cs**:
+
+	public override void SetupGlobalEnvironment(
+            	TargetInfo Target,
+            	ref LinkEnvironmentConfiguration OutLinkEnvironmentConfiguration,
+            	ref CPPEnvironmentConfiguration OutCPPEnvironmentConfiguration)
+	{
+            	// ...
+
+            	if (Target.Platform == UnrealTargetPlatform.PS4)
+            	{
+	OutCPPEnvironmentConfiguration.Definitions
+	.Add("GARLIC_HEAP_SIZE= (2900ULL * 1024 * 1024)");
+
+	OutCPPEnvironmentConfiguration.Definitions
+	.Add("ONION_HEAP_SIZE= (100ULL * 1024 * 1024)");
+            	}
+
+            	// ...
+	}
+
+## Tips & Tricks
+
+To improve playback performance on PS4, your video file should be encoded as interleaved, so that audio and video can be read in a single sequential operation instead of seeking to different areas of the media file. 
+This can be done without re-encoding with [**mp4box**](https://gpac.wp.mines-telecom.fr/mp4box/) by adding the following: 
+
+	mp4box.exe -add non-interleaved-source.mp4 --inter 100 -delay 2=0 -new output.mp4
+
+One should also double check that the encoding is optimum for the PS4 as this will significantly reduce the CPU and GPU overhead of the player. 
+This can be done using [**FFMPEG**](https://ffmpeg.org/). For example, for a 1080p mp4 file we suggest the following: 
+
+	ffmpeg.exe -i "highqualitysource.mp4" -c:v libx264 -crf 20 -preset veryslow -maxrate 15000k -bufsize 30000k -slices 24 -x264opts b-pyramid=0:no-cabac:weightb=0:weightp=0 -refs 1 -pix_fmt yuv420p "non-interleaved-output.mp4"
+
+## Known Issues & Considerations
+
+The items below are known issues as it relates to the use of Media Framework for PS4 development: 
+
+* **Media Playlists** currently do not work with the 4.13 release. 

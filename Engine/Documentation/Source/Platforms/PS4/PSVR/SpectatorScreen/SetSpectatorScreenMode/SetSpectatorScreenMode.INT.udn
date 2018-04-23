@@ -1,0 +1,30 @@
+Availability: Licensee
+Crumbs: %ROOT%
+Title: Set Spectator Screen Mode
+Description: This node sets the Social (Spectator) Screen mode.
+Type: Reference
+Version: 4.17
+Parent: Platforms/PS4/PSVR/SpectatorScreen
+Order: 
+Tags: VR 
+Tags: PS VR
+
+[TOC(start:2 end:2)]
+[EXCERPT:SetSpectatorScreenModeNode_Ref]
+![](SetSpectatorScreenModeNode.png)
+
+This node sets the Social (Spectator) Screen mode.
+
+**Inputs**
+
+| Pin Location           | Name                      | Description                         |
+| ---------------------- | ------------------------- | ----------------------------------- |
+| ![](SetSpectatorScreenModeNode_1.png) |  (In) Exec | Input execution pin.                |
+| ![](SetSpectatorScreenModeNode_2.png) |  Mode      | The Social (Spectator) Screen Mode. |
+
+**Output**
+
+| Pin Location                          | Name         | Description           |
+| ------------------------------------- | ------------ | --------------------- |
+| ![](SetSpectatorScreenModeNode_3.png) |  (Out) Exec  | Output execution pin. |
+[/EXCERPT:SetSpectatorScreenModeNode_Ref]

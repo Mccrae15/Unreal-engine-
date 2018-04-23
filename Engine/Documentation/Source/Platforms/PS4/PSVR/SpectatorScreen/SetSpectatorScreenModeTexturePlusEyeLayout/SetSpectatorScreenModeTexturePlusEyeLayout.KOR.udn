@@ -1,0 +1,36 @@
+﻿INTSourceChangelist:3584409
+Availability: Licensee
+Crumbs: %ROOT%
+Title: Set Spectator Screen Mode Texture Plus Eye Layout
+Description: ESpectatorScreenMode 의 TexturePlusEye 함수에 대한 레이아웃을 셋업하는 노드입니다.
+Type: Reference
+Version: 4.17
+Parent: Platforms/PS4/PSVR/SpectatorScreen
+Order: 
+Tags: VR 
+Tags: PS VR
+
+[TOC(start:2 end:2)]
+[EXCERPT:SetSpectatorScreenModeTexturePlusEyeLayoutNode_Ref]
+![](SetSpectatorScreenModeTexturePlusEyeLayoutNode.png)
+
+`ESpectatorScreenMode` 의 `TexturePlusEye` 함수에 대한 레이아웃을 셋업하는 노드입니다.
+
+**입력**
+
+| 핀 위치 | 이름 | 설명 |
+| ---------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_1.png) |  (In) Exec         | 입력 실행 핀입니다. |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_2.png) |  Eye Rect Min      | 벡터 2D 구조체로, 눈을 그려넣을 화면 사각형 최소 위치를 설정합니다. [REGION:note]값은 `0.0` 에서 `1.0` 사이로 정규화됩니다.[/REGION]     |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_3.png) |  Eye Rect Max      | 벡터 2D 구조체로, 눈을 그려넣을 화면 사각형 최대 위치를 설정합니다. [REGION:note]값은 `0.0` 에서 `1.0` 사이로 정규화됩니다.[/REGION]     | 
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_4.png) |  Texture Rect Min  | 벡터 2D 구조체로, 텍스처를 그려넣을 화면 사각형 최소 위치를 설정합니다. [REGION:note]값은 `0.0` 에서 `1.0` 사이로 정규화됩니다.[/REGION] |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_5.png) |  Texture Rect Max  | 벡터 2D 구조체로, 텍스처를 그려넣을 화면 사각형 최대 위치를 설정합니다. [REGION:note]값은 `0.0` 에서 `1.0` 사이로 정규화됩니다.[/REGION] |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_6.png) |  Draw Eye First    | 이 플래그가 `True` 로 설정되면, 텍스처 앞에 눈을 그립니다. 하지만 `False` 로 설정되면, 눈 앞에 텍스처를 그립니다. |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_7.png) |  Clear Black       | 이 플래그가 `True` 로 설정되면, 한 쪽 사각형을 그리기 전 렌더 타겟을 검정으로 그립니다. |
+
+**출력**
+
+| 핀 위치 | 이름 | 설명 |
+| ---------------------- | -------------------------------- | ------------------------------------ |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_8.png) |  (Out) Exec  | 출력 실행 핀입니다. |
+[/EXCERPT:SetSpectatorScreenModeTexturePlusEyeLayoutNode_Ref]

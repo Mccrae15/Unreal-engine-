@@ -1,0 +1,446 @@
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	PS4Common.usf: #defines for using .hlsl shaders in .pssl (inverted from Sony's header), and a few standard UE defines
+=============================================================================*/
+
+#pragma once
+
+// So we can force a recompile...
+#define PSSL_VERSION 4.008.061
+
+// make all matrices as row major
+#pragma pack_matrix (row_major) 
+
+#pragma warning(disable:5203)
+#pragma warning(disable:5206)
+#pragma warning(disable:5557) // vector or matrix accessed with dynamic index, user is responsible for ensuring that index is within bounds.
+
+// Used to tell the compiler that two versions are needed for the shader.
+#define COMPILE_FOR_NEO _Pragma("MCPP warning UE4SHADERMETADATA_PS4_NEO_PROFILE")
+
+// The compiler can ICE with half's, and the hardware doesn't care (HLSL converts halfs to floats)
+// so we just force the issue here.
+#define half float
+#define half2 float2
+#define half3 float3
+#define half4 float4
+
+// The compiler ICEs a lot with bools, just make them uints, should work fine
+#define bool uint
+
+// HLSL standard for 64bits is uint64_t.
+#define uint64_t ulong
+
+// PSSL doesn't support the loop flags and coherency flags we use in HLSL
+#define globallycoherent //PSSLC does not support this modifier
+#define UAV_LOOP //PSSLC does not support this modifier
+#define ALLOW_UAV_CONDITION //PSSLC defaults to allowing UAV conditions. See: https://ps4.scedev.net/forums/thread/73636/
+#define FASTOPT
+#define LOOP					[loop]
+#define UNROLL					[unroll]
+#define INVARIANT				__invariant
+#define ENABLE_RE_Z				[RE_Z]
+#define REVERSEBITS				ReverseBits
+
+// handle any with float3, without modifying other platforms
+bool any(float2 A)
+{
+	return any((bool2)A);
+}
+bool any(float3 A)
+{
+	return any((bool3)A);
+}
+bool any(float4 A)
+{
+	return any((bool4)A);
+}
+
+// Sets a variable as being shared among all effects defined  
+#define groupshared thread_group_memory
+// Set to a vertex shader output variable to note that this data should not be interpolated before going on to fragment shader.  Just as a Semantic is bound to a specific varying parameter this also affect all varying data parameter of a given stream 
+#define nointerpolation nointerp
+// Turn off perspective-correction during interpolation 
+#define noperspective nopersp
+// compile as a hardware switch statement  
+#define forcecase force_switch
+// compile each case as indiviual hardware case subroutines with the switch as a series of subroutines 
+#define call call_subs
+// Back-Facing primitive indicator  
+#define VFACE VERTEXFACE
+// 2D Screen pixel location  
+#define VPOS SCREENPOS
+// Transformed Position 
+#define POSITIONNT POSITION_TRANSFORMED
+// Vertex Identifier 
+#define SV_VertexID S_VERTEX_ID
+// Instance Identifier 
+#define SV_InstanceID S_INSTANCE_ID
+// Sample Index 
+#define SV_SampleIndex S_SAMPLE_INDEX
+// Primitive Identifier  
+#define SV_PrimitiveID S_PRIMITIVE_ID
+// Specific Geometry Shader Index passed to the Geometry Shader as input 
+#define SV_GSInstanceID S_GSINSTANCE_ID
+// Control Point Identifier passed to the hull shader and also to domain shader  
+#define SV_OutputControlPointID S_OUTPUT_CONTROL_POINT_ID
+// The tessellation amount on for each patch edge available to the hull and domain shader 
+#define SV_TessFactor S_EDGE_TESS_FACTOR
+// The tesselation amount for a patch surface available to the hull and domain shader 
+#define SV_InsideTessFactor S_INSIDE_TESS_FACTOR
+// The uv location that the domain shader is to work on 
+#define SV_DomainLocation S_DOMAIN_LOCATION
+// The per group dimension Global thread Offset 
+#define SV_DispatchThreadID S_DISPATCH_THREAD_ID
+// The per dimension offset within a dispatch call 
+#define SV_GroupID S_GROUP_ID
+// Computed flat index of a thread within a group 
+#define SV_GroupIndex S_GROUP_INDEX
+// Offset of a thread within a group per group dimension 
+#define SV_GroupThreadID S_GROUP_THREAD_ID
+// If a primitive is front facing 
+#define SV_IsFrontFace S_FRONT_FACE
+// Output Coverage 
+#define SV_Coverage S_COVERAGE
+// Clip Distance ( default of 0 ) 
+#define SV_ClipDistance S_CLIP_DISTANCE
+// Cull Distance ( default of 0 ) 
+#define SV_CullDistance S_CULL_DISTANCE
+// Clip Distance 0 
+#define SV_ClipDistance0 S_CLIP_DISTANCE0
+// Cull Distance 0 
+#define SV_CullDistance0 S_CULL_DISTANCE0
+// Clip Distance 1 
+#define SV_ClipDistance1 S_CLIP_DISTANCE1
+// Cull Distance 1 
+#define SV_CullDistance1 S_CULL_DISTANCE1
+// Render Target Array Index 
+#define SV_RenderTargetArrayIndex S_RENDER_TARGET_INDEX
+// for Render Target Arrays output 
+#define SV_Target S_TARGET_OUTPUT
+// for Render Target 0 output 
+#define SV_Target0 S_TARGET_OUTPUT0
+// for Render Target 1 output 
+#define SV_Target1 S_TARGET_OUTPUT1
+// for Render Target 2 output 
+#define SV_Target2 S_TARGET_OUTPUT2
+// for Render Target 3 output 
+#define SV_Target3 S_TARGET_OUTPUT3
+// for Render Target 4 output 
+#define SV_Target4 S_TARGET_OUTPUT4
+// for Render Target 5 output 
+#define SV_Target5 S_TARGET_OUTPUT5
+// for Render Target 6 output 
+#define SV_Target6 S_TARGET_OUTPUT6
+// for Render Target 7 output 
+#define SV_Target7 S_TARGET_OUTPUT7
+// Viewport Array Index 
+#define SV_ViewPortArrayIndex S_VIEWPORT_INDEX
+// SV HLSL DX9 backward comparitiblity mapped simply to typical semantics in PSSL 
+#define SV_DEPTH S_DEPTH_OUTPUT
+// SV HLSL DX9 backward comparitiblity mapped simply to typical semantics in PSSL 
+#define SV_POSITION S_POSITION
+#define SV_Position S_POSITION
+// "patch type of domain shader (tri, quad, isoline)" 
+#define domain DOMAIN_PATCH_TYPE
+// maximum tessellation factor for a given hull shader 
+#define maxtessfactor MAX_TESS_FACTOR
+// number of control points that can be produced by one thread of a HULL shader 
+#define outputcontrolpoints OUTPUT_CONTROL_POINTS
+// output tesselator primitive type 
+#define outputtopology OUTPUT_TOPOLOGY_TYPE
+// the tessellation type for the HULL Shader 
+#define partitioning PARTITIONING_TYPE
+// the function name in the hull shader that will be used to produce patch constant data 
+#define patchconstantfunc PATCH_CONSTANT_FUNC
+// used for geometry shader instancing 
+#define instance INSTANCE
+// the 3D thread description for a single thread group 
+#define numthreads NUM_THREADS
+// the count of the elements of each patch 
+#define patchsize PATCH_SIZE
+// maximum number of vertices produced in a single geometry shader execution 
+#define maxvertexcount MAX_VERTEX_COUNT
+// returns the location of the first bit set high 
+#define firstbithigh FirstSetBit_Hi
+// returns the location of the first bit set low 
+#define firstbitlow FirstSetBit_Lo
+// returns number of render-target samples 
+#define renderTargetSampleCount sampleCount
+// "returns the sample position (x,y) for sample index x" 
+#define renderTargetSamplePosition samplePosition
+// Array of 1D Texture Buffers 
+#define Texture1DArray Texture1D_Array
+// Array of 2D Texture Buffers 
+#define Texture2DArray Texture2D_Array
+// Array of Cube Map Textures  
+#define TextureCubeArray TextureCube_Array
+// Multisampled 2D Texture 
+#define Texture2DMS MS_Texture2D
+// Array of Multisampled 2D Textures  
+#define Texture2DMSArray MS_Texture2D_Array
+// "Readonly Generic Buffer Type that all other Resource buffers are derived (Byte, Texture*, Regular, RW*)" 
+#define Buffer DataBuffer
+// "Writeable Generic Buffer Type that all other Resource buffers are derived (Byte, Texture*, Regular, RW*)" 
+#define RWBuffer RW_DataBuffer
+// Readonly Buffer of raw bytes of data that indexes by Bytes 
+#define ByteAddressBuffer ByteBuffer
+// Readable and Writeable Buffer of raw bytes of data that indexes by Bytes 
+#define RWByteAddressBuffer RW_ByteBuffer
+// Readonly Buffer of user defined structures and indexes by structure.  Read Only buffers with fixed/regular structure sizes through out the buffer stream 
+#define StructuredBuffer RegularBuffer
+// Writeable Regular Buffer 
+#define RWStructuredBuffer RW_RegularBuffer
+// Readable and Writeable 1D Texture 
+#define RWTexture1D RW_Texture1D
+// Readable and Writeable 2D Texture  
+#define RWTexture2D RW_Texture2D
+// Readable and Writeable 3D Texture  
+#define RWTexture3D RW_Texture3D
+// Readable and Writeable Array of 1D Textures 
+#define RWTexture1DArray RW_Texture1D_Array
+// Readable and Writeable Array of 2D Textures  
+#define RWTexture2DArray RW_Texture2D_Array
+// Structured Buffer with special Append Method 
+#define AppendStructuredBuffer AppendRegularBuffer
+// Structured Buffer with special Consume Method  
+#define ConsumeStructuredBuffer ConsumeRegularBuffer
+// Fast access buffer for shaders generally for storing constants 
+#define cbuffer ConstantBuffer
+// Shader buffer for storing constants that allow for better indexed data accesses  
+#define tbuffer TextureBuffer
+// Performs an Atomic Add 
+#define InterlockedAdd AtomicAdd
+// Performs an Atomic Min  
+#define InterlockedMin AtomicMin
+// Performs an Atomic Max 
+#define InterlockedMax AtomicMax
+// Performs an Atomic Or 
+#define InterlockedOr AtomicOr
+// Performs an Atomic And 
+#define InterlockedAnd AtomicAnd
+// Performs an Atomic Xor 
+#define InterlockedXor AtomicXor
+// Performs an Atomic comparison between the input and value and result  
+#define InterlockedCompareStore AtomicCmpStore
+// Performs an Atomic comparison of the input to the compare val and exchanges the the result 
+#define InterlockedCompareExchange AtomicCmpExchange
+// Performs an Atomic exchange 
+#define InterlockedExchange AtomicExchange
+// Stream of triangles with Append and RestartStrip Methods  
+#define TriangleStream TriangleBuffer
+// Stream of points with Append and RestartStrip Methods  
+#define PointStream PointBuffer
+// Stream of lines with Append and RestartStrip Methods  
+#define LineStream LineBuffer
+// GS Input Prim Type 
+#define triangle Triangle
+// GS Input Prim Type 
+#define point Point
+// GS Input Prim Type 
+// @NOTE: This #define will throw a compile error
+// #define line Line
+// Adjacency tri list or tri strip 
+#define triangleadj AdjacentTriangle
+// Adjacency line list or line strip 
+#define lineadj AdjacentLine
+// Blocks all threads in a group until all shared group memory accesses have completed 
+#define GroupMemoryBarrier ThreadGroupMemoryBarrier
+// Blocks all threads in a group until all shared group memory accesses have completed and all threads have reached that point 
+#define GroupMemoryBarrierWithGroupSync ThreadGroupMemoryBarrierSync
+//  
+#define AllMemoryBarrier MemoryBarrier
+//  
+#define AllMemoryBarrierWithGroupSync MemoryBarrierSync
+//  
+#define DeviceMemoryBarrier SharedMemoryBarrier
+//  
+#define DeviceMemoryBarrierWithGroupSync SharedMemoryBarrierSync
+// For accessing the individual miplevels of a TextureBuffer Type 
+#define mips MipMaps
+// Allows for direct increment of the buffer counter 
+#define IncrementCounter IncrementCount
+// Allows for direct decrement of the buffer counter 
+#define DecrementCounter DecrementCount
+// "Samples a teuture from level 0, but use a comparison value to reject Samples " 
+#define SampleCmpLevelZero SampleCmpLOD0
+// Sample from particular mipmap level  
+#define SampleLevel SampleLOD
+// Samples a texture using a specified gradient influence on the Sample location calculation  
+#define SampleGrad SampleGradient
+// Returns the computed lod 
+#define CalculateLevelOfDetail GetLOD
+// "Returns the computed lod, but unclamped" 
+#define CalculateLevelOfDetailUnclamped GetLODUnclamped
+// Return the position of a specified Sample 
+#define GetSamplePosition GetSamplePoint
+
+// Interpolator attributes
+#define COMPRESSED_16_FLOAT	compressed_16_float	// Encodes a 32-bit float using a 16-bit float.
+#define COMPRESSED_16_UNORM	compressed_16_unorm	// Encodes a 32-bit float in range [0..1] using a 16-bit unsigned int
+#define COMPRESSED_16_SNORM	compressed_16_snorm	// Encodes a 32-bit float in range [-1..1] using a 16-bit signed int
+#define COMPRESSED_16_UINT	compressed_16_uint	// Clamps a 32-bit unsigned int to fit a 16-bit unsigned int.
+#define COMPRESSED_16_INT	compressed_16_int	// Clamps a 32-bit signed int to fit a 16-bit signed int.
+#define COMPRESSED_8_UNORM	compressed_8_unorm	// Encodes a 32-bit float in range [0..1] using an 8-bit unsigned int.
+#define COMPRESSED_8_SNORM	compressed_8_snorm	// Encodes a 32-bit float in range [-1..1] using an 8-bit signed int.
+#define COMPRESSED_8_UINT	compressed_8_uint	// Clamps a 32-bit unsigned int to fit an 8-bit unsigned int.
+
+#define COMPILER_SUPPORTS_EMPTY_STRUCTS	1
+
+#define COMPILER_SUPPORTS_MINMAX3 1
+
+sce::Gnm::Sampler GetDefaultBuiltinSampler()
+{
+	sce::Gnm::Sampler BuiltinSampler;
+	BuiltinSampler.init();
+	// Default engine is sce::Gnm::kAnisotropyRatio8...
+	BuiltinSampler.setAnisotropyRatio(sce::Gnm::kAnisotropyRatio1);
+	BuiltinSampler.setBorderColor(sce::Gnm::kBorderColorTransBlack);
+	BuiltinSampler.setDepthCompareFunction(sce::Gnm::kDepthCompareNever);
+	BuiltinSampler.setForceUnnormalized(false);
+	BuiltinSampler.setForceDegamma(false);
+	BuiltinSampler.setLodRange(0, 0xfff);
+	BuiltinSampler.setMipClampRegionSize(0);
+	BuiltinSampler.setZClampRegionSize(0);
+	BuiltinSampler.setAnisotropyBias(0);
+	BuiltinSampler.setAnisotropyThreshold(0);
+	BuiltinSampler.setLodBias(0, 0);
+	return BuiltinSampler;
+}
+
+
+// ---------------------------------------------------- Global samplers.
+
+SamplerState GetPS4PointWrappedSampler()
+{
+	sce::Gnm::Sampler BuiltinSampler = GetDefaultBuiltinSampler();
+	BuiltinSampler.setXyFilterMode(sce::Gnm::kFilterModePoint, sce::Gnm::kFilterModePoint);
+	BuiltinSampler.setMipFilterMode(sce::Gnm::kMipFilterModePoint);
+	BuiltinSampler.setZFilterMode(sce::Gnm::kZFilterModePoint);
+	BuiltinSampler.setWrapMode(sce::Gnm::kWrapModeWrap, sce::Gnm::kWrapModeWrap, sce::Gnm::kWrapModeWrap);
+	return SamplerState(BuiltinSampler);
+}
+
+SamplerState GetPS4PointClampedSampler()
+{
+	sce::Gnm::Sampler BuiltinSampler = GetDefaultBuiltinSampler();
+	BuiltinSampler.setXyFilterMode(sce::Gnm::kFilterModePoint, sce::Gnm::kFilterModePoint);
+	BuiltinSampler.setMipFilterMode(sce::Gnm::kMipFilterModePoint);
+	BuiltinSampler.setZFilterMode(sce::Gnm::kZFilterModePoint);
+	BuiltinSampler.setWrapMode(sce::Gnm::kWrapModeClampLastTexel, sce::Gnm::kWrapModeClampLastTexel, sce::Gnm::kWrapModeClampLastTexel);
+	return SamplerState(BuiltinSampler);
+}
+
+SamplerState GetPS4BilinearWrappedSampler()
+{
+	sce::Gnm::Sampler BuiltinSampler = GetDefaultBuiltinSampler();
+	BuiltinSampler.setWrapMode(sce::Gnm::kWrapModeWrap, sce::Gnm::kWrapModeWrap, sce::Gnm::kWrapModeWrap);
+	BuiltinSampler.setXyFilterMode(sce::Gnm::kFilterModeBilinear, sce::Gnm::kFilterModeBilinear);
+	BuiltinSampler.setZFilterMode(sce::Gnm::kZFilterModePoint);
+	BuiltinSampler.setMipFilterMode(sce::Gnm::kMipFilterModePoint);
+	return SamplerState(BuiltinSampler);
+}
+
+SamplerState GetPS4BilinearClampedSampler()
+{
+	sce::Gnm::Sampler BuiltinSampler = GetDefaultBuiltinSampler();
+	BuiltinSampler.setXyFilterMode(sce::Gnm::kFilterModeBilinear, sce::Gnm::kFilterModeBilinear);
+	BuiltinSampler.setMipFilterMode(sce::Gnm::kMipFilterModePoint);
+	BuiltinSampler.setZFilterMode(sce::Gnm::kZFilterModePoint);
+	BuiltinSampler.setWrapMode(sce::Gnm::kWrapModeClampLastTexel, sce::Gnm::kWrapModeClampLastTexel, sce::Gnm::kWrapModeClampLastTexel);
+	return SamplerState(BuiltinSampler);
+}
+
+SamplerState GetPS4TrilinearWrappedSampler()
+{
+	sce::Gnm::Sampler BuiltinSampler = GetDefaultBuiltinSampler();
+	BuiltinSampler.setXyFilterMode(sce::Gnm::kFilterModeBilinear, sce::Gnm::kFilterModeBilinear);
+	BuiltinSampler.setMipFilterMode(sce::Gnm::kMipFilterModeLinear);
+	BuiltinSampler.setZFilterMode(sce::Gnm::kZFilterModeLinear);
+	BuiltinSampler.setWrapMode(sce::Gnm::kWrapModeWrap, sce::Gnm::kWrapModeWrap, sce::Gnm::kWrapModeWrap);
+	return SamplerState(BuiltinSampler);
+}
+
+SamplerState GetPS4TrilinearClampedSampler()
+{
+	sce::Gnm::Sampler BuiltinSampler = GetDefaultBuiltinSampler();
+	BuiltinSampler.setXyFilterMode(sce::Gnm::kFilterModeBilinear, sce::Gnm::kFilterModeBilinear);
+	BuiltinSampler.setMipFilterMode(sce::Gnm::kMipFilterModeLinear);
+	BuiltinSampler.setZFilterMode(sce::Gnm::kZFilterModeLinear);
+	BuiltinSampler.setWrapMode(sce::Gnm::kWrapModeClampLastTexel, sce::Gnm::kWrapModeClampLastTexel, sce::Gnm::kWrapModeClampLastTexel);
+	return SamplerState(BuiltinSampler);
+}
+
+// Implements UE4's Get global sampler.
+// Filter={Point,Bilinear,Trilinear}
+// WrapMode={Wrapped,Clamped}
+#define GetGlobalSampler(Filter,WrapMode) \
+	GetPS4##Filter##WrapMode##Sampler()
+
+
+// ---------------------------------------------------- HLSL standardized SM6 intrisics
+
+#define COMPILER_SUPPORTS_WAVE_VOTE 1
+
+// Wave Query
+//#define WaveOnce() UNSUPPORTED
+//#define WaveGetLaneCount() UNSUPPORTED
+//#define WaveGetLaneIndex() UNSUPPORTED
+//#define WaveIsHelperLane() UNSUPPORTED
+
+// Wave Vote
+bool WaveAnyTrue(bool expr)
+{
+	return CrossLaneOr(expr);
+}
+
+bool WaveAllTrue(bool expr)
+{
+	return CrossLaneAnd(expr);
+}
+
+bool WaveAllEqual(bool expr)
+{
+	return WaveAnyTrue(expr) == WaveAllTrue(expr);
+}
+
+uint64_t WaveBallot(bool expr)
+{
+	return ballot(expr);
+}
+
+// Wave Broadcast
+#define WaveReadLaneAt(x, laneId) \
+	ReadLane(x, laneId)
+#define WaveReadFirstLane(x) \
+	ReadFirstLane(x)
+
+// Wave Reduction
+#define WaveAllSum(x) \
+	CrossLaneAdd(x)
+#define WaveAllProduct(x) \
+	CrossLaneMul(x)
+#define WaveAllBitAnd(x) \
+	CrossLaneAnd(x)
+#define WaveAllBitOr(x) \
+	CrossLaneOr(x)
+#define WaveAllBitXor(x) \
+	CrossLaneXor(x)
+#define WaveAllMin(x) \
+	CrossLaneMin(x)
+#define WaveAllMax(x) \
+	CrossLaneMax(x)
+
+// Wave Scan and Prefix
+//#define WavePrefixSum() UNSUPPORTED
+//#define WavePrefixProduct() UNSUPPORTED
+
+// Global Ordered Append
+//#define WaveGetOrderedIndex() UNSUPPORTED
+//#define GlobalOrderedCountIncrement() UNSUPPORTED
+
+// Quad-wide Shuffle operations
+//#define QuadReadLaneAt() UNSUPPORTED
+//#define QuadSwapX() UNSUPPORTED
+//#define QuadSwapY() UNSUPPORTED

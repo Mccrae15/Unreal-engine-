@@ -1,0 +1,84 @@
+﻿Availability:Licensee
+Title:PS Move コントローラーの設定
+Crumbs:
+Description:PlayStation VR 用モーション コントローラーの設定および使用方法  
+Version:4.13
+SkillLevel:Beginner
+parent:Platforms/PS4/PSVR/HowTo
+type:how-to
+order:1
+tags:VR
+tags:PlayStation VR
+tags:Motion Controllers
+Related:Platforms\VR\MotionController
+prereq:Platforms\VR\MotionController.
+Reference-image:![](PSVR_MC_Header_Image.png)
+
+![](PSVR_MC_Header_Image.png)
+
+PlayStation VR は、PlayStation Move コントローラーをモーション コントローラーとして使用できるようにサポートしていますので、ユーザーは全く新しい方法で UE4 プロジェクトとインタラクトすることができます。UE4 の多くの機能と同様に、モーション コントローラー サポートも他の VR デバイスに同じ方法で使用できます。以下の操作ガイドでは、PlayStation Move コントローラーをモーション コントローラーとして設定および使用する方法について説明します。
+
+## ステップ
+
+[region:note]
+PlayStation VR クイック スタートで使ったプロジェクトのテンプレートは、モーション コントローラー対応設定ですぐに使用できるので、これを使って説明をします。
+[/region]
+
+1. モーション コントローラーを使用する前に、メイン ツールバーから **[Edit]** > **[Plugins]** を選択してプラグイン メニューを開いて、まず [Move Controller Plugin] を有効にする必要があります。
+
+    ![](PSVR_Move_Plugin_Menu.png)
+
+1. [Plugins (プラグイン)] メニューの **[Input Devices (入力デバイス)]** をクリックして、デバイス リストの **[Move Controller Plugin]** のチェックボックスにチェックを入れてプラグインを有効にし、**[Restart Now (再起動する)]** ボタンをクリックして UE4 エディタを再起動します。
+
+    [REGION:lightbox]
+    [![](PSVR_Enable_Move_Support.png)(w:488)](PSVR_Enable_Move_Support.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. UE4 エディタが再起動したら、コンテンツ ブラウザの **「Maps」** フォルダの **MotionControllerMap** map をダブルクリックして開きます。
+
+    ![](PSVR_Load_MC_Map.png)
+
+    [region:note]
+    プロジェクトに MotionControllerMap がない場合は、好きなマップを作成またはロードできます。 
+    [/region]
+
+1. MotionControllerMap を開いたら **[Launch]** の横の小さな白い三角をクリックして、コンテキスト メニューのリストの中から PS4 を選びます。
+
+    ![](Platforms\PS4\PSVR\QuickStart\7\PSVR_Launch_On_PS4.png)
+
+1. プロジェクトが PS4 にデプロイされたら、PlayStation VR HMD を装着し、PlayStation Move コントローラーを握ります。Move コントローラーを動かすと、自分の手の動きに合わせてロボットの手が見えるはずです。
+
+    [REGION:lightbox]
+    [![](PSVR_MC_Hands.png)(w:512)](PSVR_MC_Hands.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+VR テンプレートを使用しているので、ビルトインされた移動機能の中にはすぐに使えるものもあります。以下は、使用できるインタラクションの種類と使い方の説明です。
+
+* **移動**:Move コントローラーの **[Square (四角)]** ボタンを押すと、テレポート システムがオンになり、プレイ領域内をテレポートすることができます。テレポートするためには、Square ボタンを押したまま、Move コントローラーをテレポートしたい位置に合わせます。位置が決まったら、Square ボタンを放すと、瞬時にその位置へテレポートします。
+
+    [REGION:lightbox]
+    [![](PSVR_MC_Move_Arc.png)(w:512)](PSVR_MC_Move_Arc.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+* **つかむ動作**:つかみたいオブジェクト上に Move コントローラーを移動させ、トリガーを握ってオブジェクトを拾い上げ、トリガーを放してオブジェクトを落とすことで、シーンでオブジェクトをつかんで投げることができます。
+
+    [REGION:lightbox]
+    [![](PSVR_MC_Grabbing.png)(w:512)](PSVR_MC_Grabbing.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+

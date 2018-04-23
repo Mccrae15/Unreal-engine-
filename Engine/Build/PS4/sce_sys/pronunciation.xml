@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<gamePackage>
+  <language id="01" modified="0">
+    <speechRecognitionWords>
+      <text>Unreal Game</text>
+      <pronunciation>ax n r iy ax l ___ g ey m</pronunciation>
+    </speechRecognitionWords>
+  </language>
+</gamePackage>

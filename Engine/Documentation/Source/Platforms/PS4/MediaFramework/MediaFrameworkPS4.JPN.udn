@@ -1,0 +1,71 @@
+﻿INTSourceChangeList:3108692
+Availability:Licensee
+Title:Media Framework PS4
+Crumbs:%ROOT%, Platforms, Platforms/PS4
+Description:PS4 で Media Framework を使って映像再生する場合の注意点
+Platform:PS4
+parent:Platforms/PS4
+order:2
+Version:4.13
+Related:Engine\MediaFramework\Overview
+Related:Engine\MediaFramework\HowTo
+Related:Engine\MediaFramework\TechReference
+
+このページは、アンリアル エンジン 4 で **Media Framework** を使った際の PS4 開発に関連した内容が含まれています。 
+
+[REGION:note]
+概要は [Media Framework](Engine\MediaFramework\Overview) をご覧ください。 
+[/REGION]
+
+
+## PS4Media Player を有効にする
+
+PS4Media player プラグインはデフォルトでは無効になっていますので、プロジェクトの [プラグイン設定](Programming/Plugins/) で有効にする必要があります。
+
+PS4 のビデオ デコーダーは、HLS の場合は特に Onion メモリを大量消費します。デフォルトで割り当てられたメモリは 200 MB なので、2 つ以上の映像を一度に再生するとメモリ不足になります。 
+現時点では、これらのデフォルト設定は UI では表示されませんが、自分で変更することができます。
+
+有効にするには、以下を **PS4Engine.ini** に追加します。 
+
+	[SystemSettings]
+	r.GarlicHeapSizeMB=2600
+	r.OnionHeapSizeMB=200
+
+In your game's ** *.Target.cs**:
+
+	public override void SetupGlobalEnvironment(
+            	TargetInfo Target,
+            	ref LinkEnvironmentConfiguration OutLinkEnvironmentConfiguration,
+            	ref CPPEnvironmentConfiguration OutCPPEnvironmentConfiguration)
+	{
+            	// ...
+
+            	if (Target.Platform == UnrealTargetPlatform.PS4)
+            	{
+	OutCPPEnvironmentConfiguration.Definitions
+	.Add("GARLIC_HEAP_SIZE= (2900ULL * 1024 * 1024)");
+
+	OutCPPEnvironmentConfiguration.Definitions
+	.Add("ONION_HEAP_SIZE= (100ULL * 1024 * 1024)");
+            	}
+
+            	// ...
+	}
+
+## ヒントとコツ
+
+PS4 での再生パフォーマンスを上げるために、オーディオとビデオが他の場所でメディア ファイルを探さずに、1 度の順序処理で読み込めるように、映像ファイルはインターリーブでエンコードする必要があります。 
+[**mp4box**](https://gpac.wp.mines-telecom.fr/mp4box/) で再エンコードをしなくても、以下を追加すればエンコードができます。 
+
+	mp4box.exe -add non-interleaved-source.mp4 --inter 100 -delay 2=0 -new output.mp4
+
+PS4 はプレイヤーの CPU と GPU オーバーヘッドを大量に消費するため、エンコードが PS4 に対して最適になっているか再度確認してください。 
+[**FFMPEG**](https://ffmpeg.org/) を使って確認することができます。例えば、1080 mp4 ファイルであれば、以下を推奨します。 
+
+	ffmpeg.exe -i "highqualitysource.mp4" -c:v libx264 -crf 20 -preset veryslow -maxrate 15000k -bufsize 30000k -slices 24 -x264opts b-pyramid=0:no-cabac:weightb=0:weightp=0 -refs 1 -pix_fmt yuv420p "non-interleaved-output.mp4"
+
+## 周知の問題と検討事項
+
+以下は、PS4 開発用に Media Framework を使用した場合の周知の問題です。 
+
+* **Media Playlists** は現時点では 4.13 リリースで動作しません。 

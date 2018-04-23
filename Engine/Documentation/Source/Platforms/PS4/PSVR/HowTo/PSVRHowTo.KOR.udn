@@ -1,0 +1,61 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:PlayStation VR 비법
+Crumbs:%ROOT%, Platforms
+Description:PlayStation 4 콘솔용 VR 게임 개발 안내서입니다.
+Platform:PS4
+Navigation:platform
+type:how-to
+parent:Platforms/PS4/PSVR
+order:2
+version: 4.13
+tags: VR
+tags: PlayStation VR
+topic-image:Platforms/PS4/PSVR/HowTo/PSVRMotionControllers/PSVR_MC_Header_Image.png
+
+
+![](PSVR_Header_Image_00.png)
+
+**PlayStation VR - 비법** 페이지에서는 UE4 에서 PlayStation VR 작업을 하는 방법을 단계별 예제를 통해 안내해 드립니다. 모션 컨트롤러 셋업에서부터 렌더링 옵션 조절까지, 단계별로 살펴봅니다. 상세 문서 또는 추가 정보를 위한 레퍼런스 링크 역시 제공될 것입니다.
+
+## 초급
+[REGION:wrapper transparent]
+[](FANCY:Platforms\PS4\PSVR\HowTo\PSVRMotionControllers "%Platforms\PS4\PSVR\HowTo\PSVRMotionControllers:description%")
+[/REGION]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
