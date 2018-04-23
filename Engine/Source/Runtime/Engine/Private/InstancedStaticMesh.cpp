@@ -363,7 +363,7 @@ void FStaticMeshInstanceBuffer::UpdateRHIVertexBuffer(int32 StartingIndex, uint3
 		}
 	}
 	
-	if(ForcedUpdate)// in non dynamic mode we have to recreate the RHI from scratch
+	if(ForcedUpdate && InstanceData->GetOriginResourceArray()->GetResourceDataSize() > 0) // in non dynamic mode we have to recreate the RHI from scratch provided we still have the data around
 	{
 		UpdateRHI();
 	}
@@ -2017,7 +2017,7 @@ void UInstancedStaticMeshComponent::PostLoad()
 
 		if (PerInstanceSMData.Num() > 0 && PerInstanceRenderData->InstanceBuffer.GetNumInstances() == 0) // only load the data if it's not already loaded
 		{
-			PerInstanceRenderData->UpdateAllInstanceData(this);
+			PerInstanceRenderData->UpdateAllInstanceData(this, true, true);
 		}
 	}
 }
