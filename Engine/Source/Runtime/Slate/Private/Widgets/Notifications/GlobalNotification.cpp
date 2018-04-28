@@ -22,13 +22,15 @@ TSharedPtr<SNotificationItem> FGlobalNotification::BeginNotification()
 	Info.FadeOutDuration = 0.0f;
 	Info.ExpireDuration = 0.0f;
 
+	OverrideNotifcationInfo(Info);
+
 	NotificationItem = FSlateNotificationManager::Get().AddNotification(Info);
 	NotificationPtr = NotificationItem;
 
 	if (NotificationItem.IsValid())
 	{
 		NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
-		NotificationItem->SetVisibility(EVisibility::HitTestInvisible);
+		NotificationItem->SetVisibility((Info.ButtonDetails.Num() == 0) ? EVisibility::HitTestInvisible : EVisibility::Visible);
 	}
 
 	return NotificationItem;
@@ -51,7 +53,7 @@ void FGlobalNotification::EndNotification()
 void FGlobalNotification::TickNotification(float DeltaTime)
 {
 	TSharedPtr<SNotificationItem> NotificationItem = NotificationPtr.Pin();
-	const bool bIsNotificationActive = NotificationItem.IsValid() && NotificationItem->GetCompletionState() == SNotificationItem::CS_Pending;
+	const bool bIsNotificationActive = NotificationItem.IsValid() && (NotificationItem->GetCompletionState() == SNotificationItem::CS_Pending);
 	const bool bShouldShowNotification = ShouldShowNotification(bIsNotificationActive);
 
 	// Trigger a new notification if we should be active and we haven't displayed the notification recently
