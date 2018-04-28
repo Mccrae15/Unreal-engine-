@@ -637,6 +637,11 @@ public:
 	*/
 	ENGINE_API void CancelCompilation(const TCHAR* MaterialName, const TArray<int32>& ShaderMapIdsToCancel);
 
+	/*
+	 * Removes all outstanding compile jobs
+	 */
+	ENGINE_API void CancelAllCompilations();
+
 	/** 
 	 * Blocks until completion of the requested shader maps.  
 	 * This will not assign the shader map to any materials, the caller is responsible for that.
