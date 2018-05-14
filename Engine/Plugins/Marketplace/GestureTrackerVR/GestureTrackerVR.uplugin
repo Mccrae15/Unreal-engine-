@@ -1,0 +1,31 @@
+{
+	"FileVersion" : 3,
+	"Version" : 9,
+	"VersionName" : "1.6",
+	"FriendlyName" : "Gesture Tracker VR",
+	"Description" : "Scene component that provides easy gesture tracking and recognition. Designed for VR motion controllers.",
+	"Category" : "Virtual Reality",
+	"CreatedBy" : "Hunter Delattre",
+	"CreatedByURL" : "",
+	"DocsURL" : "",
+	"MarketplaceURL" : "com.epicgames.launcher://ue/marketplace/content/378f739f054340899db2569090222fd3",
+	"SupportURL" : "",
+	"EngineVersion" : "4.17.0",
+	"CanContainContent" : true,
+	"IsBetaVersion" : false,
+	"Installed" : true,
+	"RequiresBuildPlatform" : false,
+	"Modules" :
+	[
+		{
+			"Name" : "GestureTrackerVR",
+			"Type" : "Runtime",
+			"LoadingPhase" : "Default",
+			"WhitelistPlatforms" :
+			[
+				"Win64",
+				"Win32"
+			]
+		}
+	]
+}
