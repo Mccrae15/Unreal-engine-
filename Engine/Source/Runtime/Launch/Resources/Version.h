@@ -68,12 +68,12 @@
 // development branches, licensee versions, or whether the engine version has been locked to maintain compatibility with a previous engine release. Prefer
 // BUILD_VERSION where a unique, product-specific identifier is required, or FEngineVersion::CompatibleWith() where relational comparisons between two 
 // versions is required.
-#define BUILT_FROM_CHANGELIST 0
+#define BUILT_FROM_CHANGELIST 3658906
 
 // Whether this build is "promoted"; that is, compiled by a build machine (rather than locally) and distributed in binary form. This disables certain features in
 // the engine relating to building locally (because they require intermediate files to be available), such as the hot-reload functionality in the editor.
 // UnrealGameSync explicitly sets this to zero for local builds.
-#define ENGINE_IS_PROMOTED_BUILD  (BUILT_FROM_CHANGELIST > 0)
+#define ENGINE_IS_PROMOTED_BUILD  1
 
 // The changelist version of the engine. By including a monotonically increasing number in the engine version (and saving it into packages as FEngineVersion), 
 // we can prevent newer packages with the same major/minor engine version from being loaded with an older revision of the engine.
