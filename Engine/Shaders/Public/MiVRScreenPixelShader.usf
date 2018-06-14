@@ -1,0 +1,29 @@
+/************************************************************************************
+Filename    :   MiVRScreenPixelShader.usf
+Created     :   Octorber   2017
+Authors     :   Daitianqi@xiaomi.com
+
+Copyright   :   Copyright 2017 XIAOMI. All Rights reserved.
+*************************************************************************************/
+
+/*=============================================================================
+	MiVRScreenPixelShader.usf: Filter pixel shader source.
+=============================================================================*/
+
+#include "Common.usf"
+
+Texture2DArray InTextureArray;
+SamplerState InTextureSampler;
+int InTextureArrayIndex;
+
+void Main(
+	FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0
+	)
+{
+    OutColor = InTextureArray.Sample(InTextureSampler, float3(Input.UV, (float)InTextureArrayIndex));
+    //OutColor += InTextureArray.Sample(InTextureSampler, float3(Input.UV.x, Input.UV.y, 0.0f));
+    //OutColor += InTextureArray.Sample(InTextureSampler, float3(Input.UV.x, Input.UV.y, 1));
+    //OutColor += float4(0, 1, 0, 1);
+
+}
