@@ -35,14 +35,37 @@ bool FOnlineLeaderboardOculus::ReadLeaderboardsForFriends(int32 LocalUserNum, FO
 
 bool FOnlineLeaderboardOculus::ReadLeaderboardsAroundRank(int32 Rank, uint32 Range, FOnlineLeaderboardReadRef& ReadObject)
 {
-	// UNDONE
-	return false;
+	//Tests anyone? wrzuciæ do 4.18
+	auto FilterType = ovrLeaderboard_FilterNone;
+	auto Limit = Range;
+
+	ReadObject->ReadState = EOnlineAsyncTaskState::InProgress;
+
+	OculusSubsystem.AddRequestDelegate(
+		ovr_Leaderboard_GetEntriesAfterRank(TCHAR_TO_ANSI(*ReadObject->LeaderboardName.ToString()), Limit, Rank),
+		FOculusMessageOnCompleteDelegate::CreateLambda([this, ReadObject](ovrMessageHandle Message, bool bIsError)
+	{
+		OnReadLeaderboardsComplete(Message, bIsError, ReadObject);
+	}));
+	return true;
 }
 
 bool FOnlineLeaderboardOculus::ReadLeaderboardsAroundUser(TSharedRef<const FUniqueNetId> Player, uint32 Range, FOnlineLeaderboardReadRef& ReadObject)
 {
-	// UNDONE
-	return false;
+	//Tests anyone?
+	auto FilterType = ovrLeaderboard_FilterNone;
+
+	auto Limit = Range;
+	auto StartAt = ovrLeaderboard_StartAtCenteredOnViewer;
+
+	ReadObject->ReadState = EOnlineAsyncTaskState::InProgress;
+	OculusSubsystem.AddRequestDelegate(
+		ovr_Leaderboard_GetEntries(TCHAR_TO_ANSI(*ReadObject->LeaderboardName.ToString()), Limit, FilterType, StartAt),
+		FOculusMessageOnCompleteDelegate::CreateLambda([this, ReadObject](ovrMessageHandle Message, bool bIsError)
+	{
+		OnReadLeaderboardsComplete(Message, bIsError, ReadObject);
+	}));
+	return true;
 }
 
 bool FOnlineLeaderboardOculus::ReadOculusLeaderboards(bool bOnlyFriends, bool bOnlyLoggedInUser, FOnlineLeaderboardReadRef& ReadObject)
