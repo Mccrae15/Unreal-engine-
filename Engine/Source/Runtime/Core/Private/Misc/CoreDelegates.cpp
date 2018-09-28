@@ -130,6 +130,9 @@ FCoreDelegates::FIsLoadingMovieCurrentlyPlaying FCoreDelegates::IsLoadingMovieCu
 //Carbon Studio Custom delegate for obtaining move tracking state
 FCoreDelegates::FGetMoveStatus FCoreDelegates::GetMoveStatus;
 
+//Carbon Studio Custom delegate for using HMDReprojectionSetOutputMinColor
+FCoreDelegates::FUseHMDReprojection FCoreDelegates::UseHMDReprojection;
+
 /**	 Implemented as a function to address global ctor issues */
 FSimpleMulticastDelegate& FCoreDelegates::GetMemoryTrimDelegate()
 {
