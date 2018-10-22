@@ -1,0 +1,32 @@
+{
+	"FileVersion" : 3,
+	"Version" : 1,
+	"VersionName" : "1.0",
+	"FriendlyName" : "Aim Controller Plugin",
+	"Description" : "Input device plugin for PS4 Aim controller",
+	"Category" : "Input Devices",
+	"CreatedBy" : "Epic Games, Inc.",
+	"CreatedByURL" : "http://epicgames.com",
+	"DocsURL" : "",
+	"MarketplaceURL" : "",
+	"SupportURL" : "",
+	"EnabledByDefault" : false,
+	"CanContainContent" : false,
+	"IsBetaVersion" : false,
+	"Installed" : false,
+	"SupportedTargetPlatforms": [
+		"PS4"
+	],
+	"Modules" :
+	[
+		{
+			"Name" : "AimController",
+			"Type" : "Runtime",
+			"LoadingPhase" : "PostConfigInit",
+			"WhitelistPlatforms" :
+			[
+				"PS4"
+			]
+		}
+	]
+}

@@ -1,0 +1,111 @@
+//
+// This file has been automatically generated
+//
+
+#if MSAA_SAMPLE_COUNT == 2
+
+// filter=bspline, r=1.25 with cutoff=0.00784313725490196
+float3 resolve_bspline(uint2 pos)
+{
+	float3 sampleSum = 0;
+	float weightSum = 0;
+
+	int2 fmask0 = LoadFMask(pos + uint2(0, -1));
+	int2 fmask1 = LoadFMask(pos + uint2(-1, 0));
+	int2 fmask2 = LoadFMask(pos + uint2(0, 0));
+	int2 fmask3 = LoadFMask(pos + uint2(1, 0));
+	int2 fmask4 = LoadFMask(pos + uint2(0, 1));
+
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, -1), fmask0, 0, 0.06620158811400294, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(-1, 0), fmask1, 0, 0.06620158811400294, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask2, 0, 0.4371763346585447, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask2, 1, 0.4371763346585447, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(1, 0), fmask3, 1, 0.06620158811400294, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 1), fmask4, 1, 0.06620158811400294, sampleSum, weightSum);
+	// 6 samples
+	return sampleSum / weightSum;
+}
+
+#endif /* MSAA2x */
+
+#if MSAA_SAMPLE_COUNT == 4
+
+// filter=bspline, r=1.25 with cutoff=0.00784313725490196
+float3 resolve_bspline(uint2 pos)
+{
+	float3 sampleSum = 0;
+	float weightSum = 0;
+
+	int2 fmask0 = LoadFMask(pos + uint2(0, -1));
+	int2 fmask1 = LoadFMask(pos + uint2(-1, 0));
+	int2 fmask2 = LoadFMask(pos + uint2(0, 0));
+	int2 fmask3 = LoadFMask(pos + uint2(1, 0));
+	int2 fmask4 = LoadFMask(pos + uint2(0, 1));
+
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, -1), fmask0, 2, 0.01807097080096091, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, -1), fmask0, 3, 0.1569595180916695, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(-1, 0), fmask1, 1, 0.1569595180916695, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(-1, 0), fmask1, 3, 0.01807097080096091, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask2, 0, 0.3931577730734018, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask2, 1, 0.3931577730734018, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask2, 2, 0.3931577730734018, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask2, 3, 0.3931577730734018, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(1, 0), fmask3, 0, 0.01807097080096091, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(1, 0), fmask3, 2, 0.1569595180916695, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 1), fmask4, 0, 0.1569595180916695, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 1), fmask4, 1, 0.01807097080096091, sampleSum, weightSum);
+	// 12 samples
+	return sampleSum / weightSum;
+}
+
+#endif /* MSAA4x */
+
+#if MSAA_SAMPLE_COUNT == 8
+
+// filter=bspline, r=1.25 with cutoff=0.00784313725490196
+float3 resolve_bspline(uint2 pos)
+{
+	float3 sampleSum = 0;
+	float weightSum = 0;
+
+	int2 fmask0 = LoadFMask(pos + uint2(-1, -1));
+	int2 fmask1 = LoadFMask(pos + uint2(0, -1));
+	int2 fmask2 = LoadFMask(pos + uint2(1, -1));
+	int2 fmask3 = LoadFMask(pos + uint2(-1, 0));
+	int2 fmask4 = LoadFMask(pos + uint2(0, 0));
+	int2 fmask5 = LoadFMask(pos + uint2(1, 0));
+	int2 fmask6 = LoadFMask(pos + uint2(-1, 1));
+	int2 fmask7 = LoadFMask(pos + uint2(0, 1));
+
+	LoadTexSampleAndWeight(Tex, pos + uint2(-1, -1), fmask0, 6, 0.0122478272965412, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, -1), fmask1, 1, 0.0562309016241237, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, -1), fmask1, 2, 0.0122478272965412, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, -1), fmask1, 4, 0.0827033532569509, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, -1), fmask1, 6, 0.193574150789398, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(1, -1), fmask2, 4, 0.0146240789396611, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(-1, 0), fmask3, 0, 0.0173363420873069, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(-1, 0), fmask3, 2, 0.119672122546407, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(-1, 0), fmask3, 6, 0.0239134834315064, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(-1, 0), fmask3, 7, 0.105944474363577, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask4, 0, 0.582478054967508, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask4, 1, 0.582478054967508, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask4, 2, 0.472953920343373, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask4, 3, 0.425792848879037, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask4, 4, 0.343443361963303, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask4, 5, 0.343443361963303, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask4, 6, 0.30752408673672, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 0), fmask4, 7, 0.171741918560638, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(1, 0), fmask5, 1, 0.0173363420873069, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(1, 0), fmask5, 3, 0.0373044569342233, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(1, 0), fmask5, 4, 0.0827033532569509, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(1, 0), fmask5, 5, 0.217937457330301, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(-1, 1), fmask6, 7, 0.0640950254051003, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 1), fmask7, 0, 0.0562309016241237, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 1), fmask7, 3, 0.105944474363577, sampleSum, weightSum);
+	LoadTexSampleAndWeight(Tex, pos + uint2(0, 1), fmask7, 7, 0.105944474363577, sampleSum, weightSum);
+	// 26 samples
+	return sampleSum / weightSum;
+}
+
+#endif /* MSAA8x */
+

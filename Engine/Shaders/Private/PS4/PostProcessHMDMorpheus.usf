@@ -1,0 +1,139 @@
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	PostProcessMorpheus.usf: PostProcessing shader to distort for Sony Morpheus HMD device
+=============================================================================*/
+
+#if NEW_MORPHEUS_DISTORTION
+
+float2 TextureScale;
+float2 TextureOffset;
+
+//account for the fact that we're using one big full screen buffer with two viewports.
+//for each side we want to sample the full distortion texture from 0-1 across each half, even though
+//the incoming UVs will only be from 0 - 0.5f, and 0.5f - 1.0f respectively.
+float  TextureUVOffset;
+
+float RCoefficients[5];
+float GCoefficients[5];
+float BCoefficients[5];
+
+SamplerState DistortionTextureSampler;
+
+float2 calcScaledUv(float2 uv, float c[5])
+{
+	float distSq = dot(uv, uv);
+	float2 ret = uv * (c[0] + distSq * (c[1] + distSq * (c[2] + distSq * (c[3] + distSq * c[4])))) * TextureScale.xy + TextureOffset.xy;
+	ret.x *= 0.5f;
+	ret.x -= TextureUVOffset;
+	return ret;
+}
+
+float4 MainPS(float2 InUV : TEXCOORD0 ):SV_Target0
+{
+
+	float2 uv = InUV;
+	uv.x += TextureUVOffset;
+	uv.x *= 2.f;
+	uv = uv * 2.f - 1.f;
+	uv.x *= 8.f/9.f; // correct for aspect ratio of panel (half 16:9)
+
+	// mm
+	const float displayHeight = 70.74f;
+	const float cutoffDistance = 33.11584026f;
+	const float centerHorizontalLenseOffset = -0.342f; // offset of eye from center of the lense
+
+	const float invCutoffDistance = 1.f / cutoffDistance;
+	const float quarterPixel = 0.0163125f * invCutoffDistance;
+
+	uv *= displayHeight * 0.5f;
+	uv.x += TextureUVOffset < 0.f ? -centerHorizontalLenseOffset : centerHorizontalLenseOffset;
+	// normalize so that beyond 1 is cutoff
+	uv *= invCutoffDistance;
+
+	float distSquared = dot(uv, uv);
+	if(distSquared > 1.f)
+	{
+		return 0.f;
+	}
+	
+	float4 color = 0.f;
+	
+	float2 rPos = calcScaledUv(uv - quarterPixel.xx, RCoefficients);
+	color.r = PostprocessInput0.SampleLevel(DistortionTextureSampler, rPos, 0).r;
+	float2 gPos = calcScaledUv(uv + float2(-quarterPixel, quarterPixel), GCoefficients);
+	color.ga = PostprocessInput0.SampleLevel(DistortionTextureSampler, gPos, 0).ga;
+	float2 bPos = calcScaledUv(uv + float2(quarterPixel, 0.f), BCoefficients);
+	color.b = PostprocessInput0.SampleLevel(DistortionTextureSampler, bPos, 0).b;
+
+	return color;
+}
+
+// vertex shader entry point
+void MainVS(
+	in float4 InPosition : ATTRIBUTE0,
+	in float2 InTexCoord : ATTRIBUTE1,
+	out float4 OutTexCoord : TEXCOORD0,
+	out float4 OutPosition : SV_POSITION
+	)
+{
+	OutPosition = InPosition;
+	OutTexCoord = float4(InTexCoord, InPosition.xy);
+}
+#else
+
+float2 LensCenter;
+float2 ScreenCenter;
+float2 Scale;
+float4 HMDWarpParam;
+float4 CAWarpParam;
+
+Texture2D DistortionTexture;
+SamplerState DistortionTextureSampler;
+
+// CNN - Morpheus support - added CA correction
+
+// vertex shader entry point
+void MainVS(
+	in float4 InPosition : ATTRIBUTE0,
+	in float2 InTexCoord : ATTRIBUTE1,
+	out float4 OutTexCoord : TEXCOORD0,
+	out float4 OutPosition : SV_POSITION
+	)
+{
+	OutPosition = InPosition;
+	OutTexCoord = float4(InTexCoord, InPosition.xy);
+}
+
+float2 HMDWarp(float2 in_minus1_to_1, float CAMult)
+{
+	float2 inhc = in_minus1_to_1;
+	float  r2 = (inhc.x * inhc.x + inhc.y * inhc.y);
+	
+	float scale_factor = Texture2DSample(DistortionTexture, DistortionTextureSampler, float2(r2 * 0.25f, 0) );
+
+	float2 outhc = inhc * (scale_factor);
+	float2 CAScale = Scale * CAMult;
+
+	return LensCenter + CAScale * outhc;
+}
+
+void MainPS(float2 InUV : TEXCOORD0, out float4 OutColor : SV_Target0)
+{
+	float2 RMappedUV = HMDWarp(InUV, CAWarpParam.x);
+	float2 GMappedUV = HMDWarp(InUV, CAWarpParam.y);
+	float2 BMappedUV = HMDWarp(InUV, CAWarpParam.z);
+
+	OutColor.r = Texture2DSample(PostprocessInput0, PostprocessInput0Sampler, RMappedUV).r;
+	OutColor.g = Texture2DSample(PostprocessInput0, PostprocessInput0Sampler, GMappedUV).g;
+	OutColor.b = Texture2DSample(PostprocessInput0, PostprocessInput0Sampler, BMappedUV).b;
+	OutColor.a = 1;
+
+	if (RMappedUV.x >= 1 || RMappedUV.y >= 1 || RMappedUV.x < 0 || RMappedUV.y < 0)
+	{
+		OutColor = 0;
+		return;
+	}
+}
+
+#endif

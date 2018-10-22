@@ -1,0 +1,72 @@
+Availability:Licensee
+Title:6. Creating a UE4 project for PlayStation VR
+Crumbs:%ROOT%, Platforms
+Description:Taking a look at how to create and setup a UE4 PlayStation VR project.
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 6
+tags: VR
+tags: PlayStation VR
+
+[nav]
+
+With the UE4 Engine code built, we can now create a new UE4 project that will work with PlayStation VR. 
+
+## Steps
+
+1. **Right-click** on your UE4 project and from the context menu select the **Set as StartUp Project**.
+
+    ![](PSVR_Set_As_Start_Up_Project.png)
+
+1. Switch the Solution Platform back to **Win64** and press **CTRL + F5** on the keyboard to launch the UE4 Editor.
+    
+    [region:note]
+    If you are prompted to compile anything here, make sure to do it before going any further.
+    [/region]
+
+1. Once the **Unreal Project Browser** loads, go to the **New Project** tab and select the **Blueprint** tab, if not already there, and in the Templates section, select the **Virtual Reality** template. Make sure that you keep the setting as default but remove the **Starter Content** as it is not needed. When all of that has been set, press the **Create Project** button to create the new project.
+
+    [REGION:lightbox]
+    [![](PSVR_New_Project_Settings.png)(w:555)](PSVR_New_Project_Settings.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. When the project starts go to **Edit** > **Plug-ins** to open up the Plugins menu.
+
+    ![](PSVR_Plugins_Menu.png)
+
+1. Select the **Virtual Reality** category on the side of the Plug-ins menu and from the available plugins, click on the checkmark box next to the **Morpheus** Plug-in and then press the **Restart Now** button to restart the Editor.
+
+    [REGION:lightbox]
+    [![](PSVR_Enable_Morpheus.png)(w:613)](PSVR_Enable_Morpheus.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. When the Editor re-starts go to **Edit** > **Project Settings** and enable the following options.
+
+* **Project Settings** **Project** > **Description** > **Settings**  Start in VR = True
+
+    ![](PSVR_Project_Settings_00.png)
+
+* **Project Settings** > **Plugins** > **Morpheus**  Enable Morpheus = True
+
+    ![](PSVR_Project_Settings_01.png)
+
+With PlayStation VR support now enabled in your project, in the next section, we will take a look at how to deploy your project to the PS4.
+
+
+
+
+
+
+
+[nav]

@@ -1,0 +1,96 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:7.将项目部署到 PS4
+Crumbs:%ROOT%, Platforms
+Description:了解如何在 PS4 上运行 UE4 PlayStation VR 项目。
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:7
+tags:VR
+tags:PlayStation VR
+
+[nav]
+
+UE4 项目启用 PlayStation VR 支持后，现在我们来学习如何在 PS4 上运行项目。
+
+## 步骤
+
+1. 为使 UE4 项目能够使用 PlayStation VR，首先需要创建一个新的 .SFO 文件。在以下路径中找到并打开 SP Editor 工具完成此操作： 
+
+        C:\Program Files (x86)\SCE\ORBIS\Tools\Publishing Tools\bin\orbis-pub-sfo.exe  
+
+    ![](PSVR_Orbis_Tools_Location.png)
+
+1. 在 UE4 引擎文件夹的以下路径中找到项目的 **param.sfo** 文件。
+
+        Engine\Build\PS4
+
+    ![](PSVR_ParamSFO_Location.png)
+
+1. 在 PlayStation 4 的 Param File Editor 中，前往 **File** > **Open** 打开 **Engine\Build\PS4** 文件夹中的 param.sfo 文件。
+
+    ![](PSVR_Open_SFO_File.png)
+
+1. 打开 param.sfo 文件后，前往 CPU 和 Peripherals 部分设置以下项目：
+
+    * **CPU Mode**:6 CPU mode
+    * **PlayStationVR**:The application supports PlayStationVR
+
+    [REGION:lightbox]
+    [![](PSVR_CPU_Settings.png)(w:464)](PSVR_CPU_Settings.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 以上选项设置完成后，前往 **File** > **Save as** 为新的 params.sfo 文件命名。将新的 pram.SFO 文件放入 **yourgame/build/PS4/sce_sys** 路径，或为所有 PS4 项目启用这些选项。
+	
+	[REGION:lightbox]
+    [![](PSVR_SaveSFO_File.png)(w:474)](PSVR_SaveSFO_File.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+    [region:note]
+   您需要手动创建放置 pram.SFO 的 **sce_sys** 文件夹（默认没有此文件夹）。
+    [/region]
+
+1. 返回 UE4 编辑器，点击 Launch 选项下拉菜单，然后选择 **Device Manager**。
+
+    ![](PSVR_Open_Device_Manager.png)
+
+1. 在 Device Manager 中找到 PS4，找到后对其 **点击右键**，在显示的快捷菜单的 **Connectivity** 部分中点击 **Connect** 选项连接到 PS4。
+
+    [REGION:lightbox]
+    [![](PSVR_Claim_PS4.png)(w:568)](PSVR_Claim_PS4.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+    [region:note]
+    Status 下显示 **Connected** 后，则说明已成功连至 PS4。
+    [/region]
+
+1. 返回 UE4，点击 **Launch** 旁的 Launch 下拉选项，从显示菜单的 **Devices** 列表中选择您的 PS4。
+
+    ![](PSVR_Launch_On_PS4.png)
+
+1. 画面右下角将显示部署进度。点击 **Show Output** 链接后将显示输出日志，提供进行中的详细信息。如果部署进程出错，错误将显示于此。 
+
+    ![](PSVR_Deploy_Status.png)
+
+1. 进度条显示 **Running (Project Name) on (PS4 Name)...** 后，戴上 PlayStation VR 显示器即可看到类似于下图的内容。
+
+    ![](PSVR_Final_Result.png)
+
+此快速入门讲述了使 UE4 项目兼容 PlayStation VR 的全部必需操作步骤。可在 [PlayStation VR 运动控制器指南](Platforms\PS4\PSVR\HowTo\PSVRMotionControllers) 中查看使 PlayStation VR 项目兼容 PlayStation Move 控制器的信息。
+
+[nav]

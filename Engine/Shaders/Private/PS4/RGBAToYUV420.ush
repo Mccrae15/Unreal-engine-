@@ -1,0 +1,114 @@
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+
+// This shader is modified for UE4 from the PS4 SDK sample tutorial_vr->social_screen
+/* SIE CONFIDENTIAL
+PlayStation(R)4 Programmer Tool Runtime Library Release 04.008.061
+* Copyright (C) 2015 Sony Interactive Entertainment Inc.
+* All Rights Reserved.
+*/
+/*
+* This is the compute shader code for translating Rgb to Yuv420.
+* We assume RGB value is (float)[0 - 1]. If you use fp16, you should normalize to [0 - 1]
+* The former 1280 x 720 area of destination texture is for Y.
+* The latter 1280 x 360 area of destination texture is for UV. U and V are interleaved.
+*/
+
+#include "/Engine/Public/Platform.ush"
+
+float getY(float4 color)
+{
+	return	0.18187266f	* color.r + 0.61183125f	* color.g + 0.06176484f	* color.b + 0.0625f;
+}
+
+float getU(float4 color)
+{
+	return 	-0.1002506f * color.r - 0.3372494f * color.g + 0.4375f * color.b + 0.5f;
+}
+
+float getV(float4 color)
+{
+	return	0.4375f * color.r - 0.3973838f * color.g - 0.0401162f * color.b + 0.5f;
+}
+
+float TargetHeight;
+float ScaleFactorX;
+float ScaleFactorY;
+float TextureYOffset;
+Texture2D SrcTexture;
+	
+RW_Texture2D<float> OutTexture;
+
+// the numbers of threads are optimized for this sample.
+[numthreads(32, 2, 1)]
+void RGBAToYUV420Main(
+	uint2 groupID : SV_GroupID, 
+	uint2 threadID : SV_GroupThreadID
+	)
+{
+	uint2 pixelPos;
+	pixelPos.x = groupID.x * 32 + threadID.x;
+	pixelPos.y = groupID.y * 2 + threadID.y;
+	uint2 pos = uint2(pixelPos.x, pixelPos.y);
+
+	// load Srt resources
+	Texture2D srcTex = SrcTexture;
+	RW_Texture2D<float> dstTex = OutTexture;
+	const float height = TargetHeight;
+	const float y_offset = TextureYOffset; // offset to adjust to src texture center area
+	const float nx_1 = ScaleFactorX; // normalized 1 pixel size for x axis
+	const float ny_1 = ScaleFactorY; // normalized 1 pixel size for y axis
+
+	// use bilinear sampler
+	sce::Gnm::Sampler samp;
+	samp.init();
+	samp.setMipFilterMode(sce::Gnm::kMipFilterModeNone);
+	samp.setBorderColor(sce::Gnm::kBorderColorOpaqueBlack);
+	samp.setXyFilterMode(sce::Gnm::kFilterModeBilinear, sce::Gnm::kFilterModeBilinear);
+	samp.setWrapMode(sce::Gnm::kWrapModeClampBorder, sce::Gnm::kWrapModeClampBorder, sce::Gnm::kWrapModeClampBorder);
+	SamplerState sampler = SamplerState(samp);
+
+	// set destination positions of Y. Write 4 pixels at once.
+	uint2 dstPos00 = pos * 2;
+	uint2 dstPos10 = dstPos00 + uint2(1, 0);
+	uint2 dstPos01 = dstPos00 + uint2(0, 1);
+	uint2 dstPos11 = dstPos00 + uint2(1, 1);
+
+	float2 srcPos = (float2)dstPos00;
+	// 8:9 -> 16:9  trim center and normalize
+	srcPos.x = srcPos.x * nx_1;
+	srcPos.y = (srcPos.y + y_offset) *ny_1;
+	const float srcXm1 = srcPos.x - nx_1;
+	const float srcXp1 = srcPos.x + nx_1;
+	const float srcYp1 = srcPos.y + ny_1;
+
+	float2 srcPosC0 = float2(srcPos.x, srcPos.y);
+	float2 srcPosR0 = float2(srcXp1,   srcPos.y);
+	float2 srcPosL0 = float2(srcXm1,   srcPos.y);
+	float2 srcPosC1 = float2(srcPos.x, srcYp1);
+	float2 srcPosR1 = float2(srcXp1,   srcYp1);
+	float2 srcPosL1 = float2(srcXm1,   srcYp1);
+
+	// 6 pixels are used for 1 UV value calcuration.
+	// for cache hit, center -> L,R is a bit better.
+	float4 srcL0,srcL1,srcC0,srcC1,srcR0,srcR1;
+	srcC0 = srcTex.SampleLOD(sampler, srcPosC0, 0, 0);
+	srcR0 = srcTex.SampleLOD(sampler, srcPosR0, 0, 0);
+	srcL0 = srcTex.SampleLOD(sampler, srcPosL0, 0, 0);
+	srcC1 = srcTex.SampleLOD(sampler, srcPosC1, 0, 0);
+	srcR1 = srcTex.SampleLOD(sampler, srcPosR1, 0, 0);
+	srcL1 = srcTex.SampleLOD(sampler, srcPosL1, 0, 0);
+
+	// 4 pixels for Y
+	dstTex[dstPos00] = getY(srcC0);
+	dstTex[dstPos10] = getY(srcR0);
+	dstTex[dstPos01] = getY(srcC1);
+	dstTex[dstPos11] = getY(srcR1);
+
+	// 6 pixels for 1 UV. Filtering as Up:Down = 1:1, Left:Center:Right = 1:2:1.
+	const float4 uvSrc = (srcL0 + srcL1 + 2 * (srcC1 + srcC0) + srcR0 + srcR1) / 8;
+	uint2 uPos = dstPos00;
+	uPos.y = pos.y + height;
+	uint2 vPos = uPos + uint2(1, 0);
+	dstTex[uPos] = getU(uvSrc);
+	dstTex[vPos] = getV(uvSrc);
+}

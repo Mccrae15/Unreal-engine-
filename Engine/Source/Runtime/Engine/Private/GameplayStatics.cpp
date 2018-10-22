@@ -41,7 +41,11 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "Misc/EngineVersion.h"
 #include "ContentStreaming.h"
-
+//CarbonEdit 10.04 start
+#if PLATFORM_PS4 
+#include "RunnableThread.h" 
+#endif
+//CarbonEdit 10.04 end
 #define LOCTEXT_NAMESPACE "GameplayStatics"
 
 static const int UE4_SAVEGAME_FILE_TYPE_TAG = 0x53415647;		// "sAvG"
@@ -1713,10 +1717,24 @@ bool UGameplayStatics::SaveDataToSlot(const TArray<uint8>& InSaveData, const FSt
 	return false;
 }
 
+//CarbonEdit 10.04 Start
+#if PLATFORM_PS4 
+class FSaveGameRunnable : public FRunnable
+{
+public: FSaveGameRunnable(const TCHAR* _SlotName, uint32 _UserIndex, const TArray<uint8>& _ObjectBytes) : SlotName(_SlotName), UserIndex(_UserIndex), ObjectBytes(_ObjectBytes) { } virtual uint32 Run(void) {
+	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
+	bool bSuccess = SaveSystem && SaveSystem->SaveGame(false, *SlotName, UserIndex, ObjectBytes);
+	return bSuccess ? 0 : 1;
+} private: FString SlotName; uint32 UserIndex; TArray<uint8> ObjectBytes;
+};
+#endif // PLATFORM_PS4
+//CarbonEdit 10.04 End
 bool UGameplayStatics::SaveGameToSlot(USaveGame* SaveGameObject, const FString& SlotName, const int32 UserIndex)
 {
 	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
-	// If we have a system and an object to save and a save name...
+	//CarbonEdit 10.04 Start
+	bool bSuccess = false;
+	//CarbonEdit 10.04 End	// If we have a system and an object to save and a save name...
 	if(SaveSystem && SaveGameObject && (SlotName.Len() > 0))
 	{
 		TArray<uint8> ObjectBytes;
@@ -1729,8 +1747,18 @@ bool UGameplayStatics::SaveGameToSlot(USaveGame* SaveGameObject, const FString& 
 		FObjectAndNameAsStringProxyArchive Ar(MemoryWriter, false);
 		SaveGameObject->Serialize(Ar);
 
-		// Stuff that data into the save system with the desired file name
-		return SaveSystem->SaveGame(false, *SlotName, UserIndex, ObjectBytes);
+		//CarbonEdit 10.04 Start
+		//// Stuff that data into the save system with the desired file name
+		//return SaveSystem->SaveGame(false, *SlotName, UserIndex, ObjectBytes);
+#if PLATFORM_PS4 // Asynchronous save game: create a save game thread, letting it auto-delete itself
+		FSaveGameRunnable* SaveGameRunnable = new FSaveGameRunnable(*SlotName, UserIndex, ObjectBytes);
+		FRunnableThread* SaveGameThread = FRunnableThread::Create(SaveGameRunnable, TEXT("SaveGamePS4Thread"));
+		bSuccess = true; return bSuccess;
+#else // Stuff that data into the save system with the desired file name 
+		bSuccess = SaveSystem->SaveGame(false, *SlotName, UserIndex, ObjectBytes);
+		return bSuccess;
+#endif 
+		//CarbonEdit 10.04 End
 	}
 	return false;
 }

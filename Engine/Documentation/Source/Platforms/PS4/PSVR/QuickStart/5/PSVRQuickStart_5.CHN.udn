@@ -1,0 +1,90 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:5.编译 UE4 支持 PlayStation VR
+Crumbs:%ROOT%, Platforms
+Description:了解如何编译 UE4 项目，使其兼容 PlayStation VR。
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:5
+tags:VR
+tags:PlayStation VR
+
+[nav]
+
+PlayStation VR 工具安装设置好后即可在 PS4 Neighborhood 中看到 PS4 开发机。我们需要从源代码编译虚幻引擎，纳入 PlayStation VR 开发。这样一来便可以创建 UE4 项目，并部署到 PS4 开发机和 PlayStation VR 上。 
+
+[region:warning]
+要获得 PS4 开发支持，首先需要从 Github 或 Perforce 下载 UE4。Launcher 中下载的 UE4 二进制版本中不包含所需的 PS4 开发文件。  
+[/region]
+
+## 步骤
+
+1. 从 [Epic Github](https://github.com/EpicGames/UnrealEngine) 页面下载最新的 UE4 版本，下载后将其解压到 PC 上。 
+	
+	[region:note]
+	在点击上方的链接之前，先登入 Github。如未完成此操作，链接将无法正常使用。
+	[/region]
+
+1. 在解压文件的文件夹中找到并运行 **Setup.BAT** 文件，将引擎的其余部分下载到开发电脑上。
+
+    [REGION:lightbox]
+    [![](PSVR_Run_Setup.png)(w:504)](PSVR_Run_Setup.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 所有文件下载完成后，需要下载并解压相应的主机 zip 包。Epic 确认您为注册 PS4 主机开发者后，便会提供所有文件。
+
+    [region:note]
+    如已从 Github 下载 UE4，您将收到一个访问加密 FTP 的链接，其中包含主机文件。如通过注册者 Perforce 下载 UE4，您则已拥有这些文件。
+    [/region]
+
+1. 新解压的文件夹中将出现一个 Engine 文件夹。复制这个 Engine 文件夹，替换步骤 2 中下载的 Engine 文件夹。 
+
+    [region:tip]
+    确认所有覆盖，因为所有必需文件都需要被更新为主机版本。
+    [/region]
+
+1. 在 Engine 文件夹找到并运行 **Generate Project files.BAT** 文件。
+
+    [REGION:lightbox]
+    [![](PSVR_Run_GenProjectFiles.png)(w:504)](PSVR_Run_GenProjectFiles.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 项目文件生成完毕后，双击 UE4.sln 文件启动 UE4 Visual Studio 项目。
+
+    [REGION:lightbox]
+    [![](PSVR_Launch_Project.png)(w:504)](PSVR_Launch_Project.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 在 Visual Studio 上将 Solution Configuration 设为 **Development Editor**；Solution Platform 设为 **Win64**。  
+
+    ![](PSVR_VS_Settings.png)
+
+1. 在 Solution 浏览器中右键点击 UE4 项目，从快捷菜单中选择 **Build** 选项。
+
+    ![](PSVR_Build_UE4.png)
+
+1. 编译完成后，将 **Solution Platform** 改为 **PS4**，然后展开 **Programs** 文件夹寻找 **PS4DevKitUtil**。找到 PS4DevKitUtil 后，对其点击右键并选择 **Build** 选项。
+
+    ![](PSVR_Build_PSDevKitUtil.png)
+
+
+编译 UE4 代码后，下一部分将创建并设置一个新 UE4 项目，使其与 PlayStation VR 兼容。
+
+
+
+[nav]

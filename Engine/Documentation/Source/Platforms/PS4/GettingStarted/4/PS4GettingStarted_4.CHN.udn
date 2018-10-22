@@ -1,0 +1,137 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:使用 Visual Studio 进行调试
+Description:借助列出的可用方法，使用 Visual Studio 进行调试。
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version:4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:4
+
+[TOC(start:2 end:2)]
+
+[nav]
+
+[EXCERPT:main]
+用 Visual Studio 调试游戏时，存在两个真实的变化，用户可运行游戏或运行编辑器。不推荐两者同时运行。如从已在 Visual Studio 中运行编辑器中启动游戏，则其将在 Visual Studio 的上下文之外启动，意味着它将不附带任何调试器。然而可打开任意数量的 Visual Studio 实例，并可将其附加到任意数量的运行流程。这样一来便可从编辑器中启动游戏，然后通过“Attach to Process”对话将另一个 Visual Studio 实例附加到开发机。 
+
+## 从 Visual Studio 运行游戏
+
+从 Visual Studio 运行游戏要求资源 **在 Visual Studio 之外进行烘焙和部署**。此进程取决于用户要常规烘焙（Cook By The Book）、即时烘焙（Cook On The Fly），或用已有的游戏打包文件跳过烘焙进程。
+
+点击展开最契合您的工作流的方法并按步骤执行。
+
+### 用常规烘焙运行游戏
+
+此方法将在开发者的电脑上烘焙整个游戏，并在开始调试会话之前将其部署到控制台。如您尚未烘焙内容，且需要确保游戏以最佳帧率运行，则可选择此方法。 
+
+1. 打开编辑器，编译、烘焙并使用 Project Launcher 中的 **Cook by the Book** 配置文件将内容部署到 PS4 上。
+1. 选择版本配置，如 **Development | PS4** 或 **Debug Game | PS4**。
+1. 在 Visual Studio 中的 **Solution Explorer** 窗口下，右键点击游戏项目并选择 **Properties** > **Debugging**。
+1. 之后将可执行文件的参数设置到：	
+	* [RelativePathFromElfToProject.uproject] [MapName]
+	* ../../../MyProject/MyProject.uproject myMap
+1. 最后 **编译** 并 **运行** 项目。
+
+[REGION:notes]
+注意事项： 
+
+* 指定的 .uproject 对应 PS4 上的 .elf / .self 文件，不对应 Visual Studio 目录。
+* Visual Studio 不部署游戏资源。游戏资源必须事先通过烘焙和部署就位。 
+[/REGION]
+
+### 用即时烘焙运行游戏
+
+此方法将在指定的“即时烘焙”电脑（本地或远程）上烘焙整个游戏，并迅速启动游戏。因为资源为随选烘焙，将牺牲一些运行时性能。尚无已烘焙版本，运行游戏时只需要烘焙最少量资源的情况适合使用此方法。
+
+
+1. 确保即时烘焙服务器正常运行。
+1. 选择版本配置，如 **Development | PS4** 或 **Debug Game | PS4**。
+1. 在 Visual Studio 中的 **Solution Explorer** 窗口下，右键点击游戏项目并选择 **Properties** > **Debugging**。
+1. 将可执行文件参数设置到：
+	* [RelativePathFromElfToProject.uproject] [MapName] [-filehostip=COTFServerAddress]
+	* ../../../MyProject/MyProject.uproject myMap -filehostip=192.168.0.1
+	[REGION:note]
+	`-filehostip` 应指定烘焙服务器的 IP 地址，以便 PS4 在运行游戏时识别。
+	[/REGION]
+1. 最后 **编译** 并 **运行** 项目。
+
+
+[COMMENT:none]
+- Commented out since this method should NOT be used in its current state, but may be useful in the future as an update to the doc ---
+
+#### 用已有的暂存版本运行游戏
+
+此方法将从开发者的机器上部署已有的烘焙版本。在上次烘焙版本之后资源未发生变化（仅源）则更为理想。索尼的主机 PC 软件（Neighborhood）将从后台执行部署。此方法有一些未默认配置的细微差别，因此需要确保每个步骤均执行。 
+
+1. 索尼将把“工作目录”映射到 PS4 上的 /app0 文件夹。执行以下操作将此覆盖，使用本地暂存目录：
+
+	* Properties > Debugging > Working Directory:改为指向所需的暂存版本。 
+	
+		MyGame/Saved/StagedBuild/PS4/
+
+1. PS4Launch.cpp 取决于命令行“-deployedbuild”修改 UE4 在“/app0”和“/data/[gamename]”之间所使用的根路径。
+1. 确保 sce_module 目录中的 prx 内容正确。
+1. minefield! 
+
+----- Commented out since this method should NOT be used in its current state, but may be useful in the future as an update to the doc -
+[/COMMENT]
+
+### 用预编译包运行游戏
+
+此方法将已有的完整打包版本安装到 PS4，然后在此之上运行调试。 
+
+可使用此方法调试包（.pkg）中已有的二进制文件，或修改代码，然后在此之上运行。此工作流可使团队对共享的版本进行调试，或在无需重烘焙和重打包游戏的情况下进行代码修改。 
+
+1. 将所需的基础包安装到 PS4。
+1. 选择版本配置，如 **Development | PS4** 或 **Debug Game | PS4**。
+1. 在 Visual Studio 中的 **Solution Explorer** 窗口下，右键点击游戏项目并选择 **Properties** > **Debugging**。
+1. 将 **Debugger to launch** 下拉选项从“PS4 Standard Debugger”改为 **PS4 Application Debugger**，并在以下域中输入值。 
+	* **TitleID** - 将此改为正确的游戏 ID。
+	* **Executable Load Location** - 输入以下之一：
+		* **Auto** - 指定使用部署包中定义的 .self。Visual Studio 将附加到编译到包中的二进制文件。
+		* **Host** - 指定此域将使 Visual Studio 直接从主机电脑加载一个 .self 二进制文件。在出现的 **Host Executable** 域中输入 .self 文件的路径。举例而言，使用本地编译二进制文件时会使用： 
+			`MyGameProject\Binaries\PS4\MyGameProject.self` 
+		Visual Studio 将附加到在本地电脑上编译的二进制文件，在部署包之上运行。 
+		* **PS4** - 这与“Host”选项相同，唯一的不同是“PS4 可执行文件”中指定的路径对应 PS4 硬盘上的 **/data/** 目录。可通过 Windows 浏览器中的网络映射开发机文件夹访问此文件夹。
+			Visual Studio 将启动并附加到此处指定的二进制文件，在部署包之上运行。 
+	* 另外可选择在 **Executable Arguments** 中添加额外的游戏命令行参数。
+1. 在 Visual Studio 中的 **Play**（绿色）	箭头旁将“PS4 Standard Debugger”改为 **PS4 Application Debugger**。		
+1. 使用快捷键 **F5** 即可开始调试。 	
+
+
+[REGION:note]
+使用“从 Visual Studio 运行游戏”法时需要牢记重要的几点。
+
+* 指定的 .uproject 文件对应 PS4 上的 .self 文件，不对应 Visual Studio 目录。
+* 使用 **即时烘焙** 时才使用 `-filehostip`，应该指定烘焙服务器的 IP 地址，使硬件在运行游戏了解。 
+* Visual Studio 不部署游戏资源，因此资源必须已就位，或必须使用即时烘焙服务器。 
+[/REGION]
+
+[COMMENT:none]
+-
+[REGION:tip]
+在 PS4 上，游戏可执行文件延展名为 .self，调试符号文件扩展名为 dwarf。如果文件崩溃，就需要调试文件来查找原因。
+[/REGION]
+-
+[/COMMENT]
+
+## 从 Visual Studio 运行编辑器
+
+用需要的“编辑器” Win64 编译配置编译游戏项目，即可在 Visual Studio 中运行编辑器。例如 **开发编辑器** 或 **调试编辑器**。
+
+如编辑器当前在 Visual Studio 中运行，则无法使用 Project Launcher 从编辑器运行游戏，除非禁用 **Edit and Continue**。如需执行此操作，可前往 **Tools** > **Options** > **Debugging** > **General** > 取消勾选 **Enable Edit and Continue**。
+[/EXCERPT:main]
+
+## 最终结果
+
+现在您已学习到多种从 Visual Studio 调试游戏的不同方法（通过运行游戏或编辑器）。这些方法能助您更好地进行理解，并将您自己的内容部署到 PS4 开发机上。  
+
+继续最后一步，了解一些额外信息。 
+
+
+[nav]

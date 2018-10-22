@@ -1,0 +1,44 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:3. PS4 개발 키트 셋업
+Crumbs:%ROOT%, Platforms
+Description:PS4 개발 키트 셋업 방법을 살펴봅니다.
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 3
+tags: VR
+tags: PlayStation VR
+
+[nav]
+PS4 개발 키트 작동을 위해서는 특정 방식으로 셋업해 줘야 합니다. 여기서는 PS4 개발 키트를 UE4 에서 작동되도록 하기 위해 해야 하는 작업에 대해 살펴보겠습니다.
+
+## 단계
+
+1. **LAN** 및 **DEV** 포트 양쪽에 이더넷 케이블이 연결되어 있는지 확인하세요. 개발 키트에서는 양쪽 모두 필요합니다.
+
+    [REGION:lightbox]
+    [![](PSVR_Lan_Ports.png)(w:504)](PSVR_Lan_Ports.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+1. **Debug Settings** > **Boot Parameters** > **Release Check Mode** 에서 DevKit 를 **Development Mode** 로 설정합니다.
+
+    [REGION:lightbox]
+    [![](PSVR_Boot_Params.png)(w:504)](PSVR_Boot_Params.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+
+PS4 가 네트워크에 연결되었고 개발 모드로 셋업되었으니, 다음에는 Neighborhood for Playstation 툴에 PS4 가 보이도록 하는 법을 살펴보겠습니다.
+
+
+[nav]

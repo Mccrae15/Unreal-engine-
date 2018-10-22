@@ -1,0 +1,44 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:3.PS4 開発キットの設定
+Crumbs:%ROOT%, Platforms
+Description:PS4 開発キットの設定方法
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:3
+tags:VR
+tags:PlayStation VR
+
+[nav]
+PS4 開発キットを動かすためには、所定の設定が必要となります。以下のセクションで、UE4 で PS4 開発キットを動かすための設定を説明します。
+
+## ステップ
+
+1. **LAN** と **DEV** の両方のポートに正常なイーサネット ケーブルが挿し込まれていることを確認してください。DEV キットはこの両方が必要となります。
+
+    [REGION:lightbox]
+    [![](PSVR_Lan_Ports.png)(w:504)](PSVR_Lan_Ports.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. **[Debug Settings (デバッグ設定)]** > **[Boot Parameters]** > **[Release Check Mode]** から DevKit の設定を **[Development Mode]** にします。
+
+    [REGION:lightbox]
+    [![](PSVR_Boot_Params.png)(w:504)](PSVR_Boot_Params.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+
+PS4 のネットワーク接続と開発モードでの設定はこれで完了です。次のセクションでは、Neighborhood for Playstation ツールで PS4 が見れるように設定します。
+
+
+[nav]

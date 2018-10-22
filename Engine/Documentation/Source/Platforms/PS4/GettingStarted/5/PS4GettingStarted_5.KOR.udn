@@ -1,0 +1,55 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:부가 정보
+Description:언리얼 엔진 4 에서 사용할 PS4 셋업 시 필요한 부가 정보 및 참고 자료입니다.
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version: 4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:5
+
+
+[nav]
+
+[EXCERPT:main]
+여기서는 언리얼 엔진 4 에서 PlayStation 4 개발 키트를 사용할 수 있도록 셋업하는 기존 문서 관련 부가 정보 및 간단한 참고 자료를 다룹니다.
+
+## PlayStation 4 지원 파일 접근
+
+[PUBLISH:rocket]
+1. 에픽게임즈에 PlayStation 4 개발자로 등록했을 때 받은 FTP 정보로 http://ftp.epicgames.com/ 에 로그인 합니다.
+1. FTP 의 **UE4PS4** 디렉토리로 이동한 뒤 **PS4-xxxx.zip** 파일을 다운로드합니다. "xxxx" 는 GitHub 에서 동기화시킬 브랜치 이름입니다.
+[/PUBLISH:rocket]
+
+[PUBLISH:licensee]
+PS4 접근 권한이 있는 경우 모든 PlayStation 4 지원 파일이 보일 것입니다.
+[/PUBLISH:licensee]
+
+## 셋업 주의사항
+
+* 다른 플랫폼 개발을 하는 경우, 해당 플랫폼에 미리 필요한 파일을 전부 설치한 뒤 프로젝트 파일을 생성하세요.
+* 플랫폼 지원은 프로젝트 생성 시점에 설치된 SDK 버전에 따라 달라집니다. 즉 SDK 버전을 업데이트한 경우, `[UE4Directory]/GenerateProjectFiles.bat` 파일을 실행시켜줘야 합니다. 
+* SDK 를 설치할 때, SDK 버전이 `[UE4Directory]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs` 파일의 **PS4PlatformSDK::ExpectedSDKVersion** 와 일치하는지 확인하세요.
+
+## Visual Studio 로 Batch Building
+
+빌드 프로세스를 수월하게 하기 위해, **Build** 메뉴의 **Batch Build** 옵션을 사용하여 프로젝트의 복수 구성 빌드를 만들 수 있습니다.
+
+[](Platforms/PS4/GettingStarted/1) 문서의 6 단계에서 그 예제를 확인할 수 있습니다.
+
+## 부가 자료
+
+* [](Support/Builds) 문서에서 언리얼 엔진 어느 버전에 어느 버전의 SDK 가 필요한지 확인할 수 있습니다.
+* [Sony documentation for PlayStation 4's Neighborhood tool](https://ps4.scedev.net/resources/documents/SDK/4.500/Neighborhood_and_Utilities-Users_Guide/__document_toc.html)
+[PUBLISH:licensee]
+* PlayStation 4 지원 파일 관련 Perforce 접근 문제가 발생하신 경우, 에픽게임즈 계정 담당자에 연락해 주세요.
+[/PUBLISH:licensee]
+[/EXCERPT:main]
+
+[nav]
+
+

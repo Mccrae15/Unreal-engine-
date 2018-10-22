@@ -1,0 +1,31 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:1.获取 PS4 开发工具
+Crumbs:
+Description:UE4 PS VR 游戏开发必备工具的获取方法。
+Platform:PS4
+Version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:1
+tags:VR
+tags:PlayStation VR
+
+[NAV]
+开始开发 PlayStation VR 游戏之前，首先需要注册成为索尼的 PlayStation VR 开发者。完成注册后，您需要联系 Epic 确认 PS VR 注册状态。以下部分将说明如何进行此操作。
+
+## 步骤 
+
+1. 首先需要注册成为索尼开发者，获得 PS4 和 PS VR 开发工具。前往 [http://us.playstation.com/develop/](http://us.playstation.com/develop/) 填表获取开发工具后，即可完成注册。
+
+1. 索尼批准 PlayStation VR 开发申请后，请发送电邮至 **consoles@unrealengine.com**，告知 Epic 您已获得批准进行 PlayStation VR 开发。
+
+1. Epic 确认您的注册后，您便会了解从何处下载必备工具。 
+
+
+下一部分将讲述如何安装并设置 PS4 开发工具，开始开发 PlayStation VR 项目。
+
+[NAV]
+
+

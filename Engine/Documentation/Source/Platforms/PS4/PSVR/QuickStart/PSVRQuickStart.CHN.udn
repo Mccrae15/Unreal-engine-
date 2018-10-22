@@ -1,0 +1,28 @@
+﻿INTSourceChangelist:3429260
+Availability:Licensee
+Title:PlayStation VR 快速入门
+Crumbs:
+Description:使 UE4 项目兼容 PSVR。
+Navigation:platform
+Version:4.13
+parent:Platforms/PS4/PSVR
+order:1
+type:quick start
+type:landing
+tags:VR
+tags:PlayStation VR
+Platform:PS4
+topic-image:PSVR_Header_Image.png
+
+
+![](PSVR_Header_Image.png)
+
+准备好 PlayStation VR 和 Playstation 头戴显示器后，即可设置 Playstation 项目使用 PlayStation VR HMD。以下快速入门将讲述如何设置 UE4 Playstation 项目兼容 PS VR。完成此快速指南的阅读后，您便能设置好兼容 PS VR 的 UE4 项目。
+
+## 步骤
+
+[DIR(output:"checkpoint" parent:"Platforms/PS4/PSVR/quickstart")]
+
+[REGION:call_to_action]
+    [Click to Start](Platforms\PS4\PSVR\QuickStart\1 "%Platforms\PS4\PSVR\QuickStart\1:title%")
+[/REGION]

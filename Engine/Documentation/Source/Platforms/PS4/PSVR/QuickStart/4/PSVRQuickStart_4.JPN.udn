@@ -1,0 +1,102 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:4.PS4 Neighborhood を設定する
+Crumbs:%ROOT%, Platforms
+Description:Neighborhood for PlayStation の設定と使用方法
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:4
+tags:VR
+tags:PlayStation VR
+
+[nav]
+
+Neighborhood for PlayStation は、PS4 の動作をすぐに確認したり、開発用マシンから PS4 のインストール、アンインストール、更新ができるオプションです。 
+
+## ステップ
+
+1. Windows のエクスプローラーを開いて、右枠に表示された **[Neighborhood for PlayStation(R)4]** オプションをクリックして PS4 Neighborhood ツールを開きます。
+
+    [REGION:lightbox]
+    [![](PSVR_Neighborhood_Open.png)(w:504)](PSVR_Neighborhood_Open.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. Neighborhood ツールの空いている部分を右クリックして、表示されたメニューから **[Add Target (ターゲットを追加)]** オプションを選択します。
+
+    [REGION:lightbox]
+    [![](PSVR_Neighborhood_Add_New_PS4.png)(w:691)](PSVR_Neighborhood_Add_New_PS4.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. PS4 の IP アドレスを **Address** ボックスに入力して、**[Finish]** を押して IP アドレスを追加します。
+
+    ![](PSVR_Add_Your_PS4.png)
+
+    [region:note]
+    メイン メニューの左上のグレーの小さなボックスに PS4 の IP アドレスが表示されます。
+
+    ![](PSVR_PS4_IP_Addr.png)
+    [/region]
+
+1. 追加した PS4 を右クリックして、コンテキスト メニューから **[Set default (デフォルトを設定)]** オプションをクリックします。
+    
+    [REGION:lightbox]
+    [![](PSVR_Set_Default.png)(w:409)](PSVR_Set_Default.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. PS4 オプションをもう一度右クリックして、コンテキスト メニューから **[Connect (接続)]** を選択して PS4 に接続します。
+
+    [REGION:lightbox]
+    [![](PSVR_Connect.png)(w:409)](PSVR_Connect.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. PS4 が **[Target Operations]** セクションの **Neighborhood for PlayStations(R) 4** ツールの内部に接続されたら、**[System Update]** オプションをクリックします。
+
+    [REGION:lightbox]
+    [![](PSVR_UpdateFirmware_00.png)(w:657)](PSVR_UpdateFirmware_00.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. 表示されたウィンドウから **C:\Program Files (x86)\SCE\ORBIS\System Update Files** を開き、ご使用のキットタイプ用の PS4 アップデートを選択したら **[Open]** ボタンを押します。
+
+    [REGION:lightbox]
+    [![](PSVR_UpdateFirmware_01.png)(w:480)](PSVR_UpdateFirmware_01.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+	* **DevKit**:PS4UPDATE-devkit-[version].PUP
+	* **TestKit**:PS4UPDATE-testkit-[version].PUP
+
+	[region:note]
+	アップデートは完了するまで 5 分から 10 分かかります。
+	[/region]
+
+
+開発用マシンから PS4 への接続が完了したので、コンテンツのビルドとデプロイが可能になりました。次のセクションでは、UE4 PlayStation VR プロジェクトを立ち上げて、PS4 上で実行するための手順について説明します。
+
+
+[nav]

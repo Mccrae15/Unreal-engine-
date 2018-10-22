@@ -1,0 +1,90 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:必要设置
+Description:设置并编译引擎，以便结合 PlayStation 4 SDK 使用。
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version:4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:1
+
+[nav]
+
+[EXCERPT:main]
+开始进行 PlayStation 4 开发之前需要安装 PS4 SDK、设置引擎源版本，并安装必需的 PS4 支持文件，整合到版本中。
+
+[PUBLISH:licensee]
+1. 从 [P4](GettingStarted/DownloadingUnrealEngine/Perforce/Basics) 下载虚幻引擎 4 源代码。
+[/PUBLISH:licensee]
+[PUBLISH:rocket]
+1. 通过 [GitHub](https://github.com/EpicGames/UnrealEngine) 下载虚幻引擎 4 源代码版本。
+
+	[REGION:note]
+	Epic Games Launcher 中的二进制引擎版本并不支持主机开发。 
+	[/REGION]
+[/PUBLISH:rocket]
+
+1. 安装 PS4 SDK，确保 SDK 版本与指定到 **PS4PlatformSDK::ExpectedSDKVersion** 的值匹配，其所在路径为：
+	
+	`[UE4Directory]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs`
+	
+	更新 SDK 时也需要更新此值。 
+	
+	[REGION:note]
+	可在以下文件中的 `HasRequiredSDKsInstalled()` 函数中进行查找，查看需要的是哪个版本的 PS4 SDK 虚幻引擎：
+	
+	`[UE4Directory]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs`
+					
+	可在项目版本 [发布和热修复说明](Support/Builds) 中查看最新支持或推荐的平台 SDK。
+	[/REGION]
+[PUBLISH:rocket]
+
+1. 用注册成为 PS4 开发者时从 Epic Games 获得的 FTP 登录信息登入 http://ftp.epicgames.com/ 并下载可用的 PS4 支持文件，然后前往 FTP 的 **UE4PS4** 目录下载 **ps4-xxxx.zip**（“xxxx”是同步的 GitHub 分支）。
+[/PUBLISH:rocket]
+[PUBLISH:rocket]
+
+1. 运行 `setup.bat` 并将 **Ps4-xxxx.zip** 解压到 `[UE4Directory]` 根文件夹中。
+[/PUBLISH:rocket]	
+
+1. 运行 `[UE4Directory]/GenerateProjectFiles.bat`。此步骤应该在安装 PS4 SDK 后执行，使其知晓已安装必要的 PS4 支持文件。 
+
+1. 编译编辑器、相关工具和项目。以下目标为良好的起始点。
+
+	| 目标 | 配置 | 平台 |
+	| ------ | ------ | -------- |
+	| [ProjectName] | Development Editor | Win64 |
+	| PS4DevKitUtil | Development Editor | Win64 |
+	| ShaderCompileWorker | Development Editor | Win64 |
+	| UnrealFrontend | Development Editor | Win64 |
+	| [ProjectName] | Development | PS4 |
+
+	[REGION:tip]
+	执行以下步骤使用 Visual Studio 中的 **Batch Build** 功能，即可使项目的编译更加简便：
+	
+	1. 在 **Build** 菜单中选择 **Build > Batch Build**。
+
+	1. 设置以下选项：
+
+		| 目标 | 配置 | 平台 |
+		| ------ | ------ | -------- |
+		| [ProjectName] | Development_Editor | x64 |
+		| PS4DevKitUtil | Development Editor | Win64 |
+		| ShaderCompileWorker | Development_Editor | x64 |
+		| UnrealFrontend | Development Editor | x64 |
+		| [ProjectName] | Development | ORBIS |
+
+	1. 点击 **Build** 或 **Rebuild** 按钮重新编译编辑器、相关工具和项目。
+	[/REGION]
+
+[/EXCERPT:main]
+
+## 最终结果
+
+此时您已安装 PlayStation 4 SDK、已从 GitHub 或 Epic Games Perforce 元库中设置新的引擎源版本，并已整合所需的 PS4 支持文件，使结合在一起的全部内容能够正确编译。在下一步中您将学习到如何设置 PS4 的连接，以便从编辑器部署版本到 PS4 开发机。 
+
+
+[nav]

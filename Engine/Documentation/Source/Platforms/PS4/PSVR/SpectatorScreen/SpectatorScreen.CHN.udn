@@ -1,0 +1,167 @@
+﻿INTSourceChangelist:3612834
+Availability:Licensee
+Crumbs: %ROOT%
+Title:PlayStation VR 中的虚拟现实观众画面
+Description:此文档内含虚幻引擎 4 中 PlayStation VR 虚拟现实观众画面的总览。 
+Type:Overview
+SkillLevel:Advanced
+Version:4.17
+Parent:Platforms/PS4/PSVR
+Order: 
+Tags:VR
+Tags:PSVR
+topic-image:VRSpecScreen_topic_image.png
+social-image:VRSpecScreen_topic_image.png
+Contributors:Ghost Paint
+
+[TOC(start:2 end:2)]
+
+[EXCERPT:SpectatorScreen_Overview_1]
+虚幻引擎 4 的 **VR 观众画面（VR Spectator Screen）** 功能能够使用户成为虚拟现实（VR）观众（从第三人称视角进行观察），而其他用户则与虚拟场景互动。运行 VR 观众画面时，您可通过电脑显示器（或电视）观察其他玩家，能够有效地收集 VR 深度体验的反馈。 
+
+<sub>_Images Courtesy of [GhostPaint.com](http://ghostpaint.com/)_</sub>  
+[REGION:imagetable]
+| ![VRSpecScreen.png](VRSpecScreen.png)(w:600) | ![VRPlayerPerspectiveScreen.png](VRPlayerPerspectiveScreen.png)(w:600) |
+| --- | --- |
+| VR 观众画面视角 | VR 玩家的头戴显示器视角 |
+[/REGION]
+_在左侧，您（观众）观察到 VR 中这位艺术家正在绘制砖墙；而在右侧，VR 中艺术家正专注于进行绘制。_  
+
+根据头戴显示器（HMD）生产商的不同，VR 观众画面与 VR 社交画面含义相同；或者 VR 观众模式与 VR 镜像模式含义相同。在此文档的上下文中，**观众画面** 是一个连接到 VR 设备的标准输出设备（如电脑显示器或电视）。此外，启用 **观众模式** 意味着用户能够在玩家使用头戴显示器在 VR 环境中进行游戏时进行观察（或在特定情况下进行交互）。 
+
+## 支持平台
+
+以下平台当前支持 UE4 中的观众画面模式：
+
+* [HTC Vive](https://www.vive.com/us/) 
+* [Oculus Rift](https://www.oculus.com/rift/)  
+* [Steam VR](http://store.steampowered.com/steamvr) 
+* [PlayStation VR (PS VR)](https://www.playstation.com/en-us/explore/playstation-vr/?emcid=pa-pe-97928)  
+
+虽然我们希望其他个人电脑设备和主机能够支持此功能，但移动 VR 设备（平台）很难支持此功能。
+
+## 观众画面模式入门
+
+[REGION:tip]
+除 PS VR 之外，观众画面模式默认在 UE4 中启动。
+[/REGION]
+
+在观众画面模式中使用纹理时，左上角的坐标代表最小的坐标值，而右下角的坐标则代表最大的坐标值。  
+
+![](VRSpec_BPTextureCoordinate.png)
+[/EXCERPT:SpectatorScreen_Overview_1]
+## 观众画面蓝图节点
+
+在使用范例中，我们使用的是以下蓝图接口：
+
+| 节点                                                                                  | 描述                                                                                 |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **[](Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenTexture)**                  | %Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenTexture:description%                  |
+| **[](Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenModeTexturePlusEyeLayout)** | %Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenModeTexturePlusEyeLayout:description% |
+| **[](Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenMode)**                     | %Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenMode:description%                     |
+[EXCERPT:SpectatorScreen_Overview_2]
+###使用范例
+
+1.	在支持观众画面的平台中设置一个 VR 项目。 
+
+[PUBLISH:Licensee]
+
+	[REGION:note]
+	以下步骤针对 PS VR。
+	[/REGION]
+
+1.	在 PS VR 中打开 **Project Settings** 窗口，前往 **Plugins** 子菜单，找到 **Morpheus** 菜单。
+
+	![](VR_SpecPSVRSetting_Disabled.png)
+
+1.	选择 **Enable Social Screen Separate Mode** 旁边的勾选框即可启用 PS VR 的观众画面模式。
+
+	![](VR_SpecPSVRSetting_Enabled.png)
+
+	[REGION:note]
+	PS VR 硬件原生支持镜像，意味着头戴显示器的显示将在无额外开销的情况下被镜像到电视。
+	[/REGION]
+[/PUBLISH:Licensee]
+
+1.	现在需要新建一个蓝图脚本，指定需要渲染到观众画面的图像。为便于展示，以下蓝图节点对三个键盘输入形成响应：
+
+	1.	举例而言，按下 **1** 键时第一个蓝图节点将指定一个静态纹理，它将在纹理区域中被绘制。
+
+		![](VRSpec_BP_1.png)
+
+	2.	按下 **2** 键时，第二个蓝图节点将指定一个布局，头戴显示器的眼睛视图将被绘制到整个画面（纹理将在屏幕的左上四分之一半圆中绘制）。此外，此节点将在指定纹理布局的同时确保首先绘制眼睛布局。
+
+		![](VRSpec_BP_2.png) 
+
+		眼睛和纹理矩形的最大和最小值被标准化到 `[0.0, 1.0]` 之间。 
+		
+	3.	最后按下 **3** 键时，第三个蓝图节点将启用（因此切换至）**TexturePlusEye** 模式。
+
+		![](VRSpec_BP_3.png)
+
+### 最终结果
+
+总而言之，新蓝图随需要使用的观众画面模式设置观众画面的纹理（以及其眼睛和纹理布局）。
+
+![](VRSpec_BP.png)
+
+虽然纹理可作为一个渲染目标（可从一个 **SceneCaptureComponent2D** 进行写入），或一个用户界面元素的容器，但需要注意的是 **SceneCapture** 的计算开销极大。
+
+[REGION:tip]
+如果需要在运行时测试不同纹理或布局，可在观众画面模式启用时切换纹理（甚至布局）。
+[/REGION]
+
+## 切换模式
+
+如果需要切换至新的观众画面模式，可打开命令行并输入 `vr.SpectatorScreenMode` **值**。例如输入 `vr.SpectatorScreenMode 2` 将启用 **Distorted** 模式，当前 Oculus Rift 支持此模式。
+
+![](VRSpec_CVarExample.png)
+
+### 支持的模式
+
+不同平台将支持特定的观众画面模式，具体如下：
+
+|值|模式| Oculus Rift | SteamVR | PS VR | 注解 |
+|-----|----|------------ |-------- |------ |------ |
+|**0**| Disabled | &#x2713; | &#x2713; | | 为在头戴显示器上达到最佳效果，此模式禁用观众画面输出。|
+|**1**| SingleEyeLetterboxed | &#x2713; | &#x2713; | &#x2713; | 此模式主要用于调试之用，只在屏幕上显示一个宽银幕眼睛。|
+|**2**| Undistorted |  &#x2713;| &#x2713; | &#x2713; | 这是一个调试模式，显示两只眼睛的整个渲染区域。|
+|**3**| Distorted | &#x2713; | | | 只有 Oculus 支持此模式。具体而言，这是一个 Oculus 特有的调试模式，显示色差等内容。|
+|**4**| SingleEye | &#x2713; | &#x2713; | &#x2713; | 和 **Undistorted** 模式相似，这是只用于一只眼睛的调试模式。因为此模式会拉伸场景，因此可用于识别场景中细微的穿帮。|
+|**5**| SingleEyeCroppedToFit | &#x2713; | &#x2713; | &#x2713; | 此模式将对眼睛进行裁剪，以填充整个画面。|
+|**6**| Texture | &#x2713; | &#x2713; | &#x2713; | 此模式显示指定 **Utexture** 的全屏视图。|
+|**7**| TexturePlusMirror | &#x2713; | &#x2713; | &#x2713; | 此模式在一个渲染矩形中显示一个纹理，而眼睛则显示在另一个渲染矩形中。|
+|**8**| ViewPort | | | | 当前不支持 ViewPort 模式，然而未来版本中将支持。此模式将渲染一个分屏输出（类似于分屏多人游戏），一个用户拥有头戴显示器，而另一个用户则是观众。|
+
+## 优化观众画面模式
+
+当前观众画面模式没有标准优化设置。如您想要实现观众画面模式的优化解决方案，推荐在 30 fps 下进行场景采集（假定 VR 应用程序以 60、90 或 120 fps 运行）。此外，推荐将观众画面输出限制为 30 fps。请注意：如果尝试在特定硬件上限制观众画面输出，VR 帧率以 90 fps 运行时则可能出现渲染问题（基本上每三帧就会掉帧）。
+
+[PUBLISH:Licensee]
+
+## PS VR 注意事项
+
+以下注意事项针对于 PS VR 平台（尤其针对于 PS VR 开发机调试功能）： 
+
+*	当前 PS VR 尚未加入与默认硬件支持模式和 PlayStation 技术要求清单（TRC）相一致的 **Disabled** 模式。
+*	尤其需要注意的是：PS VR 对 **SingleEyeCroppedToFit** 模式使用的是内置硬件支持镜像。硬件支持镜像也作为 PS VR 中不支持模式的退却。虽然 **SingleEyeCroppedToFit** 模式灵活性较差，但它并没有额外的计算开销。 
+*	PS VR 拥有一个调试设置，会导致 PlayStation 硬件显示两个眼睛的整个已渲染区域，与在 **Undistorted** 模式中运行观众画面时看到的内容相似。设置 **DebugSettings > PlayStationVR > SocialScreenOutputSettingForDebug=Bypass** 即可启用 PS VR 调试设置。 
+*	如果需要在开发机使用不同模式时默认使用硬件支持镜像，可将 **IgnoreSocialScreenSeparateMode** 设为 true。 
+
+### PS VR 优化
+
+[REGION:note]
+除 PS VR 之外，在观众画面模式中时其他所有平台均输出全 VR 帧率。 
+[/REGION]
+
+当前 PS VR 以 30 帧每秒的速度输出观众画面（在 PS VR 平台上也称作社交画面），意味着复制源到社交画面的速度为 30 fps。如果需要 PS VR 设备以 60 fps 输出观众画面，请参考索尼的官方文档。 
+
+[/PUBLISH:Licensee]
+
+## 当前已知问题
+
+以下问题当前正在解决中：
+
+* 一帧过后运行时创建的渲染目标才会被指定为观众纹理，因此直到应用程序的第一帧被渲染后才会出现无提醒失败。 
+* 如果渲染目标被销毁，同时又被指定为观众纹理，应用程序可能崩溃。 
+[/EXCERPT:SpectatorScreen_Overview_2]

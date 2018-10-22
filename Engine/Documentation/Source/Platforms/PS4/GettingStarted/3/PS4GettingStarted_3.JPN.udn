@@ -1,0 +1,107 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:ビルド操作とコンテンツのクック方法
+Description:ビルド操作によってワークフローに使うコンテンツの最適なクック メソッドを選択する
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version:4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:3
+
+[nav]
+
+[EXCERPT:main]
+すべてのビルド操作 (ビルド、クック、パッケージ、デプロイ、実行) は [アンリアル自動化ツール](Programming/Automation) を使用して実行されます。有効な引数を使用する場合、 
+このツールは、コマンドライン上で以下のバッチファイルを使って実行することができます。
+
+`[UE4Directory]/Engine/Build/BatchFiles/RunUAT.bat`
+
+エディタからプロジェクト ランチャー (**[Window]** > **[Project Launcher]**) を使用する場合、コマンドラインが生成され、自動的に `RunUAT.bat` にパスされます。
+
+[REGION:tip]
+エディタのプロジェクト ランチャーからプロファイルを実行すると、ログに生成されたコマンドラインが出力されます。**BuildCookRun** 以降のテキストが `RunUAT.bat` にパスされます。
+[/REGION]
+
+**プロジェクト ランチャーから生成されるログ出力**
+
+`Automation.ParseCommandLine:Parsing commandline: -ScriptsForProject=MyProject.uproject BuildCookRun -project=MyProject.uproject -clientconfig=Development ...`
+
+**同等のコマンドライン**
+
+`[UE4Directory]/Engine/Build/BatchFiles/RunUAT.bat BuildCookRun -project=MyProject.uproject -clientconfig=Development`
+
+[REGION:tip]
+UAT には多くの引数が含まれているので、ビルド生成のベスト プラクティスとしてプロジェクト ランチャーの Custom Profile の使用を推奨します。コマンドラインから UAT を実行する場合でも、
+適切なコマンドラインの生成には、手書きのコードで作成するのではなく、少なくともプロジェクト ランチャーを使用する方法が最も合理的です。
+[/REGION]
+
+
+## コンテンツのクック方法
+
+PS4 でコンテンツを使用するには、まず最初にクックしなければなりません。ターゲット プラットフォームに最適な最終フォーマットへコンパイルおよび変換されたファイルの詳細は [コンテンツをクックする](Engine/Deployment/Cooking) を参照してください。
+コンテンツのクックは **プロジェクト ランチャー** で **By the Book** または **on the fly** の 2 種類の方法で行うことができます。 
+
+プロジェクト ランチャーを開くには、メイン メニュー > **[Window]** < **[Project Launcher]** を選択します。
+
+![](ProjectLauncher.png)(w:700)
+
+このクック メソッドを使うには、その前にまず **Custom Launch Profile** を作成する必要があります。
+
+### Custom Launch Profile の作成方法
+
+1. [Project Launcher] ウィンドウで **[Custom Launch Profile]** セクションの **追加** (**+**) 記号をクリックします。 
+
+	![](AddCustomLaunchProfile.png)(w:700)
+1. そのウィンドウに [Custom Launch Profile] で利用できるオプションが新たに表示されます。プロファイルに **名前** を付け、必要に応じて特定の **プロジェクト** に割り当てます。
+
+	![](NewCustomProfile.png)(w:700)
+
+1. Custom Launch Profile を作成したら、**[Cook By the Book]** または **[Cook on the fly]** のいずれかから、作業環境およびデプロイ ニーズに最もフィットしたメソッドを決定します。 
+
+## Cook By The Book
+
+**By the Book** メソッドでは、すべて事前にクックしておくので、ビルドの際にクック済みアセットをすべて一度にデプロイすることが可能です。アセットを個々にイタレートしない場合、あるいは
+サーバーからのクック済みコンテンツの送付を待たずにフルスピードでゲームを実行したい場合に適しています。このメソッドは通常、パフォーマンス テストとプレイ テストで使用します。 
+
+このクック メソッドの実行に必要な追加設定はありません。プロジェクト ランチャーの **[Custom Launch Profile]** で、ドロップダウンから **[Cook]** メソッドを選んで **[By The Book]** に設定します。
+
+![](CookByTheBook.png)(w:900)
+
+
+## Cook On The Fly
+
+**On the fly** メソッドでは、ゲームがデプロイされるまでクックが遅くなります。Cook Server とのネットワーク通信を使う実行ファイルとその他の基本ファイルのみが、オンデマンドでのリクエストをするためにインストールされます。
+定期的にコンテンツを変更したり、ゲームのセクションを探索するデベロッパーは、Cook on the fly を使うことでイタレーションを高速化できます (それらをクックする必要がまったくないからです)。
+
+このメソッドを使うには、フルプロジェクトのあるマシン上で Cook Server を起動します。クックはローカル マシン、あるいはリモート サーバーのいずれかで実行することができます。Cook Server は、以下のコマンドライン モードで UE4 エディタを起動すると
+実行することができます。
+
+`UE4Editor-cmd.exe [fullAbsolutePathToProject.uproject] -run=cook -targetplatform=PS4 -cookonthefly`
+
+デベロッパーのマシン上で、プロジェクト ランチャーの [Custom Launch Profile] で、ドロップダウンから **[Deploy]** メソッドを選んで **[File Server]** に設定します。ドロップダウンでターゲットを **[Default Deploy Platform:PS4]** に設定します。
+
+![](DeploySettings.png)(w:900)
+
+PS4 で実行ファイルを実行する場合、Cook Server を実行しているマシンの IP アドレスを知る必要があります。そのためには、以下のコマンドライン引数をクライアント コマンドライン上でパスします ( x.x.x.x はホストの IP)。
+
+`-filehostip=x.x.x.x`
+
+Custom Launch Profile の **[Launch]** セクションの中の **[Additional Command Line Parameters]** で指定できます。デフォルト値は  0.0.0.0 (ローカル ホスト) です。
+
+![](LaunchSettings.png)(w:900)
+[/EXCERPT:main]
+
+## 結果
+
+![](ProjectLauncher_EndResult.png)(w:900)
+
+このステップでは、利用できるビルド操作について、および PS4 Dev Kit にデプロイするコンテンツを適切にクックするための Custom Launch Profile の設定について説明しました。 
+次は最後のステップです。Visual Studio で利用できるデバッグ オプションの説明です。
+
+
+
+[nav]

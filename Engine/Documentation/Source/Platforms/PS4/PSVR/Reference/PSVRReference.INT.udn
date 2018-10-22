@@ -1,0 +1,76 @@
+Availability:Licensee
+Title:PlayStation VR Development Reference
+Crumbs:%ROOT%, Platforms
+Description:Reference for PSVR Settings.
+Platform:PS4
+Navigation:platform
+type:reference
+parent:Platforms/PS4/PSVR
+version:4.14
+order:3
+tags: VR
+tags: PlayStation VR
+topic-image:PSVR_Header.png
+
+This page contains reference information for all of the PlayStation VR settings that you will find inside UE4. This page contains reference information for all of the PlayStation VR settings that you will find inside UE4. To access the PlayStation VR setting you will need to go to **Edit** > **Project Settings** > **Plugins** > **Morpheus**.
+
+![](PSVR_Settings.png)
+
+## Settings
+
+|Item|Description|
+|-------|-----------------|
+|Enable Morpheus|Morpheus plugin enabled for this project.|
+|Screen Percentage|Percent of standard rendering size to render at. Default 100. Only active when bOverrideScreenPercentage is set.|
+|Override Screen Percentage| Activate Screen Percentage setting.| 
+|IPD| Interpupillary distance.|
+|Reprojection Sampler Wrap Mode| The method by which pixels outside the rendered area will be filled. Mirro will work best for most content. Very black scenesor debugging might benefit from ClampBorder. See Sony documentation for sceHmdReprojectionInitialize for more information.|
+|Position Tracking| Enable / disable head position tracking.|
+|Disable HMDOrientation Until HMDHas Been Tracked | Disable HMD orientation tracking until HMD has been tracked by the camera. Reprojection does not work until that happens!|
+|HMD Setup Dialog Canceled Behavior| App behavior if the HmdSetupDialog (which pops up when the HMD is disconnected) is canceled by the user.|
+|Desktop Offset| Initial desktop location of the game window when running on PC. Used to move the game window automatically to the Morpheus headset 'monitor'.|
+|Enable Controller Pitch| Enable camera to apply the pitch of the user's head.|
+|Enable Controller Roll| Enable camera to apply the roll of the user's head.|
+|Change Player View| Enable camera to apply orientation of the user's head.|
+|HMDServer Address| IP address from HMD server.|
+
+## Experimental
+	
+The Experimental PSVR Frame Sequence option allows support for native 90Hz to 90Hz reprojection and 120Hz to 120Hz reprojection  on PSVR. This means you can opt in to running at a higher frame rate to minimize latency and reprojection artifacts.  The engine will limit your framerate to your selected option, but it’s still your responsibility to make sure you consistently maintain that framerate!
+
+|Item|Description|
+|-------|-----------------|
+|PSVR Frame Sequence| Defines the frame rate for rendering, reprojection, and hmd position / orientation sampling. See Sony 'VRTracker Library Overview' document 'Usage' section. All modes except Render60Scanout120 are experimental.|
+|PSVR Frame Sequence - Render 60Scanout 120| Unreal will render frames at 60Hz, PlayStation VR HMD wil lreproject and flisp at 120Hz.|
+|PSVR Frame Sequence - Render 90Scanout 90| Unreal will render frames at 90Hz, PlayStation VR HMD wil lreproject and flisp at 90Hz.|
+|PSVR Frame Sequence - Render 120Scanout 120| Unreal will render frames at 120Hz, PlayStation VR HMD wil lreproject and flisp at 120Hz.|
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

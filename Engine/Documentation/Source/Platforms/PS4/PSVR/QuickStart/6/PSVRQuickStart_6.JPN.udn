@@ -1,0 +1,73 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:6.PS VR 向け UE4 プロジェクトを作成する
+Crumbs:%ROOT%, Platforms
+Description:PlayStation VR 向け UE4 プロジェクトの作成および設定方法
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:6
+tags:VR
+tags:PlayStation VR
+
+[nav]
+
+UE4 のエンジン コードをビルドしたので、次は PlayStation VR に対応した UE4 プロジェクトを新規作成します。 
+
+## ステップ
+
+1. UE4 プロジェクトを **右クリック** して、コンテキスト メニューから **[Set as StartUp Project (スタートアップ プロジェクトとして設定)]** を選択します。
+
+    ![](PSVR_Set_As_Start_Up_Project.png)
+
+1. ソリューション プラットフォームを再び **[Win64]** に切り替えて、キーボードで **CTRL + F5** を押して UE4 エディタを起動します。
+    
+    [region:note]
+    この時点でコンパイルを要求された場合、必ず処理してから先のステップへ進んでください。
+    [/region]
+
+1. **[Unreal Project Browser]** ロードされたら、**[New Project]** タブを開いて **[Blueprint]** タブを選択します。ここにタブがない場合は [Templates] セクションで **[Virtual Reality]** テンプレートを選択します。設定はデフォルトのままにしておきますが、**Starter Content** は必要ではないので削除します。すべての設定が完了したら、**[Create Project (プロジェクトを作成)]** ボタンを押して新規のプロジェクトを作成します。
+
+    [REGION:lightbox]
+    [![](PSVR_New_Project_Settings.png)(w:555)](PSVR_New_Project_Settings.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. プロジェクトが開始したら、**[Edit]** > **[Plug-ins]** から Plugins メニューを開きます。
+
+    ![](PSVR_Plugins_Menu.png)
+
+1. Plug-ins メニューの **[Virtual Reality]** カテゴリを選び、使用できるプラグインの **Morpheus** Plug-in の横にあるチェックボックスにチェックを入れて **[Restart Now (今すぐ再起動)]** ボタンを押して、エディタを再起動します。
+
+    [REGION:lightbox]
+    [![](PSVR_Enable_Morpheus.png)(w:613)](PSVR_Enable_Morpheus.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. エディタが再起動したら **[Edit]** > **[Project Settings]** を選択して以下のオプションを有効にします。
+
+* **[Project Settings]** **[Project]** > **[Description]** > **[Settings]**  [Start in VR] = True
+
+    ![](PSVR_Project_Settings_00.png)
+
+* **[Project Settings]** > **[Plugins]** > **[Morpheus]**  [Enable Morpheus] = True
+
+    ![](PSVR_Project_Settings_01.png)
+
+PlayStation VR サポートがプロジェクトで有効になりました。次のセクションでは、プロジェクトを PS4 にデプロイする方法を説明します。
+
+
+
+
+
+
+
+[nav]

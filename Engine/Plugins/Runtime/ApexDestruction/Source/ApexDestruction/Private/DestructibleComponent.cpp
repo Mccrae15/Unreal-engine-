@@ -696,15 +696,22 @@ void UDestructibleComponent::OnDamageEvent(const apex::DamageEventReportData& In
 	{
 		DestructibleActor->OnActorFracture.Broadcast(HitPosition, HitDirection);
 	}
-
+	FCollisionResponseContainer NewCollision;
+	NewCollision.SetAllChannels(ECR_Ignore);
+	NewCollision.WorldDynamic = ECR_Block;
+	NewCollision.WorldStatic = ECR_Block;
+	NewCollision.Visibility = ECR_Block;
+	NewCollision.PhysicsBody = ECR_Block;
+	NewCollision.Destructible = ECR_Block;
+	//SetCollisionResponseToChannels(NewCollision);
 	SpawnFractureEffectsFromDamageEvent(InDamageEvent);
 
 	// After receiving damage, no longer receive decals.
-	if (bReceivesDecals)
+	/*if (bReceivesDecals)
 	{
 		bReceivesDecals = false;
 		MarkRenderStateDirty();
-	}
+	}*/
 }
 
 void UDestructibleComponent::OnVisibilityEvent(const apex::ChunkStateEventData & InVisibilityEvent)

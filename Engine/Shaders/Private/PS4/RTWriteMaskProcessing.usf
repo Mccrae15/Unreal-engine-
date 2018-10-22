@@ -1,0 +1,114 @@
+// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+#if PS4_PROFILE
+
+/** Decode a RTWriteMask buffer into a one-channel byte texture, to load in PS and use to skip unnecessary work
+  */
+
+RWTexture2D<uint>	OutCombinedRTWriteMask;
+DataBuffer<uint>	RTWriteMaskInput0;
+DataBuffer<uint>	RTWriteMaskInput1;
+DataBuffer<uint>	RTWriteMaskInput2;
+uint2				RTWriteMaskDimensions;
+bool UtilizeMask;
+
+// This macro tells the compiler that this shader has to be compiled for neo and base.
+COMPILE_FOR_NEO
+
+uint GetPipeIndexOfTile(uint x, uint y)
+{
+	uint pipe = 0;
+	pipe |= ( ((x>>0) ^ (y>>0) ^ (x>>1))	& 0x1 ) << 0;
+	pipe |= ( ((x>>1) ^ (y>>1))				& 0x1 ) << 1;
+	pipe |= ( ((x>>2) ^ (y>>2))				& 0x1 ) << 2;
+
+#if PS4_NEO_PROFILE
+	pipe |=	( ((x>>3) ^ (y>>2))				& 0x1 ) << 3;
+#endif
+	return pipe;
+}
+ 
+void GetRTWriteMaskNibbleOffset(out uint Offset, out uint Nybble, in uint tileX, in uint tileY, in uint tilesWide, in bool isLinear)
+{
+#if PS4_NEO_PROFILE
+  uint num_pipes = 16;
+#else
+  uint num_pipes = 8;
+#endif
+
+  uint cl_width = 64;
+  uint cl_height = num_pipes << 2;
+
+  uint cl_x = tileX / cl_width;
+  uint cl_y = tileY / cl_height;
+  uint surf_pitch_cl = (tilesWide + cl_width - 1) / cl_width;
+  uint cl_offset = isLinear ? 0 : ((cl_x + surf_pitch_cl * cl_y) * 256);
+ 
+  uint macro_x = (isLinear ? tileX : (tileX % cl_width)) / 4;
+  uint macro_y = (isLinear ? tileY : (tileY % cl_height)) / 4;
+  uint macro_pitch = (isLinear ? tilesWide : cl_width) / 4;
+  uint macro_shift = (16 - num_pipes) >> 3;
+  uint macro_offset = (macro_x + macro_y * macro_pitch) << macro_shift;
+ 
+  macro_offset &= ~3;  
+  macro_offset |= (( (tileX>>1) ^ (tileY>>0) )&1) << 0;    
+  macro_offset |= (( (tileX>>1)              )&1) << 1;
+ 
+  uint tile_number = cl_offset + macro_offset;
+  uint device_address = tile_number >> 1;
+  uint pipe = GetPipeIndexOfTile(tileX, tileY);
+  uint pipe_interleave = 256;
+  uint final_address = (device_address % pipe_interleave) + (pipe * pipe_interleave) + (device_address / pipe_interleave) * pipe_interleave * num_pipes;
+ 
+  Offset = final_address;
+  Nybble = tile_number & 1;
+}
+
+uint DecodeRTWriteMask(Texture1D<uint> InRTWriteMask, uint2 TileCoord, bool bIsLinear)
+{
+	uint Offset = 0;
+	uint Nybble = 0;
+	GetRTWriteMaskNibbleOffset(Offset, Nybble, TileCoord.x, TileCoord.y, RTWriteMaskDimensions.x*2, false);
+
+	uint RTWriteMaskData = InRTWriteMask.Load(Offset);// >> ((Nybble)*4);
+	return RTWriteMaskData;
+}
+
+
+
+[numthreads(THREADGROUP_SIZEX, THREADGROUP_SIZEY, 1)]
+void RTWriteMaskCombineMain(
+	uint3 GroupId : SV_GroupID,
+	uint3 DispatchThreadId : SV_DispatchThreadID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint GroupIndex : SV_GroupIndex ) 
+{
+	uint RTWriteMaskCombined = 0;
+	uint Offset = 0;
+	uint Nybble = 0;
+	GetRTWriteMaskNibbleOffset(Offset, Nybble, DispatchThreadId.x, DispatchThreadId.y, RTWriteMaskDimensions.x, false);
+	RTWriteMaskCombined = (RTWriteMaskInput0.Load(Offset) >> ((Nybble)*4)) & 0xf;
+	RTWriteMaskCombined |= (RTWriteMaskInput1.Load(Offset) >> ((Nybble)*4)) & 0xf;
+	RTWriteMaskCombined |= (RTWriteMaskInput2.Load(Offset) >> ((Nybble)*4)) & 0xf;
+	
+	OutCombinedRTWriteMask[DispatchThreadId.xy] = RTWriteMaskCombined;
+}
+
+
+
+[numthreads(THREADGROUP_SIZEX, THREADGROUP_SIZEY, 1)]
+void RTWriteMaskDecodeSingleMain(
+	uint3 GroupId : SV_GroupID,
+	uint3 DispatchThreadId : SV_DispatchThreadID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint GroupIndex : SV_GroupIndex ) 
+{
+	uint RTWriteMaskCombined = 0;
+	uint Offset = 0;
+	uint Nybble = 0;
+	GetRTWriteMaskNibbleOffset(Offset, Nybble, DispatchThreadId.x, DispatchThreadId.y, RTWriteMaskDimensions.x, false);
+	RTWriteMaskCombined = (RTWriteMaskInput0.Load(Offset) >> ((Nybble)*4)) & 0xf;
+	OutCombinedRTWriteMask[DispatchThreadId.xy] = UtilizeMask ? RTWriteMaskCombined : 0xff;
+}
+
+#endif
+
