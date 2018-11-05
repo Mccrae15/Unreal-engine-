@@ -90,7 +90,9 @@ private:
 	*A critical section for reading/writing saved games
 	*/
 	mutable FCriticalSection CriticalSection;
-	//CarbonEdit 10.04 End	//
+	//CarbonEdit 10.04 End
+
+	//
 	// General UI functions
 	//
 

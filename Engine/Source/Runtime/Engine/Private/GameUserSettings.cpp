@@ -971,7 +971,6 @@ bool UGameUserSettings::IsHDREnabled() const
 {
 	return bUseHDRDisplayOutput;
 }
-
 //Skubert Edit
 
 void UGameUserSettings::SetHMDScaling(int32 Value)

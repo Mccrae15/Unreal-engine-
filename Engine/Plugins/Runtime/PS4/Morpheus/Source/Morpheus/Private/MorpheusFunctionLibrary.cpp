@@ -16,6 +16,7 @@ UMorpheusFunctionLibrary::~UMorpheusFunctionLibrary()
 {
 	FCoreDelegates::UseHMDReprojection.RemoveAll(this);
 }
+
 #if MORPHEUS_SUPPORTED_PLATFORMS
 FMorpheusHMD* GetMorpheusHMD()
 {

@@ -132,7 +132,7 @@ public:
 	// currently equipped cosmetic items and serialize this to a buffer, and
 	// then transmit this buffer to other players upon joining a game.
 	METHOD_DESC(Captures the state of a subset of the current users Steam inventory identified by an array of item instance IDs.)
-	virtual bool GetItemsByID( SteamInventoryResult_t *pResultHandle, STEAM_ARRAY_COUNT( unCountInstanceIDs ) const SteamItemInstanceID_t *pInstanceIDs, uint32 unCountInstanceIDs ) = 0;
+	virtual bool GetItemsByID( SteamInventoryResult_t *pResultHandle, ARRAY_COUNT( unCountInstanceIDs ) const SteamItemInstanceID_t *pInstanceIDs, uint32 unCountInstanceIDs ) = 0;
 
 
 	// RESULT SERIALIZATION AND AUTHENTICATION
@@ -183,7 +183,7 @@ public:
 	// an exception - as a developer, you may use this to generate and test items in your game.
 	// If punArrayQuantity is not NULL, it should be the same length as pArrayItems and should
 	// describe the quantity of each item to generate.
-	virtual bool GenerateItems( SteamInventoryResult_t *pResultHandle, STEAM_ARRAY_COUNT(unArrayLength) const SteamItemDef_t *pArrayItemDefs, STEAM_ARRAY_COUNT(unArrayLength) const uint32 *punArrayQuantity, uint32 unArrayLength ) = 0;
+	virtual bool GenerateItems( SteamInventoryResult_t *pResultHandle, ARRAY_COUNT(unArrayLength) const SteamItemDef_t *pArrayItemDefs, ARRAY_COUNT(unArrayLength) const uint32 *punArrayQuantity, uint32 unArrayLength ) = 0;
 
 	// GrantPromoItems() checks the list of promotional items for which the user may be eligible
 	// and grants the items (one time only).  On success, the result set will include items which
@@ -197,7 +197,7 @@ public:
 	// definition or set of item definitions. This can be useful if your game has custom UI for
 	// showing a specific promo item to the user.
 	virtual bool AddPromoItem( SteamInventoryResult_t *pResultHandle, SteamItemDef_t itemDef ) = 0;
-	virtual bool AddPromoItems( SteamInventoryResult_t *pResultHandle, STEAM_ARRAY_COUNT(unArrayLength) const SteamItemDef_t *pArrayItemDefs, uint32 unArrayLength ) = 0;
+	virtual bool AddPromoItems( SteamInventoryResult_t *pResultHandle, ARRAY_COUNT(unArrayLength) const SteamItemDef_t *pArrayItemDefs, uint32 unArrayLength ) = 0;
 
 	// ConsumeItem() removes items from the inventory, permanently. They cannot be recovered.
 	// Not for the faint of heart - if your game implements item removal at all, a high-friction
@@ -214,8 +214,8 @@ public:
 	// required for the exchange) on the target ItemDefinition. Exchanges that do not match
 	// a recipe, or do not provide the required amounts, will fail.
 	virtual bool ExchangeItems( SteamInventoryResult_t *pResultHandle,
-								STEAM_ARRAY_COUNT(unArrayGenerateLength) const SteamItemDef_t *pArrayGenerate, STEAM_ARRAY_COUNT(unArrayGenerateLength) const uint32 *punArrayGenerateQuantity, uint32 unArrayGenerateLength,
-								STEAM_ARRAY_COUNT(unArrayDestroyLength) const SteamItemInstanceID_t *pArrayDestroy, STEAM_ARRAY_COUNT(unArrayDestroyLength) const uint32 *punArrayDestroyQuantity, uint32 unArrayDestroyLength ) = 0;
+								ARRAY_COUNT(unArrayGenerateLength) const SteamItemDef_t *pArrayGenerate, ARRAY_COUNT(unArrayGenerateLength) const uint32 *punArrayGenerateQuantity, uint32 unArrayGenerateLength,
+								ARRAY_COUNT(unArrayDestroyLength) const SteamItemInstanceID_t *pArrayDestroy, ARRAY_COUNT(unArrayDestroyLength) const uint32 *punArrayDestroyQuantity, uint32 unArrayDestroyLength ) = 0;
 	
 
 	// TransferItemQuantity() is intended for use with items which are "stackable" (can have
@@ -257,8 +257,8 @@ public:
 	// item instance id numbers and quantities of the received items.
 	// (Note: new item instance IDs are generated whenever an item changes ownership.)
 	virtual bool TradeItems( SteamInventoryResult_t *pResultHandle, CSteamID steamIDTradePartner,
-							 STEAM_ARRAY_COUNT(nArrayGiveLength) const SteamItemInstanceID_t *pArrayGive, STEAM_ARRAY_COUNT(nArrayGiveLength) const uint32 *pArrayGiveQuantity, uint32 nArrayGiveLength,
-							 STEAM_ARRAY_COUNT(nArrayGetLength) const SteamItemInstanceID_t *pArrayGet, STEAM_ARRAY_COUNT(nArrayGetLength) const uint32 *pArrayGetQuantity, uint32 nArrayGetLength ) = 0;
+							 ARRAY_COUNT(nArrayGiveLength) const SteamItemInstanceID_t *pArrayGive, ARRAY_COUNT(nArrayGiveLength) const uint32 *pArrayGiveQuantity, uint32 nArrayGiveLength,
+							 ARRAY_COUNT(nArrayGetLength) const SteamItemInstanceID_t *pArrayGet, ARRAY_COUNT(nArrayGetLength) const uint32 *pArrayGetQuantity, uint32 nArrayGetLength ) = 0;
 
 
 	// ITEM DEFINITIONS

@@ -435,7 +435,7 @@ public:
 							if (bDS4TouchEvents)
 							{
 								// send the new press to the game
-								MessageHandler->OnTouchStarted(nullptr, FVector2D(Touch.x, Touch.y), NewTouchIndex, ControllerState.ControllerId);
+								MessageHandler->OnTouchStarted(nullptr, FVector2D(Touch.x, Touch.y), 1.0f, NewTouchIndex, ControllerState.ControllerId);
 							}
 
 							// record it

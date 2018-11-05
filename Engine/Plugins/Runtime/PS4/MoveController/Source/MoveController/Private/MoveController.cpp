@@ -709,6 +709,7 @@ bool FMoveController::GetControllerOrientationAndPosition(const int32 Controller
 	{
 		FCoreDelegates::GetMoveStatus.Broadcast(TrackingData.Status == IPS4Tracker::ETrackingStatus::TRACKING, false);
 	}
+
 	return (TrackingData.Status == IPS4Tracker::ETrackingStatus::TRACKING) || (TrackingData.Status == IPS4Tracker::ETrackingStatus::NOT_TRACKING);
 }
 

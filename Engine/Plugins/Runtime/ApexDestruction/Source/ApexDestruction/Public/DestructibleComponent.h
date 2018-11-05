@@ -158,6 +158,7 @@ public:
 
 	virtual void SetCollisionResponseToChannel(ECollisionChannel Channel, ECollisionResponse NewResponse) override;
 	virtual void SetCollisionResponseToAllChannels(ECollisionResponse NewResponse) override;
+
 	UFUNCTION(BlueprintCallable, Category = "Components|Destructible")
 	virtual void SetCollisionResponseToChannels(const FCollisionResponseContainer& NewReponses) override;
 	//~ End UPrimitiveComponent Interface.

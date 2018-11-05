@@ -7,7 +7,6 @@
 #ifndef STEAM_API_H
 #define STEAM_API_H
 #ifdef _WIN32
-#pragma warning(disable: 4265)
 #pragma once
 #endif
 

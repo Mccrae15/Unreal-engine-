@@ -43,7 +43,7 @@
 #include "ContentStreaming.h"
 //CarbonEdit 10.04 start
 #if PLATFORM_PS4 
-#include "RunnableThread.h" 
+#include "HAL/RunnableThread.h" 
 #endif
 //CarbonEdit 10.04 end
 #define LOCTEXT_NAMESPACE "GameplayStatics"
@@ -1734,7 +1734,8 @@ bool UGameplayStatics::SaveGameToSlot(USaveGame* SaveGameObject, const FString& 
 	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
 	//CarbonEdit 10.04 Start
 	bool bSuccess = false;
-	//CarbonEdit 10.04 End	// If we have a system and an object to save and a save name...
+	//CarbonEdit 10.04 End
+	// If we have a system and an object to save and a save name...
 	if(SaveSystem && SaveGameObject && (SlotName.Len() > 0))
 	{
 		TArray<uint8> ObjectBytes;

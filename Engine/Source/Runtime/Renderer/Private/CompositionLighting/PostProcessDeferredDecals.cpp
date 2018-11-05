@@ -747,7 +747,7 @@ void FRCPassPostProcessDeferredDecals::Process(FRenderingCompositePassContext& C
 		FScene& Scene = *(FScene*)ViewFamily.Scene;
 
 		//don't early return. Resolves must be run for fast clears to work.
-		if (Scene.Decals.Num())
+		if (Scene.Decals.Num() || Context.View.MeshDecalPrimSet.NumPrims() > 0)
 		{
 			check(bNeedsDBufferTargets || CurrentStage != DRS_BeforeBasePass);
 			FDecalRenderTargetManager RenderTargetManager(RHICmdList, Context.GetShaderPlatform(), CurrentStage);
@@ -885,7 +885,11 @@ void FRCPassPostProcessDeferredDecals::Process(FRenderingCompositePassContext& C
 
 				// we don't modify stencil but if out input was having stencil for us (after base pass - we need to clear)
 				// Clear stencil to 0, which is the assumed default by other passes
+#if WITH_OCULUS_PRIVATE_CODE
+				DrawClearQuad(RHICmdList, false, FLinearColor(), false, 0, true, 0, STENCIL_FOVEATED_MASK_INV_MASK, SceneContext.GetSceneDepthSurface()->GetSizeXY(), FIntRect());
+#else
 				DrawClearQuad(RHICmdList, false, FLinearColor(), false, 0, true, 0, SceneContext.GetSceneDepthSurface()->GetSizeXY(), FIntRect());
+#endif
 			}
 
 			// This stops the targets from being resolved and decoded until the last view is rendered.

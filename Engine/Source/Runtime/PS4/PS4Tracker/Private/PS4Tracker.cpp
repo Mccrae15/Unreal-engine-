@@ -1279,7 +1279,7 @@ uint64 FPS4Tracker::CalculatePredictionTime(bool bEarlyPoll) const
 	// In 60/120 mode the 'present' frame is only half a render frame long, 90 and 120 it is a whole render frame.
 	const uint64 ScanoutFrameTimeDivisor = bIs60Render120ScanoutMode ? 2 : 1;
 
-	const uint32_t RenderFramesBetweenLastApplyAndThisApply = GFrameNumberRenderThread - Info.FrameNumber;
+	uint32_t RenderFramesBetweenLastApplyAndThisApply = GFrameNumberRenderThread - Info.FrameNumber;
 	if (RenderFramesBetweenLastApplyAndThisApply > 3)
 	{
 		RenderFramesBetweenLastApplyAndThisApply = 3;

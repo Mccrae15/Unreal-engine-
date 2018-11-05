@@ -46,7 +46,8 @@ enum class SubtitlesLanguage : uint8
 	Deustch,
 	Chineese,
 
-};DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGameUserSettingsUINeedsUpdate);
+};
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGameUserSettingsUINeedsUpdate);
 
 /**
  * Stores user settings for a game (for example graphics and sound settings), with the ability to save and load to and from a file.
@@ -453,7 +454,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Settings)
 		void SetFreeMovementInfoShown(bool Value);
 
-	// Skubert Edit Endprotected:
+	// Skubert Edit End
+protected:
 	/** Game screen resolution width, in pixels. */
 	UPROPERTY(config)
 	uint32 ResolutionSizeX;
@@ -612,7 +614,8 @@ public:
 
 	UPROPERTY(config)
 		int32 WizardsVersion;
-	//Skubert Edit Endpublic:
+	//Skubert Edit End
+public:
 	/** Returns the last CPU benchmark result (set by RunHardwareBenchmark) */
 	float GetLastCPUBenchmarkResult() const
 	{

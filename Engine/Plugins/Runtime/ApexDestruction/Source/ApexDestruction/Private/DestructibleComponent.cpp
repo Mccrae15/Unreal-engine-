@@ -281,18 +281,18 @@ void UDestructibleComponent::OnCreatePhysicsState()
 	PxFilterData PQueryFilterData, PSimFilterData;
 	uint8 MoveChannel = GetCollisionObjectType();
 	FCollisionResponseContainer CollResponse;
-//Avengar Edit Chunk Visibility
 	if(IsCollisionEnabled())
 	{
-
 		// Only enable a collision response if collision is enabled
 		CollResponse = GetCollisionResponseToChannels();
+
 		LargeChunkCollisionResponse.SetCollisionResponseContainer(CollResponse);
 		//LargeChunkCollisionResponse.SetResponse(ECC_Pawn, ECR_Ignore);
-		//LargeChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);	//my edit
+		//LargeChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);	//CarbonEdit
 		SmallChunkCollisionResponse.SetCollisionResponseContainer(CollResponse);
+
 		SmallChunkCollisionResponse.SetResponse(ECC_Pawn, ECR_Ignore);
-		SmallChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);	//my edit
+		SmallChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);
 	}
 	else
 	{
@@ -696,17 +696,12 @@ void UDestructibleComponent::OnDamageEvent(const apex::DamageEventReportData& In
 	{
 		DestructibleActor->OnActorFracture.Broadcast(HitPosition, HitDirection);
 	}
-	FCollisionResponseContainer NewCollision;
-	NewCollision.SetAllChannels(ECR_Ignore);
-	NewCollision.WorldDynamic = ECR_Block;
-	NewCollision.WorldStatic = ECR_Block;
-	NewCollision.Visibility = ECR_Block;
-	NewCollision.PhysicsBody = ECR_Block;
-	NewCollision.Destructible = ECR_Block;
-	//SetCollisionResponseToChannels(NewCollision);
+
 	SpawnFractureEffectsFromDamageEvent(InDamageEvent);
 
+	//CarbonEdit
 	// After receiving damage, no longer receive decals.
+
 	/*if (bReceivesDecals)
 	{
 		bReceivesDecals = false;
