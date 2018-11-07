@@ -6497,6 +6497,8 @@ void UParticleSystemComponent::SetLODLevel(int32 InLODLevel)
 			if (Instance)
 			{
 				Instance->SetCurrentLODIndex(LODLevel, true);
+				Template->MinTimeBetweenTicks = Template->TickRateWithLODLevel[LODLevel];
+				//
 			}
 		}
 	}
