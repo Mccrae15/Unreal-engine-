@@ -1,0 +1,96 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:7. PS4 에 프로젝트 디플로이
+Crumbs:%ROOT%, Platforms
+Description:UE4 PlayStation VR 프로젝트를 PS4 에서 실행시키는 방법을 살펴봅니다.
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 7
+tags: VR
+tags: PlayStation VR
+
+[nav]
+
+UE4 프로젝트에 PlayStation VR 지원 기능이 활성화되었으니, 프로젝트가 PS4 에서 실행되도록 하는 법을 알아보도록 하겠습니다.
+
+## 단계
+
+1. 먼저 UE4 프로젝트에서 PlayStation VR 을 사용할 수 있도록 하기 위해, .SFO 파일을 새로 만들어야 합니다. 그 방법은 SP Editor Tools 를 열면 되는데, 그 위치는 다음과 같습니다:
+
+        C:\Program Files (x86)\SCE\ORBIS\Tools\Publishing Tools\bin\orbis-pub-sfo.exe  
+
+    ![](PSVR_Orbis_Tools_Location.png)
+
+1. 프로젝트의 **param.sfo** 파일을 찾습니다. UE4 엔진 폴더 내 다음 위치에서 찾을 수 있습니다.
+
+        Engine\Build\PS4
+
+    ![](PSVR_ParamSFO_Location.png)
+
+1.  PlayStation 4 용 Param File Editor 안에서, **File** > **Open** 으로 간 뒤 **Engine\Build\PS4** 폴더에 위치한 param.sfo 파일을 엽니다.
+
+    ![](PSVR_Open_SFO_File.png)
+
+1. param.sfo 파일이 열렸으면 CPU and Peripherals 섹션에서 다음과 같이 설정합니다.
+
+    * **CPU Mode**: 6 CPU 모드
+    * **PlayStationVR**: PlayStationVR 지원 어플리케이션
+
+    [REGION:lightbox]
+    [![](PSVR_CPU_Settings.png)(w:464)](PSVR_CPU_Settings.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+1. 위 옵션이 설정된 이후, **File** > **Save as** 로 새로운 params.sfo 파일 이름을 짓습니다. 새로운 pram.SFO 파일을 **yourgame/build/PS4/sce_sys** 아래 넣지 않으면, 모든 PS4 프로젝트에서 이 옵션을 직접 켜줘야 합니다.
+	
+	[REGION:lightbox]
+    [![](PSVR_SaveSFO_File.png)(w:474)](PSVR_SaveSFO_File.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+    [region:note]
+   pram.SFO 파일을 넣을 **sce_sys** 폴더는 기본으로 있지 않으니 수동 생성해 줘야 할 것입니다.
+    [/region]
+
+1. UE4 에디터로 돌아와 실행 옵션 드롭다운 메뉴를 클릭한 뒤, **디바이스 매니저** 를 선택합니다.
+
+    ![](PSVR_Open_Device_Manager.png)
+
+1. 디바이스 매니저에서 PS4 를 찾아 **우클릭** 하고 표시되는 맥락 메뉴에서 **Connectivity** 섹션의 **Connect** 옵션을 선택해 PS4 에 연결합니다.
+
+    [REGION:lightbox]
+    [![](PSVR_Claim_PS4.png)(w:568)](PSVR_Claim_PS4.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+    [region:note]
+    Status (상태) 아래 **Connected** (접속됨) 이라는 단어가 보이면 PS4 에 성공적으로 접속된 것입니다.
+    [/region]
+
+1. UE4 로 돌아와 **실행** 버튼 옆 드롭다운을 클릭하면 표시되는 메뉴의 **디바이스** 아래 목록에서 PS4 를 선택합니다.
+
+    ![](PSVR_Launch_On_PS4.png)
+
+1. 화면 우하단 구석에 표시되는 박스에서 디플로이 진행상황을 알 수 있습니다. **Show Output** (출력 표시) 링크를 클릭하면 무슨 일이 벌어지는지 보다 상세한 정보를 알 수 있습니다. 디플로이 프로세스 도중 벌어질 수 있는 오류도 같이 표시됩니다.
+
+    ![](PSVR_Deploy_Status.png)
+
+1.  진행상황 박스가 **Running (Project Name) on (PS4 Name)...** ((PS4 이름)에서 (프로젝트 이름) 실행중)이라 표시되는 경우, 이제 PlayStation VR HMD 를 쓰면 다음과 비슷한 이미지가 보일 것입니다.
+
+    ![](PSVR_Final_Result.png)
+
+이 퀵 스타트에서는 PlayStation VR 작업을 위한 UE4 프로젝트 구성에 필요한 단계를 전부 살펴봤습니다. 이 예제로 추가적인 작업을 해 보기 위해서는, [](Platforms\PS4\PSVR\HowTo\PSVRMotionControllers) 문서에서 PlayStation VR 프로젝트에 PlayStation Move 컨트롤러가 작동되도록 하는 데 관련된 정보를 참고해 보시기 바랍니다.
+
+[nav]

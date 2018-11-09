@@ -1,0 +1,146 @@
+Availability:Licensee
+Title:Using Visual Studio for Debugging
+Description:Using Visual Studio for debugging using the available methods listed.
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version: 4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:4
+
+[TOC(start:2 end:2)]
+
+[nav]
+
+[EXCERPT:main]
+When you are debugging your game with Visual Studio there are two real variations to this; you can either be running your game or running the Editor, however, it is not recommended to do both at
+the same time. A game launched from an Editor which is already running within Visual Studio will be launched outside of the Visual Studio context, meaning that it will not have any debugger attached
+to it. You can have any number of instances of Visual Studio open however, which can be attached to any number of running processes. This makes it possible to launch the game from the Editor and then 
+attach another instance of Visual Studio to the kit through the "Attach to Process" dialog. 
+
+## Running the Game from Visual Studio
+
+Running your game from Visual Studio will require that the assets be **cooked and deployed outside of Visual Studio**. The process will depend on whether you want to Cook By The Book, Cook On The Fly, or if you are skipping the cooking process altogether
+with an existing game package file.
+
+Click to expand the method that best fits your workflow and follow the steps.
+
+### Run the Game with Cook by the Book
+
+This method will cook the whole game on the developer's machine and deploy it to the console before beginning the debugging session. If you do not yet have cooked content and want to ensure the game runs at the best
+rate this is the method you want to choose. 
+
+1. Open the Editor, build, cook, and deploy the content onto the PS4 using a **Cook by the Book** profile in the Project Launcher.
+1. Choose a build configuration such as **Development | PS4** or **Debug Game | PS4**.
+1. In Visual Studio under the **Solution Explorer** window, right-click on the game project and select **Properties** > **Debugging**.
+1. Next, set the Executable's Arguments to:	
+	* [RelativePathFromElfToProject.uproject] [MapName]
+	* ../../../MyProject/MyProject.uproject myMap
+1. Finally, **Build** and **Run** the project.
+
+[REGION:notes]
+Things to keep in mind: 
+
+* The .uproject specified is relative to the .elf / .self file on the PS4 and not relative to the Visual Studio directory.
+* Visual Studio does not deploy your game assets. They must already be in place by a previous cook and deployment. 
+[/REGION]
+
+### Run the Game with Cook on the fly
+
+This method will cook the whole game on the designated "Cook on the Fly" machine (either local or remote) and start the game up quickly. Runtime performance will suffer some as the assets 
+are cooked on demand. This method is ideal when you do not have an existing cooked build and you only want to cook the minimum number of assets needed to run the game.
+
+
+1. Ensure that the Cook on the Fly server is running.
+1. Choose a build configuration such as **Development | PS4** or **Debug Game | PS4**.
+1. In Visual Studio under the **Solution Explorer** window, right-click on the game project and select **Properties** > **Debugging**.
+1. Set Executable Arguments to:
+	* [RelativePathFromElfToProject.uproject] [MapName] [-filehostip=COTFServerAddress]
+	* ../../../MyProject/MyProject.uproject myMap -filehostip=192.168.0.1
+	[REGION:note]
+	The `-filehostip` should specify the Cook Server's IP address as seen by the PS4 hardware running the game.
+	[/REGION]
+1. Finally, **Build** and **Run** the project.
+
+
+[COMMENT:none]
+- Commented out since this method should NOT be used in its current state, but may be useful in the future as an update to the doc ---
+
+#### Run the Game with an Existing Staged Build
+
+This method deploys an existing cooked build from the developer's machine. It is ideal if assets have not changed (only source) since the last cooked build. Sony's host PC software (Neighborhood) will perform
+the deployment under the hood. There are a number of nuances to this approach that are not configured by default, so be sure that each step is performed. 
+
+1. Sony will map the "working directory" to the /app0 folder on the PS4. Overwrite this to use a local staged directory by doing the following:
+
+	* Properties > Debugging > Working Directory: Change to point at the desired staged build. 
+	
+		MyGame/Saved/StagedBuild/PS4/
+
+1. PS4Launch.cpp changes the root path UE4 uses between "/app0" and "/data/[gamename]" depending on the command line flat "-deployedbuild".
+1. Ensure the correct prx stuff in sce_module directory.
+1. minefield! 
+
+----- Commented out since this method should NOT be used in its current state, but may be useful in the future as an update to the doc -
+[/COMMENT]
+
+### Run the Game with a Pre-built Package
+
+This method installs a pre-existing fully packaged build to the PS4 and then runs debugging on top of that. 
+
+You can use this to debug binaries that are already in the package (.pkg) or to make code changes and then run those on top of the package. This workflow enables teams to debug a common build or to make code changes without having to 
+re-cook and re-package the game. 
+
+1. Install the desired base package to the PS4.
+1. Choose a build configuration such as **Development | PS4** or **Debug Game | PS4**.
+1. In Visual Studio under the **Solution Explorer** window, right-click on the game project and select **Properties** > **Debugging**.
+1. Change the **Debugger to launch** drop-down selection from "PS4 Standard Debugger" to **PS4 Application Debugger** and input values for the following fields. 
+	* **TitleID** - Change this to your correct TitleID.
+	* **Executable Load Location** - Enter one of the following:
+		* **Auto** - Specify to use the .self defined within the deployed package. Visual Studio will attach to the binary built into the package.
+		* **Host** - Specify this to have Visual Studio load a .self binary file directly from your host PC. Enter the path to the .self in the **Host Executable** field which appears. To use a locally built binary for example you would use: 
+			`MyGameProject\Binaries\PS4\MyGameProject.self` 
+		Visual Studio would attach to the binary compiled on the local machine running on top of the deployed package. 
+		* **PS4** - This is the same as the "Host" option, except the path you specify in "PS4 Executable" is relative to the **/data/** directory  on the PS4's hard disk. This folder is accessible via the network mapped dev kit folder in Windows Explorer.
+			Visual Studio will launch and attach to the binary specified here running on top of the deployed package. 
+	* Optionally, add additional game command line arguments in the **Executable Arguments**.
+1. Change "PS4 Standard Debugger" to **PS4 Application Debugger** in Visual Studio next to the **Play** (green)	arrow.		
+1. To begin debugging you can use the shortcut **F5**. 	
+
+
+[REGION:note]
+There are a few important things to remember when the "Running the Game from Visual Studio" method.
+
+* The .uproject file specified is relative to the .self file on the PS4 and not relative to a Visual Studio directory.
+* `-filehostip` is only used if you are using **Cook On The Fly** and should specify the Cook Server's IP address as seen by the hardware running the game. 
+* Visual Studio does not deploy your game assets, so they must already be in place or a Cook On The Fly server must be used. 
+[/REGION]
+
+[COMMENT:none]
+-
+[REGION:tip]
+On PS4, the game executable extension is .self, and the debug symbol file extension is dwarf. If your "elf" crashes, you may need the dwarves to find out why.
+[/REGION]
+-
+[/COMMENT]
+
+## Running the Editor from Visual Studio
+
+To run the Editor, itself, inside of Visual Studio, just build your game project with the desired "Editor" build configuration for Win64. For example **Development Editor** or **Debug Editor**.
+
+You will not be able to use the Project Launcher from the Editor to run your game if that Editor is currently running in Visual Studio unless you disable **Edit and Continue**. To do this you can go to
+**Tools** > **Options** > **Debugging** > **General** > and uncheck the option for **Enable Edit and Continue**.
+[/EXCERPT:main]
+
+## End Result
+
+By now, you have learned of a couple of different ways to go about debugging your game from Visual Studio; by running the game or running the Editor. These methods should help you better understand
+and debug your own content that you deploy to your PS4 Dev Kit.  
+
+Continue on to the final step for some 
+
+
+[nav]

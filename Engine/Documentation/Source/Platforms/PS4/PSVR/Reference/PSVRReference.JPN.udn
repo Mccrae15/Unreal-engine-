@@ -1,0 +1,78 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:PlayStation VR 開発のリファレンス
+Crumbs:%ROOT%, Platforms
+Description:PSVR 設定のリファレンス
+Platform:PS4
+Navigation:platform
+type:reference
+parent:Platforms/PS4/PSVR
+version:4.14
+order:3
+tags:VR
+tags:PlayStation VR
+topic-image:PSVR_Header.png
+
+UE4 のすべての PlayStation VR 設定に関するリファレンスを紹介します。UE4 のすべての PlayStation VR 設定に関するリファレンスを紹介します。PlayStation VR 設定を利用するには、**[Edit (編集)]** > **[Project Settings (プロジェクト設定)]** **[Plugins]** > **[Morpheus]** を選択します。
+
+![](PSVR_Settings.png)
+
+## 設定
+
+|項目|説明|
+|-------|-----------------|
+|Enable Morpheus|このプロジェクトに対して Morpheus プラグインを有効にします。|
+|Screen Percentage|レンダリング時の標準のレンダリング サイズの比率デフォルト値は 100 です。bOverrideScreenPercentage が設定されている時のみアクティブです。|
+|Override Screen Percentage| Screen Percentage 設定をアクティブにします。| 
+|IPD| 瞳孔間距離 です。|
+|Reprojection Sampler Wrap Mode| レンダリング領域外のピクセルを埋めるメソッドです。ミラーリングは、ほとんどのコンテンツで可能です。真っ黒の画面のデバッグ処理は、ClampBorder で効果を得られる場合があります。sceHmdReprojectionInitialize の詳細は Sony のドキュメントを参照してください。|
+|Position Tracking| 頭位置のトラッキングを有効 / 無効にします。|
+|Disable HMDOrientation Until HMDHas Been Tracked | HMD がカメラにトラックされるまで、HMD 方向トラッキングを無効にします。それまで Reprojection は機能しません!|
+|HMD Setup Dialog Canceled Behavior| HmdSetupDialog (HMD が切断されるとポップアップします) がユーザーによってキャンセルされた場合の App ビヘイビアです。|
+|Desktop Offset| PC 起動時のゲーム ウィンドウの最初のデスクトップ位置です。ゲーム ウィンドウを自動的に Morpheus ヘッドセット 'モニター' に移動します。|
+|Enable Controller Pitch| カメラを有効にしてユーザーの頭のピッチ (上下動) を適用します。|
+|Enable Controller Roll| カメラを有効にしてユーザーの頭のロール (進行軸回転) を適用します。|
+|Change Player View| カメラを有効にしてユーザーの頭の方向を適用します。|
+|HMDServer Address| HMD サーバーからの IP アドレスです。|
+
+## 実験的機能
+
+[Experimental PSVR Frame Sequence] オプションは、PSVR で 90Hz ネイティブから 90Hz リプロジェクション、および 120Hz から 120Hz リプロジェクションに対応します。つまり、より高いフレームレートで実行すれば、レイテンシーとリプロジェクション アーティファクトを最小限にすることができます。エンジンはフレームレートを選択されたオプションに合わせて制限しますが、そのフレームレートが確実に保たれるように注意しなければなりません。
+
+
+|項目|説明|
+|-------|-----------------|
+|PSVR Frame Sequence| レンダリング、リプロジェクション、ヘッドマウントディスプレイの位置 / 方向のサンプリングのフレームレートを定義します。Sony の「VRTracker Library Overview」ドキュメントの『Usage』 セクションをご覧ください。Render60Scanout120 以外のモードは実験的です。|
+|PSVR Frame Sequence - Render 60Scanout 120| アンリアルは 60Hz でフレームをレンダリングし、PlayStation VR HMD は 120Hz でリプロジェクションおよびフリップします。.|
+|PSVR Frame Sequence - Render 90Scanout 90 | アンリアルは 90Hz でフレームをレンダリングし、PlayStation VR HMD は 90Hz でリプロジェクションおよびフリップします。.|
+|PSVR Frame Sequence - Render 120Scanout 120| アンリアルは 120Hz でフレームをレンダリングし、PlayStation VR HMD は 120Hz でリプロジェクションおよびフリップします。.|
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,90 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:5. PlayStation VR 지원 UE4 빌드하기
+Crumbs:%ROOT%, Platforms
+Description:PlayStation VR 작동이 되도록 UE4 프로젝트를 빌드하는 방법을 살펴봅니다.
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 5
+tags: VR
+tags: PlayStation VR
+
+[nav]
+
+PlayStation VR 툴 설치, 셋업이 완료되고 PS4 Neighborhood 에서 PS4 개발 키트 확인이 가능하면, PlayStation VR 개발이 가능하도록 소스 코드에서 언리얼 엔진을 빌드해야 합니다. 그러면 UE4 프로젝트를 생성하여 PS4 개발 키트와 PlayStation VR 에 디플로이할 수 있습니다.
+
+[region:warning]
+PS4 개발 지원을 위해서는 Github 또는 Perforce 에서 UE4 를 다운로드해야 합니다. 필수 PS4 개발 파일은 런처에 포함된 UE4 바이너리 빌드에서 다운로드할 수 없습니다.
+[/region]
+
+## 단계
+
+1. [Epic Github](https://github.com/EpicGames/UnrealEngine) 페이지에서 최신 UE4 릴리즈를 다운로드한 뒤 PC 에 압축을 풉니다.
+	
+	[region:note]
+	위 링크를 클릭하기 전 Github 에 로그인 되었는지 확인하세요. 그렇게 하지 않으면 링크가 정상 작동하지 않을 것입니다.
+	[/region]
+
+1. 파일 압축을 푼 폴더에서 **Setup.BAT** 파일을 찾아 실행시키면 개발 PC 에 나머지 엔진 파일을 다운로드합니다.
+
+    [REGION:lightbox]
+    [![](PSVR_Run_Setup.png)(w:504)](PSVR_Run_Setup.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+1. 모든 파일 다운로드를 마치고나면, 필요한 콘솔 zip 파일을 다운로드하여 풀어줘야 합니다. 등록된 PS4 콘솔 개발자임이 확인되면 에픽에서 파일을 제공해 드릴 것입니다.
+
+    [region:note]
+    Github 를 통해 UE4 를 다운로드한 경우, 콘솔 파일이 들어있는 보안 FTP 링크가 전송됩니다. 라이선시 Perforce 를 통해 UE4 를 다운로드한 경우, 이미 그 파일이 들어있을 것입니다.
+    [/region]
+
+1. 새로 압축을 푼 폴더 안에 Engine 폴더가 있을 것입니다. Engine 폴더를 복사한 뒤, 2 단계에서 다운로드한 Engine 폴더를 대체합니다.
+
+    [region:tip]
+    모든 필수 파일을 콘솔 버전으로 업데이트해야 하므로, 모든 파일을 덮어쓰도록 하세요.
+    [/region]
+
+1. Engine 폴더 안의 **Generate Project files.BAT** 파일을 찾아 실행시킵니다.
+
+    [REGION:lightbox]
+    [![](PSVR_Run_GenProjectFiles.png)(w:504)](PSVR_Run_GenProjectFiles.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+1. 프로젝트 파일 생성이 완료되면, UE4.sln 파일을 더블클릭하여 UE4 Visual Studio 프로젝트를 실행합니다.
+
+    [REGION:lightbox]
+    [![](PSVR_Launch_Project.png)(w:504)](PSVR_Launch_Project.png)
+    [/REGION]
+
+    [REGION:caption]
+    클릭하면 원본 이미지를 확인합니다.
+    [/REGION]
+
+1. Visual Studio 상단에 Solution Configuration 이 **Development Editor** 로 되어있는지, Solution Platform 이 **Win64** 로 되어있는지 확인하세요.
+
+    ![](PSVR_VS_Settings.png)
+
+1. Solution Explorer 에서 UE4 프로젝트에 우클릭한 뒤 맥락 메뉴에서 **Build** 옵션을 선택합니다.
+
+    ![](PSVR_Build_UE4.png)
+
+1. 빌드가 완료되면, **Solution Platform** 을 **PS4** 로 변경한 뒤, **Programs** 폴더를 펼쳐 **PS4DevKitUtil** 를 찾습니다. PS4DevKitUtil 을 찾았으면 **우클릭** 하고 **Build** 옵션을 선택합니다.
+
+    ![](PSVR_Build_PSDevKitUtil.png)
+
+
+이제 UE4 코드가 컴파일되었으니, 다음에는 PlayStation VR 작업이 가능한 UE4 프로젝트를 새로 만들어 셋업하는 법을 살펴보겠습니다.
+
+
+
+[nav]

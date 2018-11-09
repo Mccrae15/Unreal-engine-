@@ -1,0 +1,68 @@
+﻿INTSourceChangeList:3108692
+Availability:Licensee
+Title:媒体框架 PS4
+Crumbs:%ROOT%, Platforms, Platforms/PS4
+Description:在 PS4 上使用媒体框架进行视频播放时的注意事项。
+Platform:PS4
+parent:Platforms/PS4
+order:2
+Version:4.13
+Related:Engine\MediaFramework\Overview
+Related:Engine\MediaFramework\HowTo
+Related:Engine\MediaFramework\TechReference
+
+此页面讲述在虚幻引擎 4 中使用 **媒体框架** 时 PS4 相关的开发。 
+
+[REGION:note]
+请查看 [媒体框架](Engine\MediaFramework\Overview) 页面中的普遍信息。 
+[/REGION]
+
+
+## 启用 PS4 媒体播放器
+
+PS4 媒体播放器默认禁用，必须在项目的 [插件设置](Programming/Plugins/) 中启用。
+
+PS4 上的视频解码器会消耗大量 Onion 内存，结合 HLS 使用时尤其如此。同时播放一个以上的视频可能将内存耗尽，因为我们只默认分配 200 MB。当前这些默认设置未在 UI 中公开，但可手动进行修改。
+
+如需启用，在 **PS4Engine.ini** 文件中添加以下代码： 
+
+	[SystemSettings]
+	r.GarlicHeapSizeMB=2600
+	r.OnionHeapSizeMB=200
+
+在游戏的 ** *.Target.cs** 中：
+
+	public override void SetupGlobalEnvironment(
+            	TargetInfo Target,
+            	ref LinkEnvironmentConfiguration OutLinkEnvironmentConfiguration,
+            	ref CPPEnvironmentConfiguration OutCPPEnvironmentConfiguration)
+	{
+            	// ...
+
+            	if (Target.Platform == UnrealTargetPlatform.PS4)
+            	{
+	OutCPPEnvironmentConfiguration.Definitions
+	.Add("GARLIC_HEAP_SIZE= (2900ULL * 1024 * 1024)");
+
+	OutCPPEnvironmentConfiguration.Definitions
+	.Add("ONION_HEAP_SIZE= (100ULL * 1024 * 1024)");
+            	}
+
+            	// ...
+	}
+
+## 提示和技巧
+
+为改善 PS4 的播放性能，视频文件应编码为相互存取式，使音频和视频可在单一序列运算中被读取，而非寻找媒体文件的不同区域。添加以下代码，无需用 [**mp4box**](https://gpac.wp.mines-telecom.fr/mp4box/) 进行重编码即可完成此操作： 
+
+	mp4box.exe -add non-interleaved-source.mp4 --inter 100 -delay 2=0 -new output.mp4
+
+用户还需要再次检查编码操作是否最适用于 PS4，因为此操作会极大地降低 CPU 和 GPU 的系统开销。可使用 [**FFMPEG**](https://ffmpeg.org/) 完成此操作。举例而言，对于 1080p 的 mp4 文件，建议进行以下操作： 
+
+	ffmpeg.exe -i "highqualitysource.mp4" -c:v libx264 -crf 20 -preset veryslow -maxrate 15000k -bufsize 30000k -slices 24 -x264opts b-pyramid=0:no-cabac:weightb=0:weightp=0 -refs 1 -pix_fmt yuv420p "non-interleaved-output.mp4"
+
+## 已知问题与注意事项
+
+以下项目为已知问题，因其与 PS4 开发使用的媒体框架相关： 
+
+* **媒体播放列表（Media Playlists）** 当前不支持 4.13 版本。 

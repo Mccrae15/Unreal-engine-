@@ -1,0 +1,31 @@
+﻿INTSourceChangelist:3584409
+Availability: Licensee
+Crumbs: %ROOT%
+Title: Set Spectator Screen Texture
+Description: 소셜 (관람자) 화면에 표시되는 텍스처를 변경하는 노드입니다.
+Type: Reference
+Version: 4.17
+Parent: Platforms/PS4/PSVR/SpectatorScreen
+Order:
+Tags: VR 
+Tags: PS VR
+
+[TOC(start:2 end:2)]
+[EXCERPT:SetSpectatorScreenTextureNode_Ref]
+![](SetSpectatorScreenTextureNode.png)
+
+소셜 (관람자) 화면에 표시되는 텍스처를 변경하는 노드입니다.
+
+**입력**
+
+| 핀 위치 | 이름 | 설명 |
+| ---------------------- | --------------- | ------------------------------------------------------------- |
+| ![](SetSpectatorScreenTextureNode_1.png) |  (In) Exec  | 입력 실행 핀입니다. |
+| ![](SetSpectatorScreenTextureNode_2.png) |  In Texture | 새로운 텍스처 (2D) 오브젝트로의 레퍼런스입니다. |
+
+**출력**
+
+| 핀 위치 | 이름 | 설명 |
+| ---------------------- | ----------- | ---------------------------------------- |
+| ![](SetSpectatorScreenTextureNode_3.png) |  (Out) Exec  | 출력 실행 핀입니다. |
+[/EXCERPT:SetSpectatorScreenTextureNode_Ref]

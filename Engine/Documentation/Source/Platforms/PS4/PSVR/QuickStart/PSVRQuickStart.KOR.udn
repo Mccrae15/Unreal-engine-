@@ -1,0 +1,29 @@
+﻿INTSourceChangelist:3643552
+Availability:Licensee
+Title: PlayStation VR 퀵 스타트
+Crumbs:
+Description:PSVR 용 UE4 프로젝트 작업을 위한 간단 안내입니다.
+Navigation:platform
+Version: 4.13
+parent:Platforms/PS4/PSVR
+order:1
+type:quick start
+type:landing
+tags: VR
+tags: PlayStation VR
+tags:Getting Started
+Platform:PS4
+topic-image:PSVR_Header_Image.png
+
+
+![](PSVR_Header_Image.png)
+
+PlayStation VR 과 Playstation Head Mounted Display (HMD) 상용 출시가 되었으니, 이제 Playstation 프로젝트에 PlayStation VR HMD 작업이 가능하도록 셋업할 수 있습니다. 다음 퀵 스타트에서는 PS VR 작동이 가능하도록 UE4 Playstation 프로젝트 셋업을 하는 방법을 살펴보도록 하겠습니다. 이 퀵 스타트를 마치면 PS VR 작동이 가능한 UE4 프로젝트가 생성될 것입니다.
+
+## 단계
+
+[DIR(output:"checkpoint" parent:"Platforms/PS4/PSVR/quickstart")]
+
+[REGION:call_to_action]
+    [클릭하면 시작합니다.](Platforms\PS4\PSVR\QuickStart\1 "%Platforms\PS4\PSVR\QuickStart\1:title%")
+[/REGION]
