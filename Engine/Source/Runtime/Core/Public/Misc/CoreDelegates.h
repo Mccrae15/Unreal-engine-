@@ -509,6 +509,15 @@ public:
 	DECLARE_DELEGATE_RetVal(bool, FIsLoadingMovieCurrentlyPlaying)
 	static FIsLoadingMovieCurrentlyPlaying IsLoadingMovieCurrentlyPlaying;
 
+	//Carbon Studio Custom delegate for obtaining move tracking state
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FGetMoveStatus, bool, bool);
+	static FGetMoveStatus GetMoveStatus;
+
+	//Carbon Studio Custom delegate for using HMDReprojectionSetOutputMinColor
+	DECLARE_MULTICAST_DELEGATE_OneParam(FUseHMDReprojection, FLinearColor);
+	static FUseHMDReprojection UseHMDReprojection;
+
+
 	// Callback to allow user code to prevent url from being launched from FPlatformProcess::LaunchURL. Used to apply http whitelist
 	// Return true for to launch the url
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FShouldLaunchUrl, const TCHAR* /* URL */);

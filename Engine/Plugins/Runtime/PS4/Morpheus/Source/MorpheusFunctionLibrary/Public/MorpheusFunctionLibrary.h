@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/CoreDelegates.h"
 #include "IMorpheusPlugin.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "MorpheusTypes.h"
@@ -17,6 +18,7 @@ class MORPHEUSFUNCTIONLIBRARY_API UMorpheusFunctionLibrary : public UBlueprintFu
 	GENERATED_UCLASS_BODY()
 
 public:
+	~UMorpheusFunctionLibrary();
 	/**
 	* Show provided texture as a reprojected 2D VR splash screen on PlayStation VR.
 	*

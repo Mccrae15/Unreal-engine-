@@ -157,6 +157,13 @@ FCoreDelegates::FConfigReadyForUse FCoreDelegates::ConfigReadyForUse;
 
 FCoreDelegates::FIsLoadingMovieCurrentlyPlaying FCoreDelegates::IsLoadingMovieCurrentlyPlaying;
 
+//Carbon Studio Custom delegate for obtaining move tracking state
+FCoreDelegates::FGetMoveStatus FCoreDelegates::GetMoveStatus;
+
+//Carbon Studio Custom delegate for using HMDReprojectionSetOutputMinColor
+FCoreDelegates::FUseHMDReprojection FCoreDelegates::UseHMDReprojection;
+
+
 FCoreDelegates::FShouldLaunchUrl FCoreDelegates::ShouldLaunchUrl;
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS

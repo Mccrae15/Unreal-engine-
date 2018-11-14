@@ -864,8 +864,11 @@ protected:
 		const float LargeValue = (State.VibeValues.LeftLarge > State.VibeValues.RightLarge ? State.VibeValues.LeftLarge : State.VibeValues.RightLarge);
 		const float SmallValue = (State.VibeValues.LeftSmall > State.VibeValues.RightSmall ? State.VibeValues.LeftSmall : State.VibeValues.RightSmall);
 
-		State.VibeSettings.largeMotor = ConvertToByte(LargeValue);
-		State.VibeSettings.smallMotor = ConvertToByte(SmallValue);
+		//State.VibeSettings.largeMotor = ConvertToByte(LargeValue);
+		//State.VibeSettings.smallMotor = ConvertToByte(SmallValue);
+
+		State.VibeSettings.largeMotor = ConvertToByte(0);
+		State.VibeSettings.smallMotor = ConvertToByte(0);
 
 		// Send the new values to the controller
 		scePadSetVibration(State.Handle, &State.VibeSettings);

@@ -9,6 +9,11 @@
 UMorpheusFunctionLibrary::UMorpheusFunctionLibrary(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
 {
+	FCoreDelegates::UseHMDReprojection.AddStatic(&UMorpheusFunctionLibrary::HMDReprojectionSetOutputMinColor);
+}
+UMorpheusFunctionLibrary::~UMorpheusFunctionLibrary()
+{
+	FCoreDelegates::UseHMDReprojection.RemoveAll(this);
 }
 
 #if MORPHEUS_SUPPORTED_PLATFORMS
