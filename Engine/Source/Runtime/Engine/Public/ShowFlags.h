@@ -174,6 +174,7 @@ struct FEngineShowFlags
 		SetVignette(false);
 		SetGrain(false);
 		SetSeparateTranslucency(false);
+		SetDynamicShadows(false);//modded by Avengar
 		SetScreenPercentage(false);
 		SetScreenSpaceReflections(false);
 		SetTemporalAA(false);
@@ -374,6 +375,7 @@ private:
 		SetPrecomputedVisibilityCells(false);
 		SetVisualizeVolumetricLightmap(false);
 		SetVolumeLightingSamples(false);
+		SetDynamicShadows(false);//modded by Avengar
 		// we enable it manually on the editor view ports
 		SetSnap(false);
 		SetVisualizeMeshDistanceFields(false);

@@ -34,6 +34,12 @@ class STEAMVR_API USteamVRFunctionLibrary : public UBlueprintFunctionLibrary
 public:
 	
 	/**
+	 * Returns the version string which may be used to disambiguate different HMD types using SteamVR.
+	 */
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+	static FString GetVersionString();
+	
+	/**
 	 * Returns an array of the currently tracked device IDs
 	 *
 	 * @param	DeviceType	Which class of device (e.g. controller, tracking devices) to get Device Ids for

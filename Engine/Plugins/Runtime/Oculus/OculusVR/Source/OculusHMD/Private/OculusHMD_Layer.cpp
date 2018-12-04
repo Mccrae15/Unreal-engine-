@@ -54,7 +54,7 @@ FLayer::FLayer(uint32 InId, const IStereoLayers::FLayerDesc& InDesc) :
 	Id(InId),
 	OvrpLayerId(0),
 	bUpdateTexture(false),
-	bInvertY(false),
+	bInvertY(true),
 	bHasDepth(false),
 	PokeAHoleComponentPtr(nullptr), 
 	PokeAHoleActor(nullptr)
@@ -328,7 +328,7 @@ bool FLayer::CanReuseResources(const FLayer* InLayer) const
 }
 
 
-void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* CustomPresent, FRHICommandListImmediate& RHICmdList, const FLayer* InLayer)
+void FLayer::Initialize_RenderThread(FCustomPresent* CustomPresent, FRHICommandListImmediate& RHICmdList, const FLayer* InLayer)
 {
 	CheckInRenderThread();
 
@@ -338,7 +338,11 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 	}
 	else
 	{
-		bInvertY = ( CustomPresent->GetLayerFlags() & ovrpLayerFlag_TextureOriginAtBottomLeft ) != 0;
+		if (Desc.UVRect.Min.Y == 1.0f)
+		{
+			bInvertY = false;
+			Desc.UVRect.Min.Y = 0.0f;
+		}
 
 		uint32 SizeX = 0, SizeY = 0;
 
@@ -393,13 +397,10 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 		uint32 NumMips = 0;
 #endif
 		uint32 NumSamples = 1;
-		int LayerFlags = CustomPresent->GetLayerFlags();
+		int LayerFlags = 0;
 
 		if(!(Desc.Flags & IStereoLayers::LAYER_FLAG_TEX_CONTINUOUS_UPDATE))
 			LayerFlags |= ovrpLayerFlag_Static;
-
-		if (Settings->Flags.bChromaAbCorrectionEnabled)
-			LayerFlags |= ovrpLayerFlag_ChromaticAberrationCorrection;
 
 		// Calculate layer desc
 		ovrp_CalculateLayerDesc(
@@ -660,8 +661,8 @@ const ovrpLayerSubmit* FLayer::UpdateLayer_RHIThread(const FSettings* Settings, 
 			break;
 
 		case IStereoLayers::FaceLocked:
-			BaseOrientation = FQuat::Identity;
-			BaseLocation = FVector::ZeroVector;
+			BaseOrientation = Settings->BaseOrientation;
+			BaseLocation = Settings->BaseOffset * LocationScaleInv;
 			break;
 		}
 
@@ -690,12 +691,10 @@ const ovrpLayerSubmit* FLayer::UpdateLayer_RHIThread(const FSettings* Settings, 
 		OvrpLayerSubmit.EyeFov.DepthNear = Frame->NearClippingPlane / 100.f; //physical scale is 100UU/meter
 		OvrpLayerSubmit.LayerSubmitFlags = ovrpLayerSubmitFlag_ReverseZ;
 
-		if (Settings->Flags.bPixelDensityAdaptive)
+		if (Frame->Flags.bPixelDensityAdaptive)
 		{
-			for (int eye = 0; eye < ovrpEye_Count; eye++)
-			{
-				OvrpLayerSubmit.ViewportRect[eye] = ToOvrpRecti(Settings->EyeRenderViewport[eye]);
-			}
+			OvrpLayerSubmit.ViewportRect[0] = ToOvrpRecti(Frame->FinalViewRect[0]);
+			OvrpLayerSubmit.ViewportRect[1] = ToOvrpRecti(Frame->FinalViewRect[1]);
 		}
 
 #if PLATFORM_ANDROID

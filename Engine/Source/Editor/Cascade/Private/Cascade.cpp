@@ -1173,6 +1173,19 @@ void FCascade::OnNewEmitter()
 		}
 	}
 
+	if (ParticleSystem->TickRateWithLODLevel.Num() == 0)
+	{
+		UParticleEmitter* Emitter = ParticleSystem->Emitters[0];
+		if (Emitter)
+		{
+			ParticleSystem->TickRateWithLODLevel.AddUninitialized(Emitter->LODLevels.Num());
+			for (int32 LODIndex = 0; LODIndex < ParticleSystem->TickRateWithLODLevel.Num(); LODIndex++)
+			{
+				ParticleSystem->TickRateWithLODLevel[LODIndex] = LODIndex * 0.0f;
+			}
+		}
+	}
+
 	ParticleSystemComponent->PostEditChange();
 	ParticleSystem->PostEditChange();
 
@@ -3247,6 +3260,11 @@ void FCascade::ExportSelectedEmitter()
 					{
 						DestPartSys->LODSettings[DistIndex] = FParticleSystemLOD::CreateParticleSystemLOD();
 					}
+					DestPartSys->TickRateWithLODLevel.AddZeroed(InsertCount);
+					for (int32 DistIndex = StartIndex; DistIndex < DestPartSys->TickRateWithLODLevel.Num(); DistIndex++)
+					{
+						DestPartSys->TickRateWithLODLevel[DistIndex] = DistIndex * 0.0f;
+					}
 				}
 			}
 			else
@@ -3264,6 +3282,12 @@ void FCascade::ExportSelectedEmitter()
 				for (int32 DistIndex = 0; DistIndex < InsertCount; DistIndex++)
 				{
 					DestPartSys->LODSettings[DistIndex] = FParticleSystemLOD::CreateParticleSystemLOD();
+				}
+				DestPartSys->TickRateWithLODLevel.Empty();
+				DestPartSys->TickRateWithLODLevel.AddZeroed(InsertCount);
+				for (int32 DistIndex = 0; DistIndex < InsertCount; DistIndex++)
+				{
+					DestPartSys->TickRateWithLODLevel[DistIndex] = DistIndex * 0.0f;
 				}
 			}
 
@@ -3367,6 +3391,7 @@ void FCascade::RegenerateLowestLOD(bool bDupeHighest)
 
 		// Reset the LOD distances
 		ParticleSystem->LODDistances.Empty();
+		ParticleSystem->TickRateWithLODLevel.Empty();
 		ParticleSystem->LODSettings.Empty();
 		UParticleEmitter* SourceEmitter = ParticleSystem->Emitters[0];
 		if (SourceEmitter)
@@ -3380,6 +3405,11 @@ void FCascade::RegenerateLowestLOD(bool bDupeHighest)
 			for (int32 LODIndex = 0; LODIndex < ParticleSystem->LODSettings.Num(); LODIndex++)
 			{
 				ParticleSystem->LODSettings[LODIndex] = FParticleSystemLOD::CreateParticleSystemLOD();
+			}
+			ParticleSystem->TickRateWithLODLevel.AddUninitialized(SourceEmitter->LODLevels.Num());
+			for (int32 LODIndex = 0; LODIndex < ParticleSystem->TickRateWithLODLevel.Num(); LODIndex++)
+			{
+				ParticleSystem->TickRateWithLODLevel[LODIndex] = LODIndex * 0.0f;
 			}
 		}
 
@@ -3488,6 +3518,15 @@ void FCascade::AddLOD(bool bBeforeCurrent)
 		else
 		{
 			ParticleSystem->LODSettings[CurrentLODIndex] = ParticleSystem->LODSettings[CurrentLODIndex - 1];
+		}
+		ParticleSystem->TickRateWithLODLevel.InsertZeroed(CurrentLODIndex, 1);
+		if (CurrentLODIndex == 0)
+		{
+			ParticleSystem->TickRateWithLODLevel[CurrentLODIndex] = 0.0f;
+		}
+		else
+		{
+			ParticleSystem->TickRateWithLODLevel[CurrentLODIndex] = ParticleSystem->TickRateWithLODLevel[CurrentLODIndex - 1];
 		}
 
 		ParticleSystem->SetupSoloing();
@@ -4389,6 +4428,19 @@ void FCascade::OnDeleteLOD()
 			if ((LODLevel->Level == Selection) && (ParticleSystem->LODDistances.Num() > LODLevel->Level))
 			{
 				ParticleSystem->LODDistances.RemoveAt(LODLevel->Level);
+				break;
+			}
+		}
+	}
+
+	for (int32 LODIndex = 0; LODIndex < Emitter->LODLevels.Num(); LODIndex++)
+	{
+		UParticleLODLevel* LODLevel = Emitter->LODLevels[LODIndex];
+		if (LODLevel)
+		{
+			if ((LODLevel->Level == Selection) && (ParticleSystem->TickRateWithLODLevel.Num() > LODLevel->Level))
+			{
+				ParticleSystem->TickRateWithLODLevel.RemoveAt(LODLevel->Level);
 				break;
 			}
 		}

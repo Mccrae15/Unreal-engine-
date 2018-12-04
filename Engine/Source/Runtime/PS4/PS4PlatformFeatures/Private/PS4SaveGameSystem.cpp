@@ -9,8 +9,9 @@
 #include "RHICommandList.h"
 #include "RenderingThread.h"
 //CarbonEdit 10.04 Start
-#include "ScopeLock.h"
+#include "Misc/ScopeLock.h"
 //CarbonEdit 10.04 End
+
 DEFINE_LOG_CATEGORY_STATIC(LogPS4SaveGame, Log, All);
 
 #define SAVE_SLOT_TEMPLATE "ue4Game%04x"
@@ -1202,9 +1203,6 @@ bool FPS4SaveGameSystem::Initialize()
 
 void FPS4SaveGameSystem::Shutdown()
 {
-	//CarbonEdit 10.04 Start
-	FScopeLock ScopeLock(&CriticalSection);
-	//CarbonEdit 10.04 End
 	int32 Result;
 	if (bHasNativeUI)
 	{

@@ -6,30 +6,16 @@ public class OculusEditor : ModuleRules
 {
 	public OculusEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
+		PrivateIncludePaths.Add("OculusEditor/Private");
+
         PrivateDependencyModuleNames.AddRange(
 			new string[] {
-				"Projects",
-				"InputCore",
-				"UnrealEd",
-				"LevelEditor",
-				"CoreUObject",
 				"Engine",
-				"EngineSettings",
-				"Slate",
-				"SlateCore",
-				"EditorStyle",
 				"Core",
+				"CoreUObject",
 				"OculusHMD",
-				"OVRPlugin",
 			}
 			);
-
-		PrivateIncludePaths.AddRange(
-				new string[] {
-					// Relative to Engine\Plugins\Runtime\Oculus\OculusVR\Source
-					"OculusEditor/Private",
-					"OculusHMD/Private",
-				});
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {

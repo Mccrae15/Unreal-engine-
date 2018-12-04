@@ -46,6 +46,7 @@
 #include "HAL/RunnableThread.h" 
 #endif
 //CarbonEdit 10.04 end
+
 #define LOCTEXT_NAMESPACE "GameplayStatics"
 
 static const int UE4_SAVEGAME_FILE_TYPE_TAG = 0x53415647;		// "sAvG"

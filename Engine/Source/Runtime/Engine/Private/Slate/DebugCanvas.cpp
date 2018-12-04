@@ -100,7 +100,7 @@ FDebugCanvasDrawer::~FDebugCanvasDrawer()
 		RenderThreadCanvas = nullptr;
 	}
 
-	if (LayerID != INVALID_LAYER_ID && GEngine->StereoRenderingDevice && GEngine->StereoRenderingDevice->GetStereoLayers())
+	if (LayerID != INVALID_LAYER_ID)
 	{
 		GEngine->StereoRenderingDevice->GetStereoLayers()->DestroyLayer(LayerID);
 		LayerID = INVALID_LAYER_ID;
@@ -117,7 +117,6 @@ void FDebugCanvasDrawer::BeginRenderingCanvas( const FIntRect& CanvasRect )
 {
 	if( CanvasRect.Size().X > 0 && CanvasRect.Size().Y > 0 )
 	{
-		bCanvasRenderedLastFrame = true;
 		ENQUEUE_UNIQUE_RENDER_COMMAND_THREEPARAMETER
 		(
 			BeginRenderingDebugCanvas,
@@ -166,9 +165,11 @@ void FDebugCanvasDrawer::InitDebugCanvas(FViewportClient* ViewportClient, UWorld
 		IStereoLayers* const StereoLayers = (bIsStereoscopic3D && GEngine && GEngine->StereoRenderingDevice.IsValid()) ? GEngine->StereoRenderingDevice->GetStereoLayers() : nullptr;
 		const bool bHMDAvailable = StereoLayers && bIsStereoscopic3D;
 
-		GameThreadCanvas->SetUseInternalTexture(bHMDAvailable);
+		static const auto DebugCanvasInLayerCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.DebugCanvasInLayer"));
+		const bool bDebugInLayer = bHMDAvailable && DebugCanvasInLayerCVar && DebugCanvasInLayerCVar->GetValueOnAnyThread() != 0;
+		GameThreadCanvas->SetUseInternalTexture(bDebugInLayer);
 
-		if (bHMDAvailable && LayerTexture && bCanvasRenderedLastFrame)
+		if (bDebugInLayer && LayerTexture && bCanvasRenderedLastFrame)
 		{
 			if (StereoLayers)
 			{
@@ -184,16 +185,14 @@ void FDebugCanvasDrawer::InitDebugCanvas(FViewportClient* ViewportClient, UWorld
 			}
 		}
 
-		if (LayerID != INVALID_LAYER_ID && (!bHMDAvailable || !bCanvasRenderedLastFrame))
+		if (LayerID != INVALID_LAYER_ID && (!bDebugInLayer || !bCanvasRenderedLastFrame))
 		{
 			if (StereoLayers)
 			{
 				StereoLayers->DestroyLayer(LayerID);
-				LayerID = INVALID_LAYER_ID;
 			}
+			LayerID = INVALID_LAYER_ID;
 		}
-
-		bCanvasRenderedLastFrame = false;
 	}
 }
 
@@ -204,7 +203,7 @@ void FDebugCanvasDrawer::DrawRenderThread(FRHICommandListImmediate& RHICmdList, 
 	QUICK_SCOPE_CYCLE_COUNTER(Stat_DrawDebugCanvas);
 	if( RenderThreadCanvas.IsValid() )
 	{
-		FTexture2DRHIRef* RT = (FTexture2DRHIRef*)InWindowBackBuffer;
+		FTexture2DRHIRef& RT = *(FTexture2DRHIRef*)InWindowBackBuffer;
 		if (RenderThreadCanvas->IsUsingInternalTexture())
 		{
 			if (LayerTexture && RenderThreadCanvas->GetParentCanvasSize() != LayerTexture->GetDesc().Extent)
@@ -226,22 +225,27 @@ void FDebugCanvasDrawer::DrawRenderThread(FRHICommandListImmediate& RHICmdList, 
 			{
 				StereoLayers->GetAllocatedTexture(LayerID, HMDSwapchain, HMDNull);
 			}
-			RT = reinterpret_cast<FTexture2DRHIRef*>(HMDSwapchain == nullptr ? &LayerTexture->GetRenderTargetItem().ShaderResourceTexture : &HMDSwapchain);
+			FTexture2DRHIRef& LayerTextureRT = *reinterpret_cast<FTexture2DRHIRef*>(HMDSwapchain == nullptr ? &LayerTexture->GetRenderTargetItem().ShaderResourceTexture : &HMDSwapchain);
+			RenderTarget->SetRenderTargetTexture(LayerTextureRT);
 		}
-		RenderTarget->SetRenderTargetTexture(*RT);
+		else
+		{
+			RenderTarget->SetRenderTargetTexture(RT);
+		}
 
 		bool bNeedToFlipVertical = RenderThreadCanvas->GetAllowSwitchVerticalAxis();
 		// Do not flip when rendering to the back buffer
 		RenderThreadCanvas->SetAllowSwitchVerticalAxis(false);
-		if (RenderThreadCanvas->IsScaledToRenderTarget() && IsValidRef(*RT)) 
+		if (RenderThreadCanvas->IsScaledToRenderTarget() && IsValidRef(RT)) 
 		{
-			RenderThreadCanvas->SetRenderTargetRect( FIntRect(0, 0, (*RT)->GetSizeX(), (*RT)->GetSizeY()) );
+			RenderThreadCanvas->SetRenderTargetRect( FIntRect(0, 0, RT->GetSizeX(), RT->GetSizeY()) );
 		}
 		else
 		{
 			RenderThreadCanvas->SetRenderTargetRect( RenderTarget->GetViewRect() );
 		}
 
+		bCanvasRenderedLastFrame = RenderThreadCanvas->HasBatchesToRender();
 		RenderThreadCanvas->Flush_RenderThread(RHICmdList, true);
 		RenderThreadCanvas->SetAllowSwitchVerticalAxis(bNeedToFlipVertical);
 		RenderTarget->ClearRenderTargetTexture();
@@ -263,13 +267,6 @@ void FDebugCanvasDrawer::DeleteRenderThreadCanvas()
 void FDebugCanvasDrawer::SetRenderThreadCanvas( const FIntRect& InCanvasRect, FCanvasPtr& Canvas )
 {
 	check( IsInRenderingThread() );
-	if (Canvas->IsUsingInternalTexture())
-	{
-		RenderTarget->SetViewRect(FIntRect(FIntPoint(0, 0), Canvas->GetParentCanvasSize()));
-	}
-	else
-	{
-		RenderTarget->SetViewRect(InCanvasRect);
-	}
+	RenderTarget->SetViewRect( InCanvasRect );
 	RenderThreadCanvas = Canvas;
 }

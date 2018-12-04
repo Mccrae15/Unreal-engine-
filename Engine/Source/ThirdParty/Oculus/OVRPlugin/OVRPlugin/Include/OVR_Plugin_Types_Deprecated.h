@@ -1,17 +1,17 @@
 /************************************************************************************
 
-Copyright (c) Facebook Technologies, LLC and its affiliates.  All rights reserved.
+Copyright   :   Copyright 2014 Oculus VR, LLC. All Rights reserved.
 
-Licensed under the Oculus SDK License Version 3.5 (the "License");
-you may not use the Oculus SDK except in compliance with the License,
+Licensed under the Oculus VR Rift SDK License Version 3.2 (the "License");
+you may not use the Oculus VR Rift SDK except in compliance with the License,
 which is provided at the time of installation or download, or which
 otherwise accompanies this software in either electronic or hard copy form.
 
 You may obtain a copy of the License at
 
-https://developer.oculus.com/licenses/sdk-3.5/
+http://www.oculusvr.com/licenses/LICENSE-3.2
 
-Unless required by applicable law or agreed to in writing, the Oculus SDK
+Unless required by applicable law or agreed to in writing, the Oculus VR SDK
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -172,9 +172,7 @@ typedef enum {
   ovrpOverlayFlag_OnTop = 0x00000001,
   /// If true, the overlay bypasses TimeWarp and directly follows head motion.
   ovrpOverlayFlag_HeadLocked = 0x00000002,
-  /// If true, the overlay will not allow depth compositing on Rift.
-  ovrpOverlayFlag_NoDepth  = 0x00000004,
-  
+
   // Use left 5 - 8 bits for shape flags
   ovrpOverlayFlag_ShapeShift = 4,
   ovrpOverlayFlag_Quad = (ovrpShape_Quad << ovrpOverlayFlag_ShapeShift),

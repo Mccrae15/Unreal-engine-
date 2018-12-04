@@ -1,4 +1,4 @@
-// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 
 #include "OculusHMD_CustomPresent.h"
 #include "OculusHMDPrivateRHI.h"
@@ -31,6 +31,7 @@ public:
 	virtual void* GetOvrpDevice() const override;
 	virtual void* GetOvrpCommandQueue() const override;
 	virtual int GetSystemRecommendedMSAALevel() const override;
+	virtual int GetEyeLayerFlags() const override;
 	virtual FTextureRHIRef CreateTexture_RenderThread(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, FClearValueBinding InBinding, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, ERHIResourceType InResourceType, ovrpTextureHandle InTexture, uint32 InTexCreateFlags) override;
 	virtual void AliasTextureResources_RHIThread(FTextureRHIParamRef DestTexture, FTextureRHIParamRef SrcTexture) override;
 };
@@ -38,7 +39,14 @@ public:
 
 FVulkanCustomPresent::FVulkanCustomPresent(FOculusHMD* InOculusHMD) :
 	FCustomPresent(InOculusHMD, ovrpRenderAPI_Vulkan, PF_R8G8B8A8, false, false)
-{}
+{
+#if PLATFORM_ANDROID
+	if (GRHISupportsRHIThread && GIsThreadedRendering && GUseRHIThread_InternalUseOnly)
+	{
+		SetRHIThreadEnabled(false, false);
+	}
+#endif
+}
 
 
 bool FVulkanCustomPresent::IsUsingCorrectDisplayAdapter() const
@@ -98,6 +106,14 @@ int FVulkanCustomPresent::GetSystemRecommendedMSAALevel() const
 	return 1;
 }
 
+int FVulkanCustomPresent::GetEyeLayerFlags() const
+{
+#if PLATFORM_ANDROID
+	return ovrpLayerFlag_TextureOriginAtBottomLeft;
+#else
+	return 0;
+#endif
+}
 
 FTextureRHIRef FVulkanCustomPresent::CreateTexture_RenderThread(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, FClearValueBinding InBinding, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, ERHIResourceType InResourceType, ovrpTextureHandle InTexture, uint32 InTexCreateFlags)
 {

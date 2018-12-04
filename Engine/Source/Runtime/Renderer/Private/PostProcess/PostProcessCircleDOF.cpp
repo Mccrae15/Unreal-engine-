@@ -203,20 +203,13 @@ void FRCPassPostProcessCircleDOFSetup::Process(FRenderingCompositePassContext& C
 	uint32 NumRenderTargets = FPostProcessing::HasAlphaChannelSupport() ? 2 : 1;
 	SetRenderTargets(Context.RHICmdList, NumRenderTargets, RenderTargets, FTextureRHIParamRef(), 0, NULL);
 
-	if (View.StereoPass == eSSP_FULL)
+	FLinearColor ClearColors[2] = 
 	{
-		FLinearColor ClearColors[2] =
-		{
-			FLinearColor(0, 0, 0, 0),
-			FLinearColor(0, 0, 0, 0)
-		};
-		// is optimized away if possible (RT size=view size, )
-#if WITH_OCULUS_PRIVATE_CODE
-		DrawClearQuadMRT(Context.RHICmdList, true, NumRenderTargets, ClearColors, false, 0, false, 0, 0xff, PassOutputs[0].RenderTargetDesc.Extent, DestRect);
-#else
-		DrawClearQuadMRT(Context.RHICmdList, true, NumRenderTargets, ClearColors, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, DestRect);
-#endif
-	}
+		FLinearColor(0, 0, 0, 0),
+		FLinearColor(0, 0, 0, 0)
+	};
+	// is optimized away if possible (RT size=view size, )
+	DrawClearQuadMRT(Context.RHICmdList, true, NumRenderTargets, ClearColors, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, DestRect);
 
 	Context.SetViewportAndCallRHI(0, 0, 0.0f, DestSize.X, DestSize.Y, 1.0f );
 
@@ -422,20 +415,13 @@ void FRCPassPostProcessCircleDOFDilate::Process(FRenderingCompositePassContext& 
 	};
 	SetRenderTargets(Context.RHICmdList, NumRenderTargets, RenderTargets, FTextureRHIParamRef(), 0, nullptr);
 
-	if (View.StereoPass == eSSP_FULL)
+	FLinearColor ClearColors[2] = 
 	{
-		FLinearColor ClearColors[2] =
-		{
-			FLinearColor(0, 0, 0, 0),
-			FLinearColor(0, 0, 0, 0)
-		};
-		// is optimized away if possible (RT size=view size, )
-#if WITH_OCULUS_PRIVATE_CODE
-		DrawClearQuadMRT(Context.RHICmdList, true, NumRenderTargets, ClearColors, false, 0, false, 0, 0xff, PassOutputs[0].RenderTargetDesc.Extent, DestRect);
-#else
-		DrawClearQuadMRT(Context.RHICmdList, true, NumRenderTargets, ClearColors, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, DestRect);
-#endif
-	}
+		FLinearColor(0, 0, 0, 0),
+		FLinearColor(0, 0, 0, 0)
+	};
+	// is optimized away if possible (RT size=view size, )
+	DrawClearQuadMRT(Context.RHICmdList, true, NumRenderTargets, ClearColors, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, DestRect);
 
 	Context.SetViewportAndCallRHI(0, 0, 0.0f, DestSize.X, DestSize.Y, 1.0f );
 
@@ -710,21 +696,14 @@ void FRCPassPostProcessCircleDOF::Process(FRenderingCompositePassContext& Contex
 	uint32 NumRenderTargets = FPostProcessing::HasAlphaChannelSupport() ? 2 : 1;
 	SetRenderTargets(Context.RHICmdList, NumRenderTargets, RenderTargets, FTextureRHIParamRef(), 0, NULL);
 
-	if (View.StereoPass == eSSP_FULL)
+	FLinearColor ClearColors[2] = 
 	{
-		FLinearColor ClearColors[2] =
-		{
-			FLinearColor(0, 0, 0, 0),
-			FLinearColor(0, 0, 0, 0)
-		};
+		FLinearColor(0, 0, 0, 0),
+		FLinearColor(0, 0, 0, 0)
+	};
 
-		// is optimized away if possible (RT size=view size, )
-#if WITH_OCULUS_PRIVATE_CODE
-		DrawClearQuadMRT(Context.RHICmdList, true, NumRenderTargets, ClearColors, false, 0, false, 0, 0xff, PassOutputs[0].RenderTargetDesc.Extent, DestRect);
-#else
-		DrawClearQuadMRT(Context.RHICmdList, true, NumRenderTargets, ClearColors, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, DestRect);
-#endif
-	}
+	// is optimized away if possible (RT size=view size, )
+	DrawClearQuadMRT(Context.RHICmdList, true, NumRenderTargets, ClearColors, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, DestRect);
 
 	Context.SetViewportAndCallRHI(0, 0, 0.0f, DestSize.X, DestSize.Y, 1.0f );
 		
@@ -939,17 +918,13 @@ void FRCPassPostProcessCircleDOFRecombine::Process(FRenderingCompositePassContex
 
 	const FSceneRenderTargetItem& DestRenderTarget = PassOutputs[0].RequestSurface(Context);
 
-	if (!Context.HasHmdMesh())
+	if (Context.HasHmdMesh())
 	{
 		// Set the view family's render target/viewport.
 		SetRenderTarget(Context.RHICmdList, DestRenderTarget.TargetableTexture, FTextureRHIRef());
 
 		// is optimized away if possible (RT size=view size, )
-#if WITH_OCULUS_PRIVATE_CODE
-		DrawClearQuad(Context.RHICmdList, true, FLinearColor::Black, false, 0, false, 0, 0xff, PassOutputs[0].RenderTargetDesc.Extent, View.ViewRect);
-#else
 		DrawClearQuad(Context.RHICmdList, true, FLinearColor::Black, false, 0, false, 0, PassOutputs[0].RenderTargetDesc.Extent, View.ViewRect);
-#endif
 	}
 	else
 	{

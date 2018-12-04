@@ -18,7 +18,8 @@
 #include "EngineGlobals.h"
 #include "Engine/World.h"
 #include "GameFramework/WorldSettings.h"
-#include "Misc/CoreDelegates.h"
+
+
 #if PLATFORM_PS4
 	#include <move.h>
 #endif
@@ -709,7 +710,6 @@ bool FMoveController::GetControllerOrientationAndPosition(const int32 Controller
 	{
 		FCoreDelegates::GetMoveStatus.Broadcast(TrackingData.Status == IPS4Tracker::ETrackingStatus::TRACKING, false);
 	}
-
 	return (TrackingData.Status == IPS4Tracker::ETrackingStatus::TRACKING) || (TrackingData.Status == IPS4Tracker::ETrackingStatus::NOT_TRACKING);
 }
 

@@ -101,6 +101,7 @@ public:
 		Ar << PostProcessParameters;
 		Ar << FilteredSceneDepthTexture;
 		Ar << FilteredSceneDepthTextureSampler;
+
 		return bShaderHasOutdatedParameters;
 	}
 

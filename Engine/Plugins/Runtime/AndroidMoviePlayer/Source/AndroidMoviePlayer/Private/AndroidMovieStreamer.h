@@ -49,7 +49,7 @@ private:
 	/**
 	Java side interface for MediaPlayer utility.
 	*/
-	TSharedPtr<FJavaAndroidMediaPlayer, ESPMode::ThreadSafe>    JavaMediaPlayer;
+	TSharedPtr<FJavaAndroidMediaPlayer>    JavaMediaPlayer;
 
 	/**
 	Some state for the playing movie.

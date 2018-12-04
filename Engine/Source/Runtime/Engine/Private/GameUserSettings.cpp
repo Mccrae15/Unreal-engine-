@@ -258,7 +258,7 @@ void UGameUserSettings::SetToDefaults()
 	bUseDynamicResolution = false;
 	bUseHDRDisplayOutput = GUserSettingsDefaultHDRValue;
 	HDRDisplayOutputNits = 1000;
-	// Skubert Edit
+// Skubert Edit
 	HMDScale = 100;
 	bShowMirror = 2;
 	bHideSubs = false;
@@ -971,6 +971,7 @@ bool UGameUserSettings::IsHDREnabled() const
 {
 	return bUseHDRDisplayOutput;
 }
+
 //Skubert Edit
 
 void UGameUserSettings::SetHMDScaling(int32 Value)

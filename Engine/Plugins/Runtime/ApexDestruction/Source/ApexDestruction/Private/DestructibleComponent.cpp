@@ -292,8 +292,7 @@ void UDestructibleComponent::OnCreatePhysicsState()
 		SmallChunkCollisionResponse.SetCollisionResponseContainer(CollResponse);
 
 		SmallChunkCollisionResponse.SetResponse(ECC_Pawn, ECR_Ignore);
-		SmallChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);
-	}
+		SmallChunkCollisionResponse.SetResponse(ECC_Visibility, ECR_Ignore);	}
 	else
 	{
 		// now since by default it will all block, if collision is disabled, we need to set to ignore
@@ -698,8 +697,7 @@ void UDestructibleComponent::OnDamageEvent(const apex::DamageEventReportData& In
 	}
 
 	SpawnFractureEffectsFromDamageEvent(InDamageEvent);
-
-	//CarbonEdit
+//CarbonEdit
 	// After receiving damage, no longer receive decals.
 
 	/*if (bReceivesDecals)

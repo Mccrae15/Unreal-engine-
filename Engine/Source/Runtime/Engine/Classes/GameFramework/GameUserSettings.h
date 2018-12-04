@@ -47,6 +47,7 @@ enum class SubtitlesLanguage : uint8
 	Chineese,
 
 };
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGameUserSettingsUINeedsUpdate);
 
 /**
@@ -455,6 +456,7 @@ public:
 		void SetFreeMovementInfoShown(bool Value);
 
 	// Skubert Edit End
+
 protected:
 	/** Game screen resolution width, in pixels. */
 	UPROPERTY(config)

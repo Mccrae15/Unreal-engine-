@@ -27,10 +27,6 @@ enum class EWindowType
 	CursorDecorator,
 	/** Value indicating that this is a game window */
 	GameWindow
-#if WITH_OCULUS_PRIVATE_CODE
-	/** Value indicating that this is a casting window */
-	, CastingWindow
-#endif
 };
 
 
@@ -68,7 +64,7 @@ struct APPLICATIONCORE_API FGenericWindowDefinition
 {
 	/** Window type */
 	EWindowType Type;
-
+	
 	/** The initially desired horizontal screen position */
 	float XDesiredPositionOnScreen;
 	/** The initially desired vertical screen position */
