@@ -1,7 +1,7 @@
 // Copyright 2016-2017 Hunter Delattre. All Rights Reserved.
 
 #include "GestureTracker.h"
-#include "Runtime/CoreUObject/Public/UObject/ConstructorHelpers.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
 #include "Engine/StaticMesh.h"
@@ -199,20 +199,20 @@ TArray<int> UGestureTracker::GetIds() const
 
 TArray<FVector> UGestureTracker::GetGesturePath(int id) const
 {
-    int gestureIndex = gestureLib.GetIndexById(id);
-    if (gestureIndex == INDEX_NONE) {
+    const int idIndex = gestureLib.GetIndexById(id);
+    if (idIndex == INDEX_NONE) {
         return TArray<FVector>();
     }
-    return gestureLib.Get(gestureIndex).Path();
+    return gestureLib.Get(idIndex).Path();
 }
 
 TArray<FVector> UGestureTracker::GetPredictedGesturePath() const
 {
-    int gestureIndex = gestureLib.MostLikely();
-    if (gestureIndex == INDEX_NONE) {
+    const int mostLikelyIndex = gestureLib.MostLikely();
+    if (mostLikelyIndex == INDEX_NONE) {
         return TArray<FVector>();
     }
-    return gestureLib.Get(gestureIndex).Path();
+    return gestureLib.Get(mostLikelyIndex).Path();
 }
 
 void UGestureTracker::StartDrawTrackedGesture(UStaticMesh *mesh, UMaterialInterface *baseMaterial)
@@ -232,7 +232,7 @@ void UGestureTracker::StopDrawTrackedGesture()
     bDrawingTracked = false;
 }
 
-void UGestureTracker::StartDrawPredictedGesture(UStaticMesh *mesh, UMaterialInterface *baseMaterial, UMaterialInterface *successMaterial, const TArray<int> &drawIds, bool drawIdsIsBlacklist)
+void UGestureTracker::StartDrawPredictedGesture(UStaticMesh *mesh, UMaterialInterface *baseMaterial, UMaterialInterface *successMaterial, const TArray<int> &_drawIds, bool _drawIdsIsBlacklist)
 {
     bDrawingPredicted = true;
     if (mesh) {
@@ -244,8 +244,8 @@ void UGestureTracker::StartDrawPredictedGesture(UStaticMesh *mesh, UMaterialInte
     if (successMaterial) {
         predictSuccessMaterial = successMaterial;
     }
-    this->drawIds = TSet<int>(drawIds);
-    this->bDrawIdsIsBlacklist = drawIdsIsBlacklist;
+    this->drawIds = TSet<int>(_drawIds);
+    this->bDrawIdsIsBlacklist = _drawIdsIsBlacklist;
 }
 
 void UGestureTracker::StopDrawPredictedGesture()
@@ -289,32 +289,32 @@ void UGestureTracker::DrawGestureByName(const FString &name, UStaticMesh *mesh, 
     }
 }
 
-void UGestureTracker::UpdateTrackDrawMaterials(UStaticMesh *mesh, UMaterialInterface *baseMaterial)
+void UGestureTracker::UpdateTrackDrawMaterials(UStaticMesh *_mesh, UMaterialInterface *_baseMaterial)
 {
-    if (mesh) {
-        this->trackMesh = mesh;
+    if (_mesh) {
+        this->trackMesh = _mesh;
     }
-    if (baseMaterial) {
-        this->trackBaseMaterial = baseMaterial;
+    if (_baseMaterial) {
+        this->trackBaseMaterial = _baseMaterial;
     }
     if (trackGestureMesh) {
-        trackGestureMesh->UpdateMaterials(mesh, baseMaterial, NULL);
+        trackGestureMesh->UpdateMaterials(_mesh, _baseMaterial, NULL);
     }
 }
 
-void UGestureTracker::UpdatePredictDrawMaterials(UStaticMesh *mesh, UMaterialInterface *baseMaterial, UMaterialInterface *successMaterial)
+void UGestureTracker::UpdatePredictDrawMaterials(UStaticMesh *_mesh, UMaterialInterface *_baseMaterial, UMaterialInterface *_successMaterial)
 {
-    if (mesh) {
-        this->predictMesh = mesh;
+    if (_mesh) {
+        this->predictMesh = _mesh;
     }
-    if (baseMaterial) {
-        this->predictBaseMaterial = baseMaterial;
+    if (_baseMaterial) {
+        this->predictBaseMaterial = _baseMaterial;
     }
-    if (successMaterial) {
-        this->predictSuccessMaterial = successMaterial;
+    if (_successMaterial) {
+        this->predictSuccessMaterial = _successMaterial;
     }
     if (predictGestureMesh) {
-        predictGestureMesh->UpdateMaterials(mesh, baseMaterial, successMaterial);
+        predictGestureMesh->UpdateMaterials(_mesh, _baseMaterial, _successMaterial);
     }
 }
 
@@ -323,13 +323,13 @@ void UGestureTracker::UpdateTrackIds(const TArray<int> trackIds, bool trackIdsIs
     gestureLib.SetTrackIds(TSet<int>(trackIds), trackIdsIsBlacklist);
 }
 
-void UGestureTracker::UpdateDrawIds(const TArray<int> drawIds, bool drawIdsIsBlacklist)
+void UGestureTracker::UpdateDrawIds(const TArray<int> _drawIds, bool _drawIdsIsBlacklist)
 {
-    this->drawIds = TSet<int>(drawIds);
-    this->bDrawIdsIsBlacklist = drawIdsIsBlacklist;
+    this->drawIds = TSet<int>(_drawIds);
+    this->bDrawIdsIsBlacklist = _drawIdsIsBlacklist;
 
     // clear the current prediction draw if it is now allowed by the new drawIds
-    if (drawIdsIsBlacklist == this->drawIds.Contains(drawIndex)) {
+    if (_drawIdsIsBlacklist == this->drawIds.Contains(drawIndex)) {
         ResetGestureMesh(predictGestureMesh);
     }
 }
@@ -347,13 +347,13 @@ int UGestureTracker::GetPredictedGestureId() const
 
 float UGestureTracker::GetPercentageComplete(int id) const
 {
-    int gestureIndex = gestureLib.GetIndexById(id);
+    const int idIndex = gestureLib.GetIndexById(id);
 
-    if (gestureIndex == INDEX_NONE) {
+    if (idIndex == INDEX_NONE) {
         return 0.f;
     }
     else {
-        return gestureLib.PercentageComplete(gestureIndex);
+        return gestureLib.PercentageComplete(idIndex);
     }
 }
 
@@ -368,17 +368,17 @@ float UGestureTracker::GetPercentageComplete(int id) const
 
 // Gesture Tracking Functions
 
-void UGestureTracker::InitTracking(bool record, bool continuous)
+void UGestureTracker::InitTracking(bool _record, bool _continuous)
 {
-    this->bRecording = record;
-    this->bContinuous = continuous;
+    this->bRecording = _record;
+    this->bContinuous = _continuous;
 
     UpdateTrackLocation();
     UpdateTrackRotation();
 
     // reset gesture objects and search
     trackGesture.Reset(trackLocation, trackRotation, gestureResolution);
-    if (record) {
+    if (_record) {
         recordGesture.Reset(trackLocation, trackRotation, gestureResolution, FMath::CeilToInt(maxGestureLength / gestureResolution));
     }
 
@@ -386,7 +386,7 @@ void UGestureTracker::InitTracking(bool record, bool continuous)
     gestureIndex = INDEX_NONE;
 
     // continuous tracking setup
-    if (continuous) {
+    if (_continuous) {
         continuousTracks.SetNum(gestureLib.Num());
 
         for (int ii = 0; ii < continuousTracks.Num(); ii++) {

@@ -32,12 +32,12 @@ void RecordGesture::Reset(const FVector &startLocation, const FRotator &rotator,
     RecordGesture::Reset(startLocation, rotator, resolution, MAX_int32);
 }
 
-void RecordGesture::Reset(const FVector &startLocation, const FRotator &rotator, float resolution, int maxSize)
+void RecordGesture::Reset(const FVector &startLocation, const FRotator &rotator, float resolution, int _maxSize)
 {
     Gesture::Reset(startLocation, rotator, resolution);
 
     path.Empty();
-    this->maxSize = maxSize;
+    this->maxSize = _maxSize;
 }
 
 bool RecordGesture::AddToPath(const FVector &trackLocation)

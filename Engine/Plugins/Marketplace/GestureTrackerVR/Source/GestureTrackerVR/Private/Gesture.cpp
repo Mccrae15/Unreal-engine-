@@ -2,12 +2,12 @@
 
 #include "Gesture.h"
 
-void Gesture::Reset(const FVector &startLocation, const FRotator &rotator, float resolution)
+void Gesture::Reset(const FVector &_startLocation, const FRotator &_rotator, float _resolution)
 {
     this->currentPathHead = FVector(0, 0, 0);
-    this->startLocation = startLocation;
-    this->rotator = rotator;
-    this->resolution = resolution;
+    this->startLocation = _startLocation;
+    this->rotator = _rotator;
+    this->resolution = _resolution;
 
     this->pathHeadAngle = FVector(0, 0, 0);
     this->pathHeadLocation = FVector(0, 0, 0);

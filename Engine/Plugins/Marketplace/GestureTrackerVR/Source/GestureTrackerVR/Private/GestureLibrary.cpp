@@ -2,10 +2,10 @@
 
 #include "GestureLibrary.h"
 #include "GestureTracker.h"
-#include "Runtime/Core/Public/Misc/FileHelper.h"
-#include "Runtime/Core/Public/Misc/Paths.h"
-#include "Runtime/Core/Public/Serialization/BufferArchive.h"
-#include "Runtime/Core/Public/Serialization/ArrayReader.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Serialization/BufferArchive.h"
+#include "Serialization/ArrayReader.h"
 
 const int START_TRACK_INDEX = 1;
 const float START_DRAW_DISTANCE = 20;
@@ -176,7 +176,7 @@ float GestureLibrary::PercentageComplete(int index) const
 
 bool GestureLibrary::Save(const FString &path)
 {
-    FString fullPath = FPaths::ProjectContentDir() + path;
+    const FString fullPath = FPaths::Combine(FPaths::ProjectContentDir(), path);
 
     FBufferArchive archive;
     archive << *this;
@@ -188,7 +188,7 @@ bool GestureLibrary::Save(const FString &path)
 
 bool GestureLibrary::Load(const FString &path)
 {
-    FString fullPath = FPaths::ProjectContentDir() + path;
+    const FString fullPath = FPaths::Combine(FPaths::ProjectContentDir(), path);
 
     // check file exists
     if (!FPaths::FileExists(fullPath)) {
@@ -260,10 +260,10 @@ void GestureLibrary::ResetTrackIndex(int index)
     lib[index].trackIndex = START_TRACK_INDEX;
 }
 
-void GestureLibrary::SetTrackIds(const TSet<int> trackIds, bool trackIdsIsBlacklist)
+void GestureLibrary::SetTrackIds(const TSet<int> _trackIds, bool _trackIdsIsBlacklist)
 {
-    this->trackIds = trackIds;
-    this->bTrackIdsIsBlacklist = trackIdsIsBlacklist;
+    this->trackIds = _trackIds;
+    this->bTrackIdsIsBlacklist = _trackIdsIsBlacklist;
 }
 
 void GestureLibrary::ResetStrikes(int index)

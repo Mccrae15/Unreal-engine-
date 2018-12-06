@@ -1,6 +1,5 @@
 // Copyright 2016-2017 Hunter Delattre. All Rights Reserved.
 
-//#pragma warning(disable: 4458)
 #pragma once
 
 #include "CoreMinimal.h"

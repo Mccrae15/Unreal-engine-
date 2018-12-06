@@ -497,9 +497,9 @@ private:
 
         ContinuousTrack() {}
 
-        void Reset(const FVector &startLocation, const FRotator &rotation, float gestureResolution, double time)
+        void Reset(const FVector &startLocation, const FRotator &rotation, float resolution, double time)
         {
-            gesture.Reset(startLocation, rotation, gestureResolution);
+            gesture.Reset(startLocation, rotation, resolution);
             startTime = time;
         }
     };
