@@ -216,3 +216,5 @@ Engine/Binaries/DotNET/SwarmAgent.Options.xml
 !/Engine/Plugins/Marketplace/GestureTrackerVR/Content/PredictSuccessMaterial.uasset
 !/Engine/Plugins/Marketplace/GestureTrackerVR/Content/TrackBaseMaterial.uasset
 !/Engine/Plugins/Marketplace/GestureTrackerVR/Content/TrackMesh.uasset
+!/Engine/Content/EditorBlueprintResources/ActorMacros.uasset
+!/Engine/Content/EditorBlueprintResources/StandardMacros.uasset
