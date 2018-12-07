@@ -178,7 +178,7 @@ Engine/Source/Programs/AutomationTool/BuildGraph/BuildGraph.Automation.xml
 /Engine/Binaries/**/*.exp
 
 # Ignore content folders
-Content/
+#Content/
 
 # Ignore DDC
 /Engine/DerivedDataCache/**
@@ -210,3 +210,9 @@ Engine/Binaries/DotNET/SwarmAgent.Options.xml
 !/Engine/Source/ThirdParty/PS4/HmdClient/lib/Win64/hmd_client.lib
 !/Engine/Source/ThirdParty/IntelMetricsDiscovery/MetricsDiscoveryHelper/build/include/metrics_discovery/metrics_discovery_helper_dx11.h
 !/Engine/Source/ThirdParty/IntelMetricsDiscovery/MetricsDiscoveryHelper/source/metrics_discovery_helper_dx11.h
+!/Engine/Source/Runtime/Windows/D3D11RHI/Private/D3D11RHIPrivate.h
+!/Engine/Plugins/Marketplace/GestureTrackerVR/Content/PredictBaseMaterial.uasset
+!/Engine/Plugins/Marketplace/GestureTrackerVR/Content/PredictMesh.uasset
+!/Engine/Plugins/Marketplace/GestureTrackerVR/Content/PredictSuccessMaterial.uasset
+!/Engine/Plugins/Marketplace/GestureTrackerVR/Content/TrackBaseMaterial.uasset
+!/Engine/Plugins/Marketplace/GestureTrackerVR/Content/TrackMesh.uasset
