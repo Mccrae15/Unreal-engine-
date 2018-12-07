@@ -206,3 +206,7 @@ Engine/Binaries/DotNET/SwarmAgent.Options.xml
 
 # Ignore CLion directory
 .idea/
+
+!/Engine/Source/ThirdParty/PS4/HmdClient/lib/Win64/hmd_client.lib
+!/Engine/Source/ThirdParty/IntelMetricsDiscovery/MetricsDiscoveryHelper/build/include/metrics_discovery/metrics_discovery_helper_dx11.h
+!/Engine/Source/ThirdParty/IntelMetricsDiscovery/MetricsDiscoveryHelper/source/metrics_discovery_helper_dx11.h
