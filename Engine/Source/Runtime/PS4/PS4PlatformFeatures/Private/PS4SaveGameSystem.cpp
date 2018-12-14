@@ -566,7 +566,7 @@ bool FPS4SaveGameSystem::SaveGame(bool bAttemptToUseUI, const TCHAR* Name, const
 		SceSaveDataMountResult MountResult;
 		int32 BlockCount;
 		int32 Result;
-
+		
 		// This will loop until the saved game directory mounts properly, the effort errors out, or the player cancels
 		while (true)
 		{
@@ -647,7 +647,7 @@ bool FPS4SaveGameSystem::SaveGame(bool bAttemptToUseUI, const TCHAR* Name, const
 			// Fill out the mount information, indicating that we want to create the save game.
 			// NOTE: This is expected to fail if the saved game already exists, which will trigger the overwriting code below
 			SceSaveDataMount2 MountData;
-			FillOutSceSaveDataMount(SCE_SAVE_DATA_MOUNT_MODE_RDWR | SCE_SAVE_DATA_MOUNT_MODE_CREATE, &MountData);
+			FillOutSceSaveDataMount(SCE_SAVE_DATA_MOUNT_MODE_RDWR | SCE_SAVE_DATA_MOUNT_MODE_CREATE | SCE_SAVE_DATA_MOUNT_MODE_COPY_ICON, &MountData);
 			MountData.blocks = BlockCount;
 
 			// Now attempt to mount the configured directory
@@ -688,7 +688,7 @@ bool FPS4SaveGameSystem::SaveGame(bool bAttemptToUseUI, const TCHAR* Name, const
 				{
 					// Save game is now deleted.
 					// Attempt to create the saved game again, now that the corrupted version has been deleted
-					MountData.mountMode = SCE_SAVE_DATA_MOUNT_MODE_RDWR | SCE_SAVE_DATA_MOUNT_MODE_CREATE;
+					MountData.mountMode = SCE_SAVE_DATA_MOUNT_MODE_RDWR | SCE_SAVE_DATA_MOUNT_MODE_CREATE | SCE_SAVE_DATA_MOUNT_MODE_COPY_ICON;
 					FMemory::Memzero(&MountResult, sizeof(MountResult));
 					Result = sceSaveDataMount2(&MountData, &MountResult);
 
@@ -859,10 +859,13 @@ bool FPS4SaveGameSystem::SaveGame(bool bAttemptToUseUI, const TCHAR* Name, const
 			// distinguishable from each other, and the defaults are all the same. the subtitle and detail seem like they are optional,
 			// but the title seems like a requirement.
 			// Regardless, we will not consider these failures to be a failure to save.
+			char title[SCE_SAVE_DATA_TITLE_MAXSIZE];
+			memset(title, 0x00, sizeof(title));
+			strcpy(title, "The Wizards");
 
 			if (GetSaveGameParameter(Name, EGameDelegates_SaveGame::Title, MetaData.title, sizeof(MetaData.title)))
 			{
-				Result = sceSaveDataSetParam(MountPoint, SCE_SAVE_DATA_PARAM_TYPE_TITLE, &MetaData.title, sizeof(MetaData.title));
+				Result = sceSaveDataSetParam(MountPoint, SCE_SAVE_DATA_PARAM_TYPE_TITLE, &title, sizeof(MetaData.title));
 				if (Result != SCE_OK)
 				{
 					UE_LOG(LogPS4SaveGame, Error, TEXT("sceSaveDataSetParam failed in SaveGame() for 'Title'. Error Code 0x%x"), Result);
@@ -1130,6 +1133,8 @@ bool FPS4SaveGameSystem::DeleteGame(bool bAttemptToUseUI, const TCHAR* Name, con
 //
 // Implementation members
 //
+
+
 
 FPS4SaveGameSystem::FPS4SaveGameSystem() :
 	bIsInitialized(false),
@@ -1421,8 +1426,13 @@ bool FPS4SaveGameSystem::GetSaveGameParameter (const TCHAR* SaveName, EGameDeleg
 {
 	FString Value;
 	FGameDelegates::Get().GetExtendedSaveGameInfoDelegate().ExecuteIfBound(SaveName, Key, Value);
+	if (Key == EGameDelegates_SaveGame::Title)
+	{
+		Value = "The Wizards";
+	}
 	if (Value.Len() > 0)
 	{
+		
 		// We got a value, so convert to UTF8 and copy into the destination buffer
 		FTCHARToUTF8 Converter(*Value);
 		const char *utf8String = (const char *)(ANSICHAR*)Converter.Get();
