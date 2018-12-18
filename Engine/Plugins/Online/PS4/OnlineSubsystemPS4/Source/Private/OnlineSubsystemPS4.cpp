@@ -743,7 +743,7 @@ bool FOnlineSubsystemPS4::Init()
 					else
 					{
 						InitWebApi();
-
+						/*
 						// Create and initialize all of the individual interface implementations
 						SessionInterface = MakeShareable(new FOnlineSessionPS4(this));
 						//todo decide what to do if the session interface can not be initialized?
@@ -753,7 +753,7 @@ bool FOnlineSubsystemPS4::Init()
 							// Also this can fail if the initial user just isn't signed up for PSN.
 							UE_LOG_ONLINE(Log, TEXT("Session interface failed init."));
 							//bSuccessfullyStartedUp = false;
-						}
+						}*/
 						//SessionInterface->CheckPendingSessionInvite();
 
 						IdentityInterface = MakeShareable(new FOnlineIdentityPS4(this));
