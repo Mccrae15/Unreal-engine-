@@ -1173,7 +1173,20 @@ void FCascade::OnNewEmitter()
 			}
 		}
 	}
-
+		
+		if (ParticleSystem->TickRateWithLODLevel.Num() == 0)
+	{
+		UParticleEmitter* Emitter = ParticleSystem->Emitters[0];
+		if (Emitter)
+		{
+			ParticleSystem->TickRateWithLODLevel.AddUninitialized(Emitter->LODLevels.Num());
+			for (int32 LODIndex = 0; LODIndex < ParticleSystem->TickRateWithLODLevel.Num(); LODIndex++)
+			{
+				ParticleSystem->TickRateWithLODLevel[LODIndex] = LODIndex * 0.0f;
+			}
+		}
+	}
+	
 	ParticleSystemComponent->PostEditChange();
 	ParticleSystem->PostEditChange();
 
