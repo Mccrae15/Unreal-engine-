@@ -6954,6 +6954,14 @@ void UParticleSystemComponent::SetLODLevel(int32 InLODLevel)
 			if (Instance)
 			{
 				Instance->SetCurrentLODIndex(LODLevel, true);
+				if (Template->TickRateWithLODLevel.Num() > 0)
+				{
+					Template->MinTimeBetweenTicks = Template->TickRateWithLODLevel[LODLevel];
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("Particle TickRateWithLODLevel array is not setup, please regenerate lods!!!!"));
+				}
 			}
 		}
 	}

@@ -208,6 +208,10 @@ class UParticleSystem : public UObject
 	 */
 	UPROPERTY(EditAnywhere, editfixedsize, Category=LOD)
 	TArray<float> LODDistances;
+	
+	UPROPERTY(EditAnywhere, editfixedsize, Category = LODTickRate)
+	TArray<float> TickRateWithLODLevel;
+
 
 #if WITH_EDITORONLY_DATA
 	/** LOD setting for intepolation (set by Cascade) Range [0..100]				*/
