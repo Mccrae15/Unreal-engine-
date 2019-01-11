@@ -46,8 +46,12 @@ enum class SubtitlesLanguage : uint8
 	English,
 	Deustch,
 	Chineese,
+	Spanish,
+	Russian,
+	French,
 
-}; 
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnGameUserSettingsUINeedsUpdate);
 
 /**
