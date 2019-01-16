@@ -1,0 +1,33 @@
+{
+	"FileVersion": 3,
+	"Version": 0,
+	"VersionName": "0.0.1",
+	"FriendlyName": "LIV SDK",
+	"Description": "Fix your game's spectator problem, and empower content creators to film with your game using the LIV® App!",
+	"Category": "LIV",
+	"CreatedBy": "LIV Inc.",
+	"CreatedByURL": "https://liv.tv/",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "http://liv.chat/",
+	"EngineVersion": "4.21.0",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"Installed": true,
+	"Modules": [
+		{
+			"Name": "LIV",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"WhitelistPlatforms": [
+				"Win64"
+			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "SteamVR",
+			"Enabled": true
+		}
+	]
+}
