@@ -23,7 +23,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogPS4SaveGame, Log, All);
 // Is was chosen, based on empirical write speed test data, to take slightly less than 15 seconds to write out
 // at full size.
 // An alternative would be 1200, which is slightly less than 5 seconds of writing time
-#define DEFAULT_BLOCK_COUNT 3000
+#define DEFAULT_BLOCK_COUNT 35
 
 // The maximum allowed save game size.
 // NOTE: This is less than Sony's mandated 1GB limit. It is set based on empirical measurements of 
@@ -681,6 +681,7 @@ bool FPS4SaveGameSystem::SaveGame(bool bAttemptToUseUI, const TCHAR* Name, const
 			// If the mount failed due to lack of hard drive space, follow the specific directions from Sony
 			if (/*Result == SCE_SAVE_DATA_ERROR_NO_SPACE ||*/ Result == SCE_SAVE_DATA_ERROR_NO_SPACE_FS)
 			{
+				FCoreDelegates::NoStorageSpaceAviable.Broadcast();
 				// Out of storage space.
 				// TRC[R4099] states that a message should be displayed via sceSaveDataDialogOpen()
 				// The TRC also indicates that there are two possible legal resolutions here: continue displaying this message until
