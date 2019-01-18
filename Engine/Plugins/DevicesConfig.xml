@@ -1,0 +1,16 @@
+﻿<root>  
+  <DeadZone Value="400"/>   
+  <DecSpeed Value="100"/>
+  <Mu Value="1.7"/>
+  <KalmanP Value="10"/>
+  <KalmanQ Value="0.001"/>
+  <KalmanR Value="1.05"/>
+  
+  <LeftKalmanP Value="10"/>
+  <LeftKalmanQ Value="0.03"/>
+  <LeftKalmanR Value="0.55"/>
+
+  <RightKalmanP Value="10"/>
+  <RightKalmanQ Value="0.03"/>
+  <RightKalmanR Value="0.55"/>
+</root>
