@@ -8,6 +8,7 @@
 #include "RHI.h"
 #include "RHICommandList.h"
 #include "RenderingThread.h"
+#include "Misc/CoreDelegates.h"
 //CarbonEdit 10.04 Start
 #include "Misc/ScopeLock.h"
 //CarbonEdit 10.04 End
@@ -705,6 +706,7 @@ bool FPS4SaveGameSystem::SaveGame(bool bAttemptToUseUI, const TCHAR* Name, const
 			// If the mount failed due to lack of hard drive space, follow the specific directions from Sony
 			if (/*Result == SCE_SAVE_DATA_ERROR_NO_SPACE ||*/ Result == SCE_SAVE_DATA_ERROR_NO_SPACE_FS)
 			{
+				FCoreDelegates::NoStorageSpaceAviable.Broadcast();
 				// Out of storage space.
 				// TRC[R4099] states that a message should be displayed via sceSaveDataDialogOpen()
 				// The TRC also indicates that there are two possible legal resolutions here: continue displaying this message until

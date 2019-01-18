@@ -517,6 +517,10 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FUseHMDReprojection, FLinearColor);
 	static FUseHMDReprojection UseHMDReprojection;
 
+	//Carbon Studio Custom delegate for handling no space aviable error
+	DECLARE_MULTICAST_DELEGATE(FNoStorageSpaceAviable);
+	static FNoStorageSpaceAviable NoStorageSpaceAviable;
+
 
 	// Callback to allow user code to prevent url from being launched from FPlatformProcess::LaunchURL. Used to apply http whitelist
 	// Return true for to launch the url

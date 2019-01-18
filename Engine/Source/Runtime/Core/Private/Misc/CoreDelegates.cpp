@@ -163,6 +163,8 @@ FCoreDelegates::FGetMoveStatus FCoreDelegates::GetMoveStatus;
 //Carbon Studio Custom delegate for using HMDReprojectionSetOutputMinColor
 FCoreDelegates::FUseHMDReprojection FCoreDelegates::UseHMDReprojection;
 
+//Carbon Studio Custom delegate for handling no space aviable error
+FCoreDelegates::FNoStorageSpaceAviable FCoreDelegates::NoStorageSpaceAviable;
 
 FCoreDelegates::FShouldLaunchUrl FCoreDelegates::ShouldLaunchUrl;
 
