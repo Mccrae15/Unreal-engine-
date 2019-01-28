@@ -27,7 +27,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogPS4SaveGame, Log, All);
 // Is was chosen, based on empirical write speed test data, to take slightly less than 15 seconds to write out
 // at full size.
 // An alternative would be 1200, which is slightly less than 5 seconds of writing time
-#define DEFAULT_BLOCK_COUNT 35
+#define DEFAULT_BLOCK_COUNT 10
 
 // The maximum allowed save game size.
 // NOTE: This is less than Sony's mandated 1GB limit. It is set based on empirical measurements of 
