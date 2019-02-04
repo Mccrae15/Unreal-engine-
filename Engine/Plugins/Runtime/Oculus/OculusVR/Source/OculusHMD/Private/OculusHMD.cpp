@@ -335,6 +335,9 @@ namespace OculusHMD
 		if (InOrigin == EHMDTrackingOrigin::Floor)
 			ovrpOrigin = ovrpTrackingOrigin_FloorLevel;
 
+		if (InOrigin == EHMDTrackingOrigin::Stage)
+			ovrpOrigin = ovrpTrackingOrigin_Stage;
+
 		if (ovrp_GetInitialized())
 		{
 			EHMDTrackingOrigin::Type lastOrigin = GetTrackingOrigin();
@@ -364,6 +367,9 @@ namespace OculusHMD
 			case ovrpTrackingOrigin_FloorLevel:
 				rv = EHMDTrackingOrigin::Floor;
 				break;
+			case ovrpTrackingOrigin_Stage:
+				rv = EHMDTrackingOrigin::Stage;
+				break;
 			default:
 				UE_LOG(LogHMD, Error, TEXT("Unsupported ovr tracking origin type %d"), int(TrackingOrigin));
 				break;
@@ -387,7 +393,7 @@ namespace OculusHMD
 
 		if (NextFrameToRender)
 		{
-			const bool floorLevel = GetTrackingOrigin() == EHMDTrackingOrigin::Floor;
+			const bool floorLevel = GetTrackingOrigin() != EHMDTrackingOrigin::Eye;
 			ovrpPoseStatef poseState;
 			ovrp_GetNodePoseState3(ovrpStep_Render, NextFrameToRender->FrameNumber, ovrpNode_Head, &poseState);
 			Settings->BaseOffset = ToFVector(poseState.Pose.Position);
@@ -418,7 +424,7 @@ namespace OculusHMD
 
 		if (NextFrameToRender)
 		{
-			const bool floorLevel = GetTrackingOrigin() == EHMDTrackingOrigin::Floor;
+			const bool floorLevel = GetTrackingOrigin() != EHMDTrackingOrigin::Eye;
 			ovrpPoseStatef poseState;
 			ovrp_GetNodePoseState3(ovrpStep_Render, NextFrameToRender->FrameNumber, ovrpNode_Head, &poseState);
 			Settings->BaseOffset = ToFVector(poseState.Pose.Position);
@@ -1043,6 +1049,14 @@ namespace OculusHMD
 		CheckInRenderThread();
 
 		const int32 ViewIndex = GetViewIndexForPass(StereoPass);
+
+#if WITH_OCULUS_PRIVATE_CODE
+		if (PreviousViewRect[ViewIndex] != FinalViewRect)
+		{
+			PreviousViewRect[ViewIndex] = FinalViewRect;
+			InvalidateAllGeneratedFoveatedMask();
+		}
+#endif
 
 		if (Settings_RenderThread.IsValid())
 		{
@@ -1777,6 +1791,9 @@ namespace OculusHMD
 #if WITH_OCULUS_PRIVATE_CODE
 		NeedGenerateFoveatedMaskFlag_RenderThread = 0xffffffff;
 		NeedGenerateFoveatedMask_RenderThread = true;
+
+		PreviousViewRect[0] = { FIntPoint::ZeroValue, FIntPoint::ZeroValue };
+		PreviousViewRect[1] = { FIntPoint::ZeroValue, FIntPoint::ZeroValue };
 #endif
 
 		SplashLayerHandle = -1;

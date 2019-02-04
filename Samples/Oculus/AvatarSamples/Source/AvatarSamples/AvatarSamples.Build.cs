@@ -8,6 +8,8 @@ public class AvatarSamples : ModuleRules
 {
 	public AvatarSamples(ReadOnlyTargetRules Target) : base(Target)
 	{
+		PrivatePCHHeaderFile = "AvatarSamples.h";
+		
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore" });
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  "OculusAvatar" });

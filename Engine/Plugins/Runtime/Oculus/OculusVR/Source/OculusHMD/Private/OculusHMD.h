@@ -429,6 +429,8 @@ protected:
 #if WITH_OCULUS_PRIVATE_CODE
 	uint32 NeedGenerateFoveatedMaskFlag_RenderThread;	// one bit for each SwapChainIndex
 	bool NeedGenerateFoveatedMask_RenderThread;
+
+	FIntRect PreviousViewRect[2];
 #endif
 
 	FPerformanceStats PerformanceStats;
