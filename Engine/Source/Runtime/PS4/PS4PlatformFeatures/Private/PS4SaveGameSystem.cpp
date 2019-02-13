@@ -12,6 +12,7 @@
 //CarbonEdit 10.04 Start
 #include "Misc/ScopeLock.h"
 //CarbonEdit 10.04 End
+#include <kernel.h>
 
 DEFINE_LOG_CATEGORY_STATIC(LogPS4SaveGame, Log, All);
 
@@ -921,6 +922,7 @@ bool FPS4SaveGameSystem::SaveGame(bool bAttemptToUseUI, const TCHAR* Name, const
 
 bool FPS4SaveGameSystem::LoadGame(bool bAttemptToUseUI, const TCHAR* Name, const int32 UserIndex, TArray<uint8>& Data)
 {
+
 	//CarbonEdit 10.04 Start
 	FScopeLock ScopeLock(&CriticalSection);
 	//CarbonEdit 10.04 End
@@ -1131,6 +1133,8 @@ bool FPS4SaveGameSystem::DeleteGame(bool bAttemptToUseUI, const TCHAR* Name, con
 		return DeleteSavedGame();
 	}
 }
+
+
 
 //
 // Implementation members

@@ -17,6 +17,11 @@
 #include "Sound/DialogueTypes.h"
 #include "GameplayStaticsTypes.h"
 #include "Particles/WorldPSCPool.h"
+#include "Kismet/BlueprintAsyncActionBase.h"
+#include "UObject/ObjectMacros.h"
+#if PLATFORM_PS4 
+#include <kernel.h>
+#endif
 #include "GameplayStatics.generated.h"
 
 class UAudioComponent;
@@ -1118,3 +1123,40 @@ public:
 	static bool HasLaunchOption(const FString& OptionToCheck);
 };
 
+
+//Latent class for loading save async on PS4
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAsyncLoad, USaveGame*, LoadGame);
+
+UCLASS()
+class ENGINE_API UAsyncGameSave : public UBlueprintAsyncActionBase
+{
+	GENERATED_UCLASS_BODY()
+public:
+	//UAsyncGameSave(const FObjectInitializer& ObjectInitializer);
+
+	UPROPERTY(BlueprintAssignable)
+		FAsyncLoad Finish;
+
+	UFUNCTION(BlueprintCallable, Category = "Game")
+		static UAsyncGameSave* LoadGameAsync(const FString& SlotName, const int32 UserIndex);
+
+	// UBlueprintAsyncActionBase interface
+	virtual void Activate() override;
+	//~UBlueprintAsyncActionBase interface
+
+	UFUNCTION()
+		void LoadGameFromSlotAsync(const FString& SlotName, const int32 UserIndex);
+	UFUNCTION()
+		USaveGame* LoadGameFromMemoryAsync(const TArray<uint8>& InSaveData);
+
+	static void* SaveThreadHelper(void* Arg);
+
+private:
+	FString SlotNameTemp;
+	int32 UserIndexTemp;
+
+#if PLATFORM_PS4 
+	ScePthread	SaveThread;
+#endif
+
+};

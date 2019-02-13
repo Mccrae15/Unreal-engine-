@@ -43,6 +43,7 @@
 #include "ContentStreaming.h"
 //CarbonEdit 10.04 start
 #if PLATFORM_PS4 
+#include <kernel.h>
 #include "HAL/RunnableThread.h" 
 #endif
 //CarbonEdit 10.04 end
@@ -1821,6 +1822,8 @@ bool UGameplayStatics::DeleteGameInSlot(const FString& SlotName, const int32 Use
 
 USaveGame* UGameplayStatics::LoadGameFromSlot(const FString& SlotName, const int32 UserIndex)
 {
+
+	
 	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
 	// If we have a save system and a valid name..
 	if (SaveSystem && (SlotName.Len() > 0))
@@ -2587,3 +2590,81 @@ bool UGameplayStatics::HasLaunchOption(const FString& OptionToCheck)
 }
 
 #undef LOCTEXT_NAMESPACE
+
+//UAsyncGameSave class metods declarations
+UAsyncGameSave::UAsyncGameSave(const FObjectInitializer& ObjectInitializer) : UBlueprintAsyncActionBase(ObjectInitializer)
+{
+
+}
+
+UAsyncGameSave * UAsyncGameSave::LoadGameAsync(const FString & SlotName, const int32 UserIndex)
+{
+	UAsyncGameSave* Node = NewObject<UAsyncGameSave>(); 
+	Node->SlotNameTemp = SlotName;
+	Node->UserIndexTemp = UserIndex;
+	return Node;
+}
+
+void UAsyncGameSave::Activate()
+{
+#if PLATFORM_PS4 
+	int32 Result;
+	Result = scePthreadCreate(&SaveThread, NULL, SaveThreadHelper, this, "Save_Thread");
+#else
+	LoadGameFromSlotAsync(*SlotNameTemp, UserIndexTemp);
+#endif
+}
+
+void UAsyncGameSave::LoadGameFromSlotAsync(const FString & SlotName, const int32 UserIndex)
+{
+	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
+	// If we have a save system and a valid name..
+	if (SaveSystem && (SlotName.Len() > 0))
+	{
+		// Load raw data from slot
+		TArray<uint8> ObjectBytes;
+		bool bSuccess = SaveSystem->LoadGame(false, *SlotName, UserIndex, ObjectBytes);
+		if (bSuccess)
+		{
+			Finish.Broadcast(LoadGameFromMemoryAsync(ObjectBytes));
+			return;
+		}
+	}
+	Finish.Broadcast(nullptr);
+	return;
+}
+
+USaveGame * UAsyncGameSave::LoadGameFromMemoryAsync(const TArray<uint8>& InSaveData)
+{
+	USaveGame* OutSaveGameObject = nullptr;
+
+	FMemoryReader MemoryReader(InSaveData, true);
+
+	FSaveGameHeader SaveHeader;
+	SaveHeader.Read(MemoryReader);
+
+	// Try and find it, and failing that, load it
+	UClass* SaveGameClass = FindObject<UClass>(ANY_PACKAGE, *SaveHeader.SaveGameClassName);
+	if (SaveGameClass == nullptr)
+	{
+		SaveGameClass = LoadObject<UClass>(nullptr, *SaveHeader.SaveGameClassName);
+	}
+
+	// If we have a class, try and load it.
+	if (SaveGameClass != nullptr)
+	{
+		OutSaveGameObject = NewObject<USaveGame>(GetTransientPackage(), SaveGameClass);
+
+		FObjectAndNameAsStringProxyArchive Ar(MemoryReader, true);
+		OutSaveGameObject->Serialize(Ar);
+	}
+
+	return OutSaveGameObject;
+}
+
+void* UAsyncGameSave::SaveThreadHelper(void* Arg)
+{
+	UAsyncGameSave* temp = (UAsyncGameSave*) Arg;
+	temp->LoadGameFromSlotAsync(*temp->SlotNameTemp, temp->UserIndexTemp);
+	return nullptr;
+}
