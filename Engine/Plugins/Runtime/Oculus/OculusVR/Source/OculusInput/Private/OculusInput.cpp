@@ -403,12 +403,15 @@ void FOculusInput::SendControllerEvents()
 
 							ovrpVector2f ThumbstickValue = bIsMobileController ? OvrpControllerState.Touchpad[HandIndex] : OvrpControllerState.Thumbstick[HandIndex];
 
+							State.ThumbstickAxes.X = State.ThumbstickAxes.X - 0.000001f;
 							if (ThumbstickValue.x != State.ThumbstickAxes.X)
 							{
 								State.ThumbstickAxes.X = ThumbstickValue.x;
 								MessageHandler->OnControllerAnalog(bIsLeft ? FGamepadKeyNames::MotionController_Left_Thumbstick_X : FGamepadKeyNames::MotionController_Right_Thumbstick_X, ControllerPair.UnrealControllerIndex, State.ThumbstickAxes.X);
 							}
 
+							
+							State.ThumbstickAxes.Y = State.ThumbstickAxes.Y - 0.000001f;
 							if (ThumbstickValue.y != State.ThumbstickAxes.Y)
 							{
 								State.ThumbstickAxes.Y = ThumbstickValue.y;
