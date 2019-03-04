@@ -94,6 +94,13 @@ namespace SteamVRControllerKeyNames
 	const FGamepadKeyNames::Type SteamVR_Knuckles_Right_MiddleGrip("SteamVR_Knuckles_Right_MiddleGrip");
 	const FGamepadKeyNames::Type SteamVR_Knuckles_Right_RingGrip("SteamVR_Knuckles_Right_RingGrip");
 	const FGamepadKeyNames::Type SteamVR_Knuckles_Right_PinkyGrip("SteamVR_Knuckles_Right_PinkyGrip");
+
+	// Register types for a second joystick in cases where SteamVR is being used with a VR device that supports thumbsticks and thumbpads.
+	const FGamepadKeyNames::Type SteamVR_Secondary_Left_Thumbstick_X("SteamVR_Secondary_Left_Thumbstick_X");
+	const FGamepadKeyNames::Type SteamVR_Secondary_Left_Thumbstick_Y("SteamVR_Secondary_Left_Thumbstick_Y");
+
+	const FGamepadKeyNames::Type SteamVR_Secondary_Right_Thumbstick_X("SteamVR_Secondary_Right_Thumbstick_X");
+	const FGamepadKeyNames::Type SteamVR_Secondary_Right_Thumbstick_Y("SteamVR_Secondary_Right_Thumbstick_Y");
 }
 
 namespace SteamVRControllerKeys
@@ -109,6 +116,13 @@ namespace SteamVRControllerKeys
 	const FKey SteamVR_Knuckles_Right_MiddleGrip("SteamVR_Knuckles_Right_MiddleGrip");
 	const FKey SteamVR_Knuckles_Right_RingGrip("SteamVR_Knuckles_Right_RingGrip");
 	const FKey SteamVR_Knuckles_Right_PinkyGrip("SteamVR_Knuckles_Right_PinkyGrip");
+
+	// Register keys for a second joystick in cases where SteamVR is being used with a VR device that supports thumbsticks and thumbpads.
+	const FKey SteamVR_Secondary_Left_Thumbstick_X("SteamVR_Secondary_Left_Thumbstick_X");
+	const FKey SteamVR_Secondary_Left_Thumbstick_Y("SteamVR_Secondary_Left_Thumbstick_Y");
+
+	const FKey SteamVR_Secondary_Right_Thumbstick_X("SteamVR_Secondary_Right_Thumbstick_X");
+	const FKey SteamVR_Secondary_Right_Thumbstick_Y("SteamVR_Secondary_Right_Thumbstick_Y");
 }
 
 class FSteamVRController : public IInputDevice, public FXRMotionControllerBase, public IHapticDevice
@@ -182,6 +196,12 @@ public:
 
 		InitialButtonRepeatDelay = 0.2f;
 		ButtonRepeatDelay = 0.1f;
+
+		// Default assumes Vive, which only has the touchpads to use as thumbsticks.
+		TouchPadIsPrimaryThumbstick = true;
+
+		// Default to axis 2 which Windows Mixed Reality uses for its thumbsticks.
+		SecondaryThumbstickAxis = 2;
 
 		InitControllerMappings();
 		InitLegacyControllerKeys();
@@ -294,6 +314,13 @@ public:
 			EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::SteamVR_Knuckles_Right_MiddleGrip, LOCTEXT("SteamVR_Knuckles_Right_MiddleGrip", "SteamVR Knuckles (R) Middle Grip CapSense"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis));
 			EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::SteamVR_Knuckles_Right_RingGrip, LOCTEXT("SteamVR_Knuckles_Right_RingGrip", "SteamVR Knuckles (R) Ring Grip CapSense"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis));
 			EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::SteamVR_Knuckles_Right_PinkyGrip, LOCTEXT("SteamVR_Knuckles_Right_PinkyGrip", "SteamVR Knuckles (R) Pinky Grip CapSense"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis));
+
+			// Register keys for a second joystick in cases where SteamVR is being used with a VR device that supports thumbsticks and thumbpads.
+			EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::SteamVR_Secondary_Left_Thumbstick_X, LOCTEXT("SteamVR_Secondary_Left_Thumbstick_X", "SteamVR Secondary (L) Thumbstick X"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis));
+			EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::SteamVR_Secondary_Left_Thumbstick_Y, LOCTEXT("SteamVR_Secondary_Left_Thumbstick_Y", "SteamVR Secondary (L) Thumbstick Y"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis));
+
+			EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::SteamVR_Secondary_Right_Thumbstick_X, LOCTEXT("SteamVR_Secondary_Right_Thumbstick_X", "SteamVR Secondary (R) Thumbstick X"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis));
+			EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::SteamVR_Secondary_Right_Thumbstick_Y, LOCTEXT("SteamVR_Secondary_Right_Thumbstick_Y", "SteamVR Secondary (R) Thumbstick Y"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis));
 		}
 	}
 #endif // STEAMVRCONTROLLER_SUPPORTED_PLATFORMS
@@ -324,6 +351,21 @@ public:
 		}
 #endif // STEAMVRCONTROLLER_SUPPORTED_PLATFORMS
 	}
+
+	FGamepadKeyNames::Type GetThumbstickAxisButton_X(bool isPrimary, EControllerHand HandToUse)
+	{
+		return isPrimary ?
+			((HandToUse == EControllerHand::Left) ? FGamepadKeyNames::MotionController_Left_Thumbstick_X : FGamepadKeyNames::MotionController_Right_Thumbstick_X) :
+			((HandToUse == EControllerHand::Left) ? SteamVRControllerKeyNames::SteamVR_Secondary_Left_Thumbstick_X : SteamVRControllerKeyNames::SteamVR_Secondary_Right_Thumbstick_X);
+	}
+
+	FGamepadKeyNames::Type GetThumbstickAxisButton_Y(bool isPrimary, EControllerHand HandToUse)
+	{
+		return isPrimary ?
+			((HandToUse == EControllerHand::Left) ? FGamepadKeyNames::MotionController_Left_Thumbstick_Y : FGamepadKeyNames::MotionController_Right_Thumbstick_Y) :
+			((HandToUse == EControllerHand::Left) ? SteamVRControllerKeyNames::SteamVR_Secondary_Left_Thumbstick_Y : SteamVRControllerKeyNames::SteamVR_Secondary_Right_Thumbstick_Y);
+	}
+
 
 	virtual void SendControllerEvents() override
 	{
@@ -413,20 +455,54 @@ public:
 						CurrentStates[ ESteamVRControllerButton::TouchPadLeft ]		= bPressed && (RightDot <= -DOT_45DEG);
 						CurrentStates[ ESteamVRControllerButton::TouchPadRight ]	= bPressed && (RightDot >= DOT_45DEG);
 
-						if ( ControllerState.TouchPadXAnalog != VRControllerState.rAxis[TOUCHPAD_AXIS].x)
+						if (ControllerState.TouchPadXAnalog != VRControllerState.rAxis[TOUCHPAD_AXIS].x)
 						{
-							const FGamepadKeyNames::Type AxisButton = (HandToUse == EControllerHand::Left) ? FGamepadKeyNames::MotionController_Left_Thumbstick_X : FGamepadKeyNames::MotionController_Right_Thumbstick_X;
+							const FGamepadKeyNames::Type AxisButton = GetThumbstickAxisButton_X(TouchPadIsPrimaryThumbstick, HandToUse);
+
 							MessageHandler->OnControllerAnalog(AxisButton, ControllerIndex, VRControllerState.rAxis[TOUCHPAD_AXIS].x);
 							ControllerState.TouchPadXAnalog = VRControllerState.rAxis[TOUCHPAD_AXIS].x;
 						}
 
-						if ( ControllerState.TouchPadYAnalog != VRControllerState.rAxis[TOUCHPAD_AXIS].y)
+						if (ControllerState.TouchPadYAnalog != VRControllerState.rAxis[TOUCHPAD_AXIS].y)
 						{
-							const FGamepadKeyNames::Type AxisButton = (HandToUse == EControllerHand::Left) ? FGamepadKeyNames::MotionController_Left_Thumbstick_Y : FGamepadKeyNames::MotionController_Right_Thumbstick_Y;
+							const FGamepadKeyNames::Type AxisButton = GetThumbstickAxisButton_Y(TouchPadIsPrimaryThumbstick, HandToUse);
+
 							// Invert the y to match UE4 convention
 							const float Value = -VRControllerState.rAxis[TOUCHPAD_AXIS].y;
 							MessageHandler->OnControllerAnalog(AxisButton, ControllerIndex, Value);
 							ControllerState.TouchPadYAnalog = Value;
+						}
+
+						// Need a greater deadzone for a thumbstick than a touchpad.
+						// Force thumbstick values to 0 if less than the deadzone.
+						const float thumbstickDeadZone = 0.2f;
+						if (ControllerState.ThumbstickXAnalog != VRControllerState.rAxis[SecondaryThumbstickAxis].x)
+						{
+							const FGamepadKeyNames::Type AxisButton = GetThumbstickAxisButton_X(!TouchPadIsPrimaryThumbstick, HandToUse);
+
+							float Value = VRControllerState.rAxis[SecondaryThumbstickAxis].x;
+							if (FMath::Abs<float>(Value) <= thumbstickDeadZone)
+							{
+								Value = 0;
+							}
+
+							MessageHandler->OnControllerAnalog(AxisButton, ControllerIndex, Value);
+							ControllerState.ThumbstickXAnalog = Value;
+						}
+
+						if (ControllerState.ThumbstickYAnalog != -VRControllerState.rAxis[SecondaryThumbstickAxis].y)
+						{
+							const FGamepadKeyNames::Type AxisButton = GetThumbstickAxisButton_Y(!TouchPadIsPrimaryThumbstick, HandToUse);
+
+							// Invert the y to match UE4 convention
+							float Value = -VRControllerState.rAxis[SecondaryThumbstickAxis].y;
+							if (FMath::Abs<float>(Value) <= thumbstickDeadZone)
+							{
+								Value = 0;
+							}
+
+							MessageHandler->OnControllerAnalog(AxisButton, ControllerIndex, Value);
+							ControllerState.ThumbstickYAnalog = Value;
 						}
 
 						if ( ControllerState.TriggerAnalog != VRControllerState.rAxis[TRIGGER_AXIS].x)
@@ -525,6 +601,65 @@ public:
 		}
 	}
 #endif // STEAMVRCONTROLLER_SUPPORTED_PLATFORMS
+
+	void ResetTouchpads()
+	{
+#if STEAMVRCONTROLLER_SUPPORTED_PLATFORMS
+		vr::IVRSystem* VRSystem = GetVRSystem();
+
+		if (VRSystem != nullptr)
+		{
+			for (uint32 DeviceIndex = 0; DeviceIndex < vr::k_unMaxTrackedDeviceCount; ++DeviceIndex)
+			{
+				// see what kind of hardware this is
+				vr::ETrackedDeviceClass DeviceClass = VRSystem->GetTrackedDeviceClass(DeviceIndex);
+
+				// skip non-controller or non-tracker devices
+				if (DeviceClass != vr::TrackedDeviceClass_Controller && DeviceClass != vr::TrackedDeviceClass_GenericTracker)
+				{
+					continue;
+				}
+
+				// get the controller index for this device
+				int32 ControllerIndex = DeviceToControllerMap[DeviceIndex];
+				FControllerState& ControllerState = ControllerStates[DeviceIndex];
+				EControllerHand HandToUse = ControllerState.Hand;
+
+				const FGamepadKeyNames::Type TouchPadAxisButtonX = GetThumbstickAxisButton_X(TouchPadIsPrimaryThumbstick, HandToUse);
+				MessageHandler->OnControllerAnalog(TouchPadAxisButtonX, ControllerIndex, 0);
+				ControllerState.TouchPadXAnalog = 0;
+
+				const FGamepadKeyNames::Type TouchPadAxisButtonY = GetThumbstickAxisButton_Y(TouchPadIsPrimaryThumbstick, HandToUse);
+				MessageHandler->OnControllerAnalog(TouchPadAxisButtonY, ControllerIndex, 0);
+				ControllerState.TouchPadYAnalog = 0;
+
+				const FGamepadKeyNames::Type ThumbstickAxisButtonX = GetThumbstickAxisButton_X(!TouchPadIsPrimaryThumbstick, HandToUse);
+				MessageHandler->OnControllerAnalog(ThumbstickAxisButtonX, ControllerIndex, 0);
+				ControllerState.ThumbstickXAnalog = 0;
+
+				const FGamepadKeyNames::Type ThumbstickAxisButtonY = GetThumbstickAxisButton_Y(!TouchPadIsPrimaryThumbstick, HandToUse);
+				MessageHandler->OnControllerAnalog(ThumbstickAxisButtonY, ControllerIndex, 0);
+				ControllerState.ThumbstickYAnalog = 0;
+			}
+		}
+#endif
+	}
+
+	void ToggleTouchpadSource(bool isTouchpadPrimary)
+	{
+		if (TouchPadIsPrimaryThumbstick != isTouchpadPrimary)
+		{
+			// Call before toggling joystick sources, so we can reset values on the old source and prevent accidental drifting.
+			ResetTouchpads();
+		}
+
+		TouchPadIsPrimaryThumbstick = isTouchpadPrimary;
+	}
+
+	void SetSecondaryThumbstickSource(int axis)
+	{
+		SecondaryThumbstickAxis = axis;
+	}
 
 #if STEAMVRCONTROLLER_SUPPORTED_PLATFORMS
 	void SendActionInputEvents()
@@ -1574,6 +1709,10 @@ private:
 		/** trigger analog value */
 		float TriggerAnalog;
 
+		/** Some VR devices using Steam VR may have a thumbstick */
+		float ThumbstickXAnalog;
+		float ThumbstickYAnalog;
+
 		/** Knuckles Controller Axes */
 		float HandGripAnalog;
 		float IndexGripAnalog;
@@ -1726,6 +1865,12 @@ private:
 
 	/** the SteamVR plugin module */
 	mutable ISteamVRPlugin* SteamVRPlugin;
+
+	/** Flag for enabling or disabling thumbstick control on the touchpad. */
+	bool TouchPadIsPrimaryThumbstick;
+
+	/** Axis to poll for a potential second thumbstick. */
+	int SecondaryThumbstickAxis;
 };
 
 FName FSteamVRController::DeviceTypeName(TEXT("SteamVRController"));
@@ -1751,6 +1896,34 @@ void USteamVRControllerLibrary::SetTouchDPadMapping(ESteamVRTouchDPadMapping New
 			static_cast<FSteamVRController*>(MotionController)->SetTouchDPadMapping(NewMapping);
 		}
 	}
+}
+
+void USteamVRControllerLibrary::ToggleTouchpadSource(bool isTouchpadPrimary)
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	TArray<IMotionController*> MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
+	for (IMotionController* MotionController : MotionControllers)
+	{
+		if (MotionController != nullptr && MotionController->GetMotionControllerDeviceTypeName() == FSteamVRController::DeviceTypeName)
+		{
+			static_cast<FSteamVRController*>(MotionController)->ToggleTouchpadSource(isTouchpadPrimary);
+		}
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+}
+
+void USteamVRControllerLibrary::SetSecondaryThumbstickSource(int axis)
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	TArray<IMotionController*> MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
+	for (IMotionController* MotionController : MotionControllers)
+	{
+		if (MotionController != nullptr && MotionController->GetMotionControllerDeviceTypeName() == FSteamVRController::DeviceTypeName)
+		{
+			static_cast<FSteamVRController*>(MotionController)->SetSecondaryThumbstickSource(axis);
+		}
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
 }
 
 class FSteamVRControllerPlugin : public ISteamVRControllerPlugin

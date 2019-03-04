@@ -35,4 +35,20 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="SteamVR")
 	static void SetTouchDPadMapping(ESteamVRTouchDPadMapping NewMapping = ESteamVRTouchDPadMapping::FaceButtons); // @see SteamVRController.cpp for implementation
+
+	/**
+	* Enables or disables the use of the touchpad as a thumbstick for VR devices that have thumbsticks.
+	*
+	* @param	isTouchpadPrimary		Sets touchpad as "Motion Controller Thumbstick" events if true, "Secondary Thumbstick" events if false.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "SteamVR")
+		static void ToggleTouchpadSource(bool isTouchpadPrimary);
+
+	/**
+	 * Set the axis to poll for a secondary thumbstick.
+	 *
+	 * @param	axis		The Axis of a potential second thumbstick.  This corresponds to vr::k_EButton_Axis#.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "SteamVR")
+		static void SetSecondaryThumbstickSource(int axis);
 };

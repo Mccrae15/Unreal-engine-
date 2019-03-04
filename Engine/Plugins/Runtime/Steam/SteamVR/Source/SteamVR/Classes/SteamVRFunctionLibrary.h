@@ -64,4 +64,10 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "SteamVR", meta = (DeprecatedFunction, DeprecationMessage = "Use motion controller components instead"))
 	static bool GetHandPositionAndOrientation(int32 ControllerIndex, EControllerHand Hand, FVector& OutPosition, FRotator& OutOrientation);
+
+	/**
+	 * Returns the version string which may be used to disambiguate different HMD types using SteamVR.
+	 */
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+		static FString GetVersionString();
 };
