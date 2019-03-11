@@ -69,5 +69,5 @@ public:
 	 * Returns the version string which may be used to disambiguate different HMD types using SteamVR.
 	 */
 	UFUNCTION(BlueprintPure, Category = "SteamVR")
-		static FString GetVersionString();
+		static FString GetVersionString_2();
 };

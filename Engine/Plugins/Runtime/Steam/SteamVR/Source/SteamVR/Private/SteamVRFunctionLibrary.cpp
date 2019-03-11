@@ -36,7 +36,7 @@ IMotionController* GetSteamMotionController()
 }
 #endif // STEAMVR_SUPPORTED_PLATFORMS
 
-FString USteamVRFunctionLibrary::GetVersionString()
+FString USteamVRFunctionLibrary::GetVersionString_2()
 {
 #if STEAMVR_SUPPORTED_PLATFORMS
 	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
