@@ -28,6 +28,13 @@ static TAutoConsoleVariable<int32> CVarAllowFrameTimestamps(
 #define ENABLE_VERIFY_EGL 0
 #define ENABLE_VERIFY_EGL_TRACE 0
 
+#if USE_ANDROID_EGL_NO_ERROR_CONTEXT
+#ifndef EGL_KHR_create_context_no_error
+#define EGL_KHR_create_context_no_error 1
+#define EGL_CONTEXT_OPENGL_NO_ERROR_KHR   0x31B3
+#endif // EGL_KHR_create_context_no_error
+#endif // USE_ANDROID_EGL_NO_ERROR_CONTEXT
+
 #if ENABLE_VERIFY_EGL
 
 #define VERIFY_EGL(msg) { VerifyEGLResult(eglGetError(),TEXT(#msg),TEXT(""),TEXT(__FILE__),__LINE__); }
@@ -234,6 +241,7 @@ validConfig (0)
 AndroidEGL::AndroidEGL()
 :	bSupportsKHRCreateContext(false)
 ,	bSupportsKHRSurfacelessContext(false)
+,	bSupportsKHRNoErrorContext(false)
 ,	ContextAttributes(nullptr)
 {
 	PImplData = new AndroidESPImpl();
@@ -467,6 +475,7 @@ void AndroidEGL::InitEGL(APIVariant API)
 
 	bSupportsKHRCreateContext = Extensions.Contains(TEXT("EGL_KHR_create_context"));
 	bSupportsKHRSurfacelessContext = Extensions.Contains(TEXT("EGL_KHR_surfaceless_context"));
+	bSupportsKHRNoErrorContext = Extensions.Contains(TEXT("EGL_KHR_create_context_no_error"));
 
 	if (API == AV_OpenGLES)
 	{
@@ -721,11 +730,18 @@ void AndroidEGL::Init(APIVariant API, uint32 MajorVersion, uint32 MinorVersion, 
 
 		ContextAttributes = new int[MaxElements];
 		uint32 Element = 0;
-		
+
 		ContextAttributes[Element++] = EGL_CONTEXT_MAJOR_VERSION_KHR;
 		ContextAttributes[Element++] = MajorVersion;
 		ContextAttributes[Element++] = EGL_CONTEXT_MINOR_VERSION_KHR;
 		ContextAttributes[Element++] = MinorVersion;
+#if USE_ANDROID_EGL_NO_ERROR_CONTEXT
+		if (bSupportsKHRNoErrorContext && AndroidThunkCpp_IsOculusMobileApplication())
+		{
+			ContextAttributes[Element++] = EGL_CONTEXT_OPENGL_NO_ERROR_KHR;
+			ContextAttributes[Element++] = EGL_TRUE;
+		}
+#endif // USE_ANDROID_EGL_NO_ERROR_CONTEXT
 		if (API == AV_OpenGLCore)
 		{
 			ContextAttributes[Element++] = EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR;

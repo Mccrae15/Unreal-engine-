@@ -54,6 +54,12 @@ struct FPerformanceStats
 	}
 };
 
+enum FRecenterTypes
+{
+	RecenterOrientation = 0x1,
+	RecenterPosition = 0x2,
+	RecenterOrientationAndPosition = 0x3
+};
 
 //-------------------------------------------------------------------------------------------------
 // FOculusHMD - Oculus Rift Head Mounted Display
@@ -229,6 +235,7 @@ protected:
 	void ApplySystemOverridesOnStereo(bool force = false);
 	bool OnOculusStateChange(bool bIsEnabledNow);
 	bool ShouldDisableHiddenAndVisibileAreaMeshForSpectatorScreen_RenderThread() const;
+	void Recenter(FRecenterTypes recenterType, float yaw);
 #if !UE_BUILD_SHIPPING
 	void DrawDebug(UCanvas* InCanvas, APlayerController* InPlayerController);
 #endif
