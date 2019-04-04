@@ -58,9 +58,9 @@ typedef FAndroidTypes FPlatformTypes;
 #define PLATFORM_SUPPORTS_EARLY_MOVIE_PLAYBACK		1 // movies will start before engine is initalized
 
 #if defined(EXPERIMENTAL_OPENGL_RHITHREAD) && EXPERIMENTAL_OPENGL_RHITHREAD
-	#define PLATFORM_RHITHREAD_DEFAULT_BYPASS			0
+#define PLATFORM_RHITHREAD_DEFAULT_BYPASS 0
 #else
-	#define PLATFORM_RHITHREAD_DEFAULT_BYPASS			1
+#define PLATFORM_RHITHREAD_DEFAULT_BYPASS 0 // ARMATURE MOD: Remi fix for RHI Thread lockup in shipping
 #endif
 
 // Conditionally set in AndroidToolChain.cs
