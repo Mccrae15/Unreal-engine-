@@ -1680,6 +1680,7 @@ void FOpenGLDynamicRHI::Init()
 	CheckTextureCubeLodSupport();
 	CheckVaryingLimit();
 	CheckRoundFunction();
+	RegisterSharedShaderCodeDelegates();
 }
 
 void FOpenGLDynamicRHI::PostInit()

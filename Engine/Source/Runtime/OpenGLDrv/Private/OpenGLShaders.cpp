@@ -4475,7 +4475,7 @@ void FOpenGLProgramBinaryCache::Initialize()
 #if PLATFORM_ANDROID && USE_ANDROID_FILE
 		// @todo Lumin: Use that GetPathForExternalWrite or something?
 		extern FString GExternalFilePath;
-		CacheFolderPath = GExternalFilePath / TEXT("ProgramBinaryCache");
+		CacheFolderPath = FPaths::ProjectContentDir() / TEXT("ProgramBinaryCache");
 			
 #else
 		CacheFolderPath = FPaths::ProjectSavedDir() / TEXT("ProgramBinaryCache");
