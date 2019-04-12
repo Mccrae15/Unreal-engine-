@@ -6266,8 +6266,14 @@ void UCookOnTheFlyServer::CookByTheBookFinished()
 			SaveShaderCodeLibrary(LibraryName);
 			
 			// Don't clean Saved/Shaders/<LibraryPlatform(s)>/ at the end as we might iterate next time - Next cook at startup will decide if clean on iterate flag
-            // /*CleanShaderCodeLibraries();*/
-			ProcessShaderCodeLibraries(LibraryName);
+			// /*CleanShaderCodeLibraries();*/
+			bool bCookPSOCache = true;
+			GConfig->GetBool(TEXT("CookSettings"), TEXT("bCookPSOCache"), bCookPSOCache, GEditorIni);
+			if (bCookPSOCache)
+			{
+				ProcessShaderCodeLibraries(LibraryName);
+			}
+
             
 			FShaderCodeLibrary::Shutdown();
 		}				
