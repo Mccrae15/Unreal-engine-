@@ -119,7 +119,8 @@
 		<setBoolNot result="bNotOculus3Dof" source="$B(bOculus3Dof)" />
 		<if condition="bOculus6Dof">
 			<true>
-				<addFeature android:name="android.hardware.vr.headtracking" android:version="1" android:required="$B(bNotOculus3Dof)" />
+        <addFeature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
+        <!-- <addFeature android:name="android.hardware.vr.headtracking" android:version="1" android:required="$B(bNotOculus3Dof)" /> -->
 			</true>
 		</if>
 	</androidManifestUpdates>
