@@ -2022,7 +2022,7 @@ void UnFbx::FFbxImporter::PostImportStaticMesh(UStaticMesh* StaticMesh, TArray<F
 	}
 
 	//collision generation must be done after the build, this will ensure a valid BodySetup
-	if (StaticMesh->bCustomizedCollision == false && ImportOptions->bAutoGenerateCollision && StaticMesh->BodySetup && LODIndex == 0)
+	if (StaticMesh->bCustomizedCollision == false && /*ImportOptions->bAutoGenerateCollision*/ false && StaticMesh->BodySetup && LODIndex == 0)
 	{
 		FKAggregateGeom & AggGeom = StaticMesh->BodySetup->AggGeom;
 		AggGeom.ConvexElems.Empty(1);	//if no custom collision is setup we just regenerate collision when reimport

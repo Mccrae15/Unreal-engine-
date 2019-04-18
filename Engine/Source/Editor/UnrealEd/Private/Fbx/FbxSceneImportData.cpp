@@ -105,7 +105,7 @@ UnFbx::FBXImportOptions *JSONToFbxOption(TSharedPtr<FJsonValue> OptionJsonValue,
 	OptionObj->TryGetBoolField("bBuildReversedIndexBuffer", Option->bBuildReversedIndexBuffer);
 	OptionObj->TryGetBoolField("bGenerateLightmapUVs", Option->bGenerateLightmapUVs);
 	OptionObj->TryGetBoolField("bOneConvexHullPerUCX", Option->bOneConvexHullPerUCX);
-	OptionObj->TryGetBoolField("bAutoGenerateCollision", Option->bAutoGenerateCollision);
+	//OptionObj->TryGetBoolField("bAutoGenerateCollision", Option->bAutoGenerateCollision);
 	FString LODGroup;
 	if (OptionObj->TryGetStringField("StaticMeshLODGroup", LODGroup))
 	{
@@ -195,7 +195,7 @@ FString FbxOptionToJSON(FString OptionName, UnFbx::FBXImportOptions *Option)
 		Option->bBuildReversedIndexBuffer ? 1 : 0,
 		Option->bGenerateLightmapUVs ? 1 : 0,
 		Option->bOneConvexHullPerUCX ? 1 : 0,
-		Option->bAutoGenerateCollision ? 1 : 0,
+	//	Option->bAutoGenerateCollision ? 1 : 0,
 		*(Option->StaticMeshLODGroup.ToString()),
 		Option->bImportStaticMeshLODs ? 1 : 0
 		);

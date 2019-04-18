@@ -5346,10 +5346,10 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 		ReimportUI->StaticMeshImportData = ImportData;
 		
 		//Force the bAutoGenerateCollision to false if the Mesh Customize collision is true
-		bool bOldAutoGenerateCollision = ReimportUI->StaticMeshImportData->bAutoGenerateCollision;
+		//bool bOldAutoGenerateCollision = ReimportUI->StaticMeshImportData->bAutoGenerateCollision;
 		if (Mesh->bCustomizedCollision)
 		{
-			ReimportUI->StaticMeshImportData->bAutoGenerateCollision = false;
+			//ReimportUI->StaticMeshImportData->bAutoGenerateCollision = false;
 		}
 		
 		bool bImportOperationCanceled = false;
@@ -5364,7 +5364,7 @@ EReimportResult::Type UReimportFbxStaticMeshFactory::Reimport( UObject* Obj )
 		//Put back the original bAutoGenerateCollision settings since the user cancel the re-import
 		if (bOperationCanceled && Mesh->bCustomizedCollision)
 		{
-			ReimportUI->StaticMeshImportData->bAutoGenerateCollision = bOldAutoGenerateCollision;
+			//ReimportUI->StaticMeshImportData->bAutoGenerateCollision = bOldAutoGenerateCollision;
 		}
 	}
 	ImportOptions->bCanShowDialog = !IsUnattended;

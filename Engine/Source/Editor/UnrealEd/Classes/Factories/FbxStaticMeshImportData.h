@@ -63,8 +63,8 @@ class UFbxStaticMeshImportData : public UFbxMeshImportData
 	uint32 bOneConvexHullPerUCX:1;
 
 	/** If checked, collision will automatically be generated (ignored if custom collision is imported or used). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category = Mesh, meta=(OBJRestrict="true", ImportType="StaticMesh"))
-	uint32 bAutoGenerateCollision : 1;
+//	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category = Mesh, meta=(OBJRestrict="true", ImportType="StaticMesh"))
+//	uint32 bAutoGenerateCollision : 1;
 
 	/** For static meshes, enabling this option will combine all meshes in the FBX into a single monolithic mesh in Unreal */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, config, Category = Mesh, meta = (ToolTip = "If enabled, combines all meshes into a single mesh", ImportType = "StaticMesh"))
