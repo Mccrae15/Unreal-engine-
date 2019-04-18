@@ -150,7 +150,7 @@ struct FBXImportOptions
 	bool bBuildReversedIndexBuffer;
 	bool bGenerateLightmapUVs;
 	bool bOneConvexHullPerUCX;
-	bool bAutoGenerateCollision;
+//	bool bAutoGenerateCollision;
 	FName StaticMeshLODGroup;
 	bool bImportStaticMeshLODs;
 	bool bAutoComputeLodDistances;
