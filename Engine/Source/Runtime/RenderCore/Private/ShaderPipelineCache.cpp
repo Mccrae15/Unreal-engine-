@@ -387,6 +387,15 @@ void FShaderPipelineCache::Shutdown(void)
 	}
 }
 
+// ARMATURE MOD: added this function to improve controllability of shader precompilation.
+void FShaderPipelineCache::SetBatchSize(int const batchSize)
+{
+	if (ShaderPipelineCache != nullptr)
+	{
+		ShaderPipelineCache->BatchSize = batchSize;
+	}
+}
+
 void FShaderPipelineCache::PauseBatching()
 {
 	if (ShaderPipelineCache)
@@ -1050,7 +1059,7 @@ FShaderPipelineCache::FShaderPipelineCache(EShaderPlatform Platform)
 : FTickableObjectRenderThread(true, false) // (RegisterNow, HighFrequency)
 , BatchSize(0)
 , BatchTime(0.0f)
-, bPaused(false)
+, bPaused(true) // ARMATURE MOD: changed from false to true (so it can be controlled from the beginning)
 , bOpened(false)
 , bReady(false)
 , PausedCount(0)
@@ -1076,11 +1085,11 @@ FShaderPipelineCache::FShaderPipelineCache(EShaderPlatform Platform)
 			bPaused = true;
 			break;
 		case 2:
+		default:
 			BatchSize = CVarPSOFileCacheBackgroundBatchSize.GetValueOnAnyThread();
 			BatchTime = CVarPSOFileCacheBackgroundBatchTime.GetValueOnAnyThread();
 			break;
 		case 1:
-		default:
 			BatchSize = CVarPSOFileCacheBatchSize.GetValueOnAnyThread();
 			BatchTime = CVarPSOFileCacheBatchTime.GetValueOnAnyThread();
 			break;

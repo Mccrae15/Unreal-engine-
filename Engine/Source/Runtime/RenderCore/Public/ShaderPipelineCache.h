@@ -84,6 +84,10 @@ public:
 	/** Terminates the shader pipeline cache, called by the engine. */
 	static void Shutdown();
 
+	// ARMATURE MOD: added this function for better control on Android
+	/** Sets the max number of shaders precompiled per frame. Use this as a more controlled alternative to SetBatchMode */
+	static void SetBatchSize(int const batchSize);
+
 	/** Pauses precompilation. */
 	static void PauseBatching();
 	

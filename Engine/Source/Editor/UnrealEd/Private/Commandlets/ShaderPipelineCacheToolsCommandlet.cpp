@@ -412,7 +412,7 @@ int32 ExpandPSOSC(const TArray<FString>& Tokens)
 	//self test
 	for (const FPipelineCacheFileFormatPSO& Item : PSOs)
 	{
-		CheckPSOStringInveribility(Item);
+		//CheckPSOStringInveribility(Item);
 	}
 	// end self test
 	if (UE_LOG_ACTIVE(LogShaderPipelineCacheTools, Verbose))
