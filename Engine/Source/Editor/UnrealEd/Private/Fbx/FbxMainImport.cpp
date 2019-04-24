@@ -1514,7 +1514,7 @@ bool FFbxImporter::ImportFromFile(const FString& Filename, const FString& Type, 
 						FBXImportOptions* CaptureImportOptions = ImportOptions;
 						auto AddMeshAnalytic = [&Attribs, &CaptureImportOptions]()
 						{
-							Attribs.Add(FAnalyticsEventAttribute(TEXT("MeshOpt AutoGenerateCollision"), CaptureImportOptions->bAutoGenerateCollision));
+							//Attribs.Add(FAnalyticsEventAttribute(TEXT("MeshOpt AutoGenerateCollision"), CaptureImportOptions->bAutoGenerateCollision));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("MeshOpt CombineToSingle"), CaptureImportOptions->bCombineToSingle));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("MeshOpt BakePivotInVertex"), CaptureImportOptions->bBakePivotInVertex));
 							Attribs.Add(FAnalyticsEventAttribute(TEXT("MeshOpt TransformVertexToAbsolute"), CaptureImportOptions->bTransformVertexToAbsolute));
