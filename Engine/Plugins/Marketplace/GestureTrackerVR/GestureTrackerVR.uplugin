@@ -10,7 +10,7 @@
 	"DocsURL": "https://youtu.be/0D1Iy3Nprik",
 	"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/content/378f739f054340899db2569090222fd3",
 	"SupportURL": "https://forums.unrealengine.com/unreal-engine/marketplace/101183-support-gesture-tracker-vr-help-and-feature-requests",
-	"EngineVersion": "4.21.0",
+	"EngineVersion": "4.22.0",
 	"CanContainContent": true,
 	"Installed": true,
 	"Modules": [

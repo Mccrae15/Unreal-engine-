@@ -1721,7 +1721,7 @@ FProcHandle FShaderCompilingManager::LaunchWorker(const FString& WorkingDirector
 	WorkerParameters += FCommandLine::GetSubprocessCommandline();
 
 	// Launch the worker process
-	int32 PriorityModifier = 2; // HIGH
+	int32 PriorityModifier = 1; // HIGH
 
 	if (DEBUG_SHADERCOMPILEWORKER)
 	{

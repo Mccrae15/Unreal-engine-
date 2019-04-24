@@ -437,8 +437,9 @@ void UGestureTracker::RecognitionUpdate()
     int searchResultIndex = gestureLib.Search(trackGesture, trackRecognitionRatio * trackGesture.PathHeadLength());
 
     if (searchResultIndex >= 0) {
-        GestureRecognized.Broadcast(gestureLib.Id(searchResultIndex), gestureLib.Name(searchResultIndex), GetTimeSeconds() - trackStartTime, GetLengthRatio(trackGesture, searchResultIndex));
         gestureIndex = searchResultIndex;
+
+        GestureRecognized.Broadcast(gestureLib.Id(searchResultIndex), gestureLib.Name(searchResultIndex), GetTimeSeconds() - trackStartTime, GetLengthRatio(trackGesture, searchResultIndex));
     }
 }
 
@@ -459,13 +460,18 @@ void UGestureTracker::ContinuousRecognitionUpdate()
                 gestureLib.CheckForDisqualification(ii, trackedGesture);
             }
             else if (gestureLib.ContinuousTrack(ii, trackedGesture, continuousRecognitionRatio * trackedGesture.PathHeadLength())) {
-                // Broadcast the action id of a successful continuous gesture
-                ContinuousGestureRecognized.Broadcast(gestureLib.Id(ii), gestureLib.Name(ii), GetTimeSeconds() - continuousTracks[ii].startTime, GetLengthRatio(continuousTracks[ii].gesture, ii));
+
+                const double currentTime = GetTimeSeconds();
+                const float timeTaken = currentTime - continuousTracks[ii].startTime;
+
+                const int recognizedGestureId = gestureLib.Id(ii);
+                const FString recognizedGestureName = gestureLib.Name(ii);
+                const float recognitionLengthRatio = GetLengthRatio(continuousTracks[ii].gesture, ii);
 
                 // Reset search immediately instead of waiting for disqualification
                 if (bContinuousResetOnRecognized) {
                     gestureLib.ResetTracking(ii);
-                    continuousTracks[ii].Reset(trackLocation, trackRotation, gestureResolution, GetTimeSeconds());
+                    continuousTracks[ii].Reset(trackLocation, trackRotation, gestureResolution, currentTime);
                 }
 
                 // Reset draw locations
@@ -473,6 +479,9 @@ void UGestureTracker::ContinuousRecognitionUpdate()
 
                 // Reset predictive draw mesh, erasing it
                 ResetGestureMesh(predictGestureMesh);
+
+                // Broadcast the action id of a successful continuous gesture
+                ContinuousGestureRecognized.Broadcast(recognizedGestureId, recognizedGestureName, timeTaken, recognitionLengthRatio);
 
                 break;
             }
