@@ -1707,6 +1707,11 @@ void FOpenGLDynamicRHI::PostInit()
 	}
 }
 
+bool FOpenGLDynamicRHI::IsProgramBinaryCacheValid()
+{
+	return FOpenGLProgramBinaryCache::IsEnabled() && !FOpenGLProgramBinaryCache::IsBuildingCache();
+}
+
 void FOpenGLDynamicRHI::Shutdown()
 {
 	check(IsInGameThread() && IsInRenderingThread()); // require that the render thread has been shut down

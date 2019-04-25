@@ -150,6 +150,7 @@ public:
 	virtual void Shutdown() = 0;
 
 	virtual const TCHAR* GetName() = 0;
+	virtual bool IsProgramBinaryCacheValid() { return false; }
 
 	/** Called after PostInit to initialize the pixel format info, which is needed for some commands default implementations */
 	void InitPixelFormatInfo(const TArray<uint32>& PixelFormatBlockBytesIn)
