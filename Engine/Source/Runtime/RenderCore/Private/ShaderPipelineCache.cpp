@@ -1085,11 +1085,11 @@ FShaderPipelineCache::FShaderPipelineCache(EShaderPlatform Platform)
 			bPaused = true;
 			break;
 		case 2:
-		default:
 			BatchSize = CVarPSOFileCacheBackgroundBatchSize.GetValueOnAnyThread();
 			BatchTime = CVarPSOFileCacheBackgroundBatchTime.GetValueOnAnyThread();
 			break;
 		case 1:
+		default:		
 			BatchSize = CVarPSOFileCacheBatchSize.GetValueOnAnyThread();
 			BatchTime = CVarPSOFileCacheBatchTime.GetValueOnAnyThread();
 			break;
