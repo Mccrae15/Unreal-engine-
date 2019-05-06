@@ -1095,8 +1095,8 @@ FShaderPipelineCache::FShaderPipelineCache(EShaderPlatform Platform)
 			break;
 	}
 	
-	BatchSize = CVarPSOFileCacheBatchSize.GetValueOnAnyThread();
-	BatchTime = CVarPSOFileCacheBatchTime.GetValueOnAnyThread();
+	//BatchSize = CVarPSOFileCacheBatchSize.GetValueOnAnyThread();
+	//BatchTime = CVarPSOFileCacheBatchTime.GetValueOnAnyThread();
 	
 	FCoreDelegates::ApplicationWillDeactivateDelegate.AddStatic(&PipelineStateCacheOnAppDeactivate);
 	
