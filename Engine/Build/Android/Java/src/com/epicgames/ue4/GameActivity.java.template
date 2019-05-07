@@ -145,13 +145,13 @@ import android.media.AudioManager;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 
-import com.google.android.gms.auth.GoogleAuthUtil;
-import com.google.android.gms.common.api.GoogleApiClient;
-import com.google.android.gms.common.GooglePlayServicesUtil;
-import com.google.android.gms.common.ConnectionResult;
-import com.google.android.gms.games.Games;
+//import com.google.android.gms.auth.GoogleAuthUtil;
+//import com.google.android.gms.common.api.GoogleApiClient;
+//import com.google.android.gms.common.GooglePlayServicesUtil;
+//import com.google.android.gms.common.ConnectionResult;
+//import com.google.android.gms.games.Games;
 
-import com.google.android.gms.plus.Plus;
+//import com.google.android.gms.plus.Plus;
 
 import com.google.vr.sdk.samples.permission.PermissionHelper;
 
@@ -214,8 +214,8 @@ import android.content.BroadcastReceiver;
 //  to them in this class.
 
 public class GameActivity extends NativeActivity implements SurfaceHolder.Callback2,
-															GoogleApiClient.ConnectionCallbacks,
-															GoogleApiClient.OnConnectionFailedListener,
+															//GoogleApiClient.ConnectionCallbacks,
+															//GoogleApiClient.OnConnectionFailedListener,
 															SensorEventListener,
 															Logger.ILoggerCallback,
 //$${gameActivityImplementsAdditions}$$
@@ -366,7 +366,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	/** AssetManger reference - populated on start up and used when the OBB is packed into the APK */
 	private AssetManager			AssetManagerReference;
 	
-	private GoogleApiClient googleClient;
+	// private GoogleApiClient googleClient;
 
 	// layout required by popups, e.g ads, native controls
 	LinearLayout activityLayout;
@@ -3851,7 +3851,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		*/
 		Log.debug("AndroidThunkJava_ResetAchievements: disabled");
 	}
-
+/*
 	// TODO: replace this with non-depreciated method (OK now for up to API-25)
 	@TargetApi(23)
 	private String GetAccessToken()
@@ -3891,18 +3891,20 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			googleClient.disconnect();
 		}
 	}
-
-	// Google Client connected successfully
+*/
+	/*
+	 Google Client connected successfully
 	@Override
 	public void onConnected(Bundle connectionHint)
 	{
+	
 		if (googleClient != null && googleClient.isConnected())
 		{
 			new Thread(new Runnable()
 			{
 				public void run()
 				{
-					/* Don't do this since deprecated and don't want to request GET_ACCOUNTS permission
+					 Don't do this since deprecated and don't want to request GET_ACCOUNTS permission
 					try
 					{
 						String accesstoken = GetAccessToken();
@@ -3923,7 +3925,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
 						nativeGoogleClientConnectCompleted(false, "");
 					}
-					*/
+					
 					nativeGoogleClientConnectCompleted(true, "NOT_ACQUIRED");
 				}
 			}).start();
@@ -3932,22 +3934,29 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		{
 			nativeGoogleClientConnectCompleted(false, "");
 		}
+	
 	}
 
 	// Google Client connection failed
 	@Override
 	public void onConnectionFailed(ConnectionResult connectionResult)
 	{
+	
 		Log.debug("Google Client Connect failed. Error Code: " + connectionResult.getErrorCode() + " Description: " + connectionResult.getErrorMessage());
 		nativeGoogleClientConnectCompleted(false, "");
+	
 	}
+	
 
 	// Google Client connection suspended
 	@Override
 	public void onConnectionSuspended(int cause)
 	{
+	
 		Log.debug("Google Client Connect Suspended: " + cause);
+	
 	}
+	*/
 
 	public AssetManager AndroidThunkJava_GetAssetManager()
 	{
