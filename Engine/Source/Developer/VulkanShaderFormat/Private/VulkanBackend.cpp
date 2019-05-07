@@ -4455,7 +4455,7 @@ static ir_rvalue* GenShaderInputSemantic(
 		Variable->interpolation = InputQualifier.Fields.InterpolationMode;
 		Variable->is_patch_constant = InputQualifier.Fields.bIsPatchConstant;
 
-		if (ParseState->bGenerateLayoutLocations && !InputQualifier.Fields.bIsPatchConstant)
+		if (ParseState->bGenerateLayoutLocations)
 		{
 			ConfigureInOutVariableLayout(Frequency, ParseState, Semantic, Variable, ir_var_in);
 		}
@@ -4487,7 +4487,7 @@ static ir_rvalue* GenShaderInputSemantic(
 		Variable->interpolation = InputQualifier.Fields.InterpolationMode;
 		Variable->is_patch_constant = InputQualifier.Fields.bIsPatchConstant;
 
-		if (ParseState->bGenerateLayoutLocations && !InputQualifier.Fields.bIsPatchConstant)
+		if (ParseState->bGenerateLayoutLocations)
 		{
 			ConfigureInOutVariableLayout(Frequency, ParseState, Semantic, Variable, ir_var_in);
 		}
@@ -4695,7 +4695,7 @@ static ir_rvalue* GenShaderOutputSemantic(
 	Variable->interpolation = OutputQualifier.Fields.InterpolationMode;
 	Variable->is_patch_constant = OutputQualifier.Fields.bIsPatchConstant;
 
-	if (ParseState->bGenerateLayoutLocations && !OutputQualifier.Fields.bIsPatchConstant)
+	if (ParseState->bGenerateLayoutLocations)
 	{
 		ConfigureInOutVariableLayout(Frequency, ParseState, Semantic, Variable, ir_var_out);
 	}
@@ -5808,17 +5808,22 @@ void FVulkanCodeBackend::GenShaderPatchConstantFunctionInputs(_mesa_glsl_parse_s
 		ir_dereference_record* lhs = assignment->lhs->as_dereference_record();
 		ir_rvalue* rhs = assignment->rhs;
 
-		if (!lhs)
-		{
-			continue;
-		}
-
 		if (!rhs)
 		{
 			continue;
 		}
 
-		ir_dereference_array* lhs_array = lhs->record->as_dereference_array();
+		// Check whether LHS is wrapped into an array.
+		// This might be the case on the OpenGL backend, but not necessarily on the Vulkan backend.
+		ir_dereference_array* lhs_array = nullptr;
+		if (lhs)
+		{
+			lhs_array = lhs->record->as_dereference_array();
+		}
+		else
+		{
+			lhs_array = assignment->lhs->as_dereference_array();
+		}
 
 		if (!lhs_array)
 		{
@@ -5842,8 +5847,6 @@ void FVulkanCodeBackend::GenShaderPatchConstantFunctionInputs(_mesa_glsl_parse_s
 		{
 			continue;
 		}
-
-		const char* OutArrayFieldName = lhs->field;
 
 		for (int OutputVertex = 0; OutputVertex < ParseState->tessellation.outputcontrolpoints; ++OutputVertex)
 		{
@@ -5892,18 +5895,34 @@ void FVulkanCodeBackend::GenShaderPatchConstantFunctionInputs(_mesa_glsl_parse_s
 			ir_rvalue* OutputPatchElement = rhs->clone(ParseState, 0);
 			Helper::ReplaceVariableDerefWithArrayDeref(OutputPatchElement, OutputPatchElementIndex);
 
-			PostCallInstructions.push_tail(
-				new (ParseState)ir_assignment(
-				OutputPatchElement,
-				new(ParseState)ir_dereference_record(
-				new(ParseState)ir_dereference_array(
-				OutputPatchArray->clone(ParseState, 0),
-				new(ParseState)ir_constant(OutputVertex)
-				),
-				OutArrayFieldName
-				)
-				)
+			if (lhs)
+			{
+				// Wrap LHS into a record again
+				PostCallInstructions.push_tail(
+					new (ParseState)ir_assignment(
+						OutputPatchElement,
+						new(ParseState)ir_dereference_record(
+							new(ParseState)ir_dereference_array(
+								OutputPatchArray->clone(ParseState, 0),
+								new(ParseState)ir_constant(OutputVertex)
+							),
+							lhs->field
+						)
+					)
 				);
+			}
+			else
+			{
+				PostCallInstructions.push_tail(
+					new (ParseState)ir_assignment(
+						OutputPatchElement,
+						new(ParseState)ir_dereference_array(
+							OutputPatchArray->clone(ParseState, 0),
+							new(ParseState)ir_constant(OutputVertex)
+						)
+					)
+				);
+			}
 		}
 	}
 }

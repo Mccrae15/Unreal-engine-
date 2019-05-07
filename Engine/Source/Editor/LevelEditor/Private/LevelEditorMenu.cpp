@@ -241,7 +241,11 @@ TSharedRef< SWidget > FLevelEditorMenu::MakeLevelEditorMenu( const TSharedPtr<FU
 
 	// Extend the Help menu
 	Extender->AddMenuExtension(
+#if WITH_OCULUS_PRIVATE_CODE
+		"HelpOnline",
+#else
 		"BugReporting",
+#endif
 		EExtensionHook::Before,
 		CommandList.ToSharedRef(),
 		FMenuExtensionDelegate::CreateStatic( &Local::ExtendHelpMenu ) );

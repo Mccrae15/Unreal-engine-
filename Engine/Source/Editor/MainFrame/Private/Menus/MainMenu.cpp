@@ -271,16 +271,16 @@ void FMainMenu::FillWindowMenu( FMenuBuilder& MenuBuilder, const TSharedRef< FEx
 
 void FMainMenu::FillHelpMenu( FMenuBuilder& MenuBuilder, const TSharedRef< FExtender > Extender )
 {
+#if WITH_OCULUS_PRIVATE_CODE
+	// Remove bug reporting links
+#else
 	MenuBuilder.BeginSection("BugReporting", NSLOCTEXT("MainHelpMenu", "BugsReporting", "Bugs"));
 	{
-#if WITH_OCULUS_PRIVATE_CODE
-		// Remove report-a-bug link
-#else
 		MenuBuilder.AddMenuEntry(FMainFrameCommands::Get().ReportABug);
-#endif
 		MenuBuilder.AddMenuEntry(FMainFrameCommands::Get().OpenIssueTracker);
 	}
 	MenuBuilder.EndSection();
+#endif
 
 	MenuBuilder.BeginSection("HelpOnline", NSLOCTEXT("MainHelpMenu", "Online", "Help Online"));
 	{

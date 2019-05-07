@@ -1,9 +1,9 @@
 {
 	"MajorVersion": 4,
 	"MinorVersion": 22,
-	"PatchVersion": 0,
+	"PatchVersion": 1,
 	"Changelist": 0,
-	"CompatibleChangelist": 5952969,
+	"CompatibleChangelist": 6094349,
 	"IsLicenseeVersion": 1,
 	"IsPromotedBuild": 0,
 	"BranchName": "++UE4+Partner-Oculus-4.22"

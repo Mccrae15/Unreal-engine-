@@ -43,7 +43,7 @@ protected:
 
 		virtual void Tick(float DeltaTime) override { pSplash->Tick_RenderThread(DeltaTime); }
 		virtual TStatId GetStatId() const override  { RETURN_QUICK_DECLARE_CYCLE_STAT(FSplash, STATGROUP_Tickables); }
-		virtual bool IsTickable() const override { return true; }// pSplash->IsTickable();
+		virtual bool IsTickable() const override { return true; }
 	
 	protected:
 		FSplash* pSplash;
