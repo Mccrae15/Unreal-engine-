@@ -270,7 +270,7 @@ bool FCustomPresent::IsSRGB(ovrpTextureFormat InFormat)
 
 int FCustomPresent::GetSystemRecommendedMSAALevel() const
 {
-	int SystemRecommendedMSAALevel = 1;
+	int SystemRecommendedMSAALevel = 2;
 	//ovrp_GetSystemRecommendedMSAALevel2(&SystemRecommendedMSAALevel);
 	return SystemRecommendedMSAALevel;
 }
