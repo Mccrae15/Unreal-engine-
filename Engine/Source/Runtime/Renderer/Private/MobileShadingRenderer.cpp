@@ -349,7 +349,7 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		RenderCustomDepthPass(RHICmdList);
 	}
 		
-	const FIntPoint RenderTargetSize = (ViewFamily.RenderTarget->GetRenderTargetTexture().IsValid()) ? ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeXY() : ViewFamily.RenderTarget->GetSizeXY();
+	FIntPoint RenderTargetSize = ViewFamily.RenderTarget->GetRenderTargetTexture().IsValid() ? ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeXY() : ViewFamily.RenderTarget->GetSizeXY();
 	const bool bRequiresUpscale = ((int32)RenderTargetSize.X > FamilySize.X || (int32)RenderTargetSize.Y > FamilySize.Y);
 
 	// ES2 requires that the back buffer and depth match dimensions.
