@@ -18,7 +18,7 @@
 		{
 			"Name": "OnlineSubsystemOculus",
 			"Type": "Runtime",
-			"LoadingPhase": "Default",
+			"LoadingPhase": "PostDefault",
 			"WhitelistPlatforms": [
 				"Win64",
 				"Android"

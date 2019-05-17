@@ -160,6 +160,8 @@ FCoreDelegates::FIsLoadingMovieCurrentlyPlaying FCoreDelegates::IsLoadingMovieCu
 
 FCoreDelegates::FShouldLaunchUrl FCoreDelegates::ShouldLaunchUrl;
 
+FCoreDelegates::FInitOculusOSS FCoreDelegates::InitOculusOSS;
+
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FCrashOverrideParameters::~FCrashOverrideParameters()
 {

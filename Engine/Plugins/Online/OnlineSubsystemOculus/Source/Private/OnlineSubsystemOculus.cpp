@@ -197,6 +197,14 @@ void FOnlineSubsystemOculus::RemoveNotifDelegate(ovrMessageType MessageType, con
 
 bool FOnlineSubsystemOculus::Init()
 {
+#if PLATFORM_ANDROID
+	//FCoreDelegates::InitOculusOSS.AddUObject(this, &FOnlineSubsystemOculus::InitWithFunction);
+	BoTak();
+	return true;
+#endif
+
+#if !PLATFORM_ANDROID
+
 	// Early out if this is already initialized
 	if (bOculusInit)
 	{
@@ -245,7 +253,67 @@ bool FOnlineSubsystemOculus::Init()
 	}
 
 	return bOculusInit;
+#endif
 }
+
+void FOnlineSubsystemOculus::InitWithFunction()
+{
+	// Early out if this is already initialized
+	if (bOculusInit)
+	{
+		return;
+	}
+
+	bOculusInit = false;
+#if PLATFORM_WINDOWS
+	bOculusInit = InitWithWindowsPlatform();
+#elif PLATFORM_ANDROID
+	bOculusInit = InitWithAndroidPlatform();
+#endif
+	if (bOculusInit)
+	{
+		MessageTaskManager = MakeUnique<FOnlineMessageTaskManagerOculus>();
+		check(MessageTaskManager);
+
+		IdentityInterface = MakeShareable(new FOnlineIdentityOculus(*this));
+		AchievementsInterface = MakeShareable(new FOnlineAchievementsOculus(*this));
+		FriendsInterface = MakeShareable(new FOnlineFriendsOculus(*this));
+		SessionInterface = MakeShareable(new FOnlineSessionOculus(*this));
+		LeaderboardsInterface = MakeShareable(new FOnlineLeaderboardOculus(*this));
+		UserCloudInterface = MakeShareable(new FOnlineUserCloudOculus(*this));
+		VoiceInterface = MakeShareable(new FOnlineVoiceOculus(*this));
+		if (!VoiceInterface->Init())
+		{
+			VoiceInterface.Reset();
+		}
+
+#if WITH_EDITOR
+		// Within the editor, there is only the singleton Oculus OSS that hangs around
+		// Shutdown stops the ticker, but construction of the object starts the ticker.
+		// Since this hangs around, ensure that the ticker gets started in the editor when 
+		// we init.
+		if (!TickHandle.IsValid())
+		{
+			StartTicker();
+		}
+#endif
+	}
+	else
+	{
+		// Only do the parent shutdown since nothing else is setup and we don't want to do
+		// any LibOVRPlatform calls against an invalid or missing dll
+		FOnlineSubsystemImpl::Shutdown();
+	}
+	FCoreDelegates::InitOculusOSS.RemoveAll(this);
+	return;
+}
+
+void FOnlineSubsystemOculus::BoTak()
+{
+	//FCoreDelegates::InitOculusOSS.AddUObject(this, &FOnlineSubsystemOculus::InitWithFunction);
+	FCoreDelegates::InitOculusOSS.AddRaw(this, &FOnlineSubsystemOculus::InitWithFunction);
+}
+
 
 #if PLATFORM_WINDOWS
 bool FOnlineSubsystemOculus::InitWithWindowsPlatform() const

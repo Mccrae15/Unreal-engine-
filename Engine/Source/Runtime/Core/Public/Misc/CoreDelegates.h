@@ -474,6 +474,10 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FConfigReadyForUse);
 	static FConfigReadyForUse ConfigReadyForUse;
 
+	//** Carbon studio delegate to inint oculus subsystem
+	DECLARE_MULTICAST_DELEGATE(FInitOculusOSS);
+	static FInitOculusOSS InitOculusOSS;
+
 	/** Callback for notifications regarding changes of the rendering thread. */
 	DECLARE_MULTICAST_DELEGATE(FRenderingThreadChanged)
 

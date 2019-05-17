@@ -3,6 +3,7 @@
 #pragma once
 
 #include "OnlineSubsystem.h"
+#include "Misc/CoreDelegates.h"
 #include "OnlineSubsystemImpl.h"
 #include "OnlineSubsystemOculusPackage.h"
 #include "OnlineMessageTaskManagerOculus.h"
@@ -65,6 +66,12 @@ public:
 	virtual FString GetAppId() const override;
 	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 	virtual FText GetOnlineServiceName() const override;
+
+	UFUNCTION()
+	void InitWithFunction();
+
+	void BoTak();
+
 
 	// FTickerObjectBase
 
