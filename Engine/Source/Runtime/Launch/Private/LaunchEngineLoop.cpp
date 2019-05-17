@@ -2983,7 +2983,9 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 				}
 
 				// Now our shader code main library is opened, kick off the precompile, if already initialized
+				#if !PLATFORM_ANDROID
 				FShaderPipelineCache::OpenPipelineFileCache(GMaxRHIShaderPlatform);
+				#endif //PLATFORM_ANDROID
 			}
 		}
 
@@ -3987,6 +3989,19 @@ int32 FEngineLoop::Init()
 	{
 		SCOPED_BOOT_TIMING("GEngine->Start()");
 		GEngine->Start();
+		
+		// Now our shader code main library is opened, kick off the precompile.
+	//@POLYARC BEGIN
+	// On android, We can now start loading the pipeline cache file once the VR splash screen is up
+		UE_LOG(LogTemp, Warning, TEXT("GEngine->Start()"));
+#if PLATFORM_ANDROID
+		if (FPlatformProperties::RequiresCookedData())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("FShaderPipelineCache::OpenPipelineFileCache(GMaxRHIShaderPlatform)"));
+			FShaderPipelineCache::OpenPipelineFileCache(GMaxRHIShaderPlatform);
+		}
+#endif // !PLATFORM_ANDROID
+		//@POLYARC END
 	}
 
 	FEmbeddedCommunication::ForceTick(13);
