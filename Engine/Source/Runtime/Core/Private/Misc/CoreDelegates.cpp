@@ -187,6 +187,7 @@ FCoreDelegates::FConfigReadyForUse FCoreDelegates::ConfigReadyForUse;
 FCoreDelegates::FIsLoadingMovieCurrentlyPlaying FCoreDelegates::IsLoadingMovieCurrentlyPlaying;
 
 FCoreDelegates::FShouldLaunchUrl FCoreDelegates::ShouldLaunchUrl;
+FCoreDelegates::FInitOculusOSS FCoreDelegates::InitOculusOSS;
 
 FCoreDelegates::FOnGCFinishDestroyTimeExtended FCoreDelegates::OnGCFinishDestroyTimeExtended;
 
