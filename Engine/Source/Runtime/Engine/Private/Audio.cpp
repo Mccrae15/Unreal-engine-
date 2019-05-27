@@ -632,57 +632,62 @@ float FSoundSource::GetPlaybackPercent() const
 
 void FSoundSource::NotifyPlaybackData()
 {
-	const uint64 AudioComponentID = WaveInstance->ActiveSound->GetAudioComponentID();
-	if (AudioComponentID > 0)
+	if (WaveInstance)
 	{
-		const USoundWave* SoundWave = WaveInstance->WaveData;
 
-		if (WaveInstance->ActiveSound->bUpdatePlayPercentage)
+		const uint64 AudioComponentID = WaveInstance->ActiveSound->GetAudioComponentID();
+		if (AudioComponentID > 0)
 		{
-			const float PlaybackPercent = GetPlaybackPercent();
-			FAudioThread::RunCommandOnGameThread([AudioComponentID, SoundWave, PlaybackPercent]()
+			const USoundWave* SoundWave = WaveInstance->WaveData;
+
+			if (WaveInstance->ActiveSound->bUpdatePlayPercentage)
 			{
-				if (UAudioComponent* AudioComponent = UAudioComponent::GetAudioComponentFromID(AudioComponentID))
+				const float PlaybackPercent = GetPlaybackPercent();
+				FAudioThread::RunCommandOnGameThread([AudioComponentID, SoundWave, PlaybackPercent]()
 				{
-					if (AudioComponent->OnAudioPlaybackPercent.IsBound())
+					if (UAudioComponent* AudioComponent = UAudioComponent::GetAudioComponentFromID(AudioComponentID))
 					{
-						AudioComponent->OnAudioPlaybackPercent.Broadcast(SoundWave, PlaybackPercent);
-					}
+						if (AudioComponent->OnAudioPlaybackPercent.IsBound())
+						{
+							AudioComponent->OnAudioPlaybackPercent.Broadcast(SoundWave, PlaybackPercent);
+						}
 
-					if (AudioComponent->OnAudioPlaybackPercentNative.IsBound())
-					{
-						AudioComponent->OnAudioPlaybackPercentNative.Broadcast(AudioComponent, SoundWave, PlaybackPercent);
+						if (AudioComponent->OnAudioPlaybackPercentNative.IsBound())
+						{
+							AudioComponent->OnAudioPlaybackPercentNative.Broadcast(AudioComponent, SoundWave, PlaybackPercent);
+						}
 					}
-				}
-			});
-		}
+				});
+			}
 
-		if (WaveInstance->ActiveSound->bUpdateSingleEnvelopeValue)
-		{
-			const float EnvelopeValue = GetEnvelopeValue();
-			FAudioThread::RunCommandOnGameThread([AudioComponentID, SoundWave, EnvelopeValue]()
+			if (WaveInstance->ActiveSound->bUpdateSingleEnvelopeValue)
 			{
-				if (UAudioComponent* AudioComponent = UAudioComponent::GetAudioComponentFromID(AudioComponentID))
+				const float EnvelopeValue = GetEnvelopeValue();
+				FAudioThread::RunCommandOnGameThread([AudioComponentID, SoundWave, EnvelopeValue]()
 				{
-					if (AudioComponent->OnAudioSingleEnvelopeValue.IsBound())
+					if (UAudioComponent* AudioComponent = UAudioComponent::GetAudioComponentFromID(AudioComponentID))
 					{
-						AudioComponent->OnAudioSingleEnvelopeValue.Broadcast(SoundWave, EnvelopeValue);
-					}
+						if (AudioComponent->OnAudioSingleEnvelopeValue.IsBound())
+						{
+							AudioComponent->OnAudioSingleEnvelopeValue.Broadcast(SoundWave, EnvelopeValue);
+						}
 
-					if (AudioComponent->OnAudioSingleEnvelopeValueNative.IsBound())
-					{
-						AudioComponent->OnAudioSingleEnvelopeValueNative.Broadcast(AudioComponent, SoundWave, EnvelopeValue);
+						if (AudioComponent->OnAudioSingleEnvelopeValueNative.IsBound())
+						{
+							AudioComponent->OnAudioSingleEnvelopeValueNative.Broadcast(AudioComponent, SoundWave, EnvelopeValue);
+						}
 					}
-				}
-			});
+				});
+			}
+
+			// We do a broadcast from the active sound in this case, just update the envelope value of the wave instance here
+			if (WaveInstance->ActiveSound->bUpdateMultiEnvelopeValue)
+			{
+				const float EnvelopeValue = GetEnvelopeValue();
+				WaveInstance->SetEnvelopeValue(EnvelopeValue);
+			}
 		}
 
-		// We do a broadcast from the active sound in this case, just update the envelope value of the wave instance here
-		if (WaveInstance->ActiveSound->bUpdateMultiEnvelopeValue)
-		{
-			const float EnvelopeValue = GetEnvelopeValue();
-			WaveInstance->SetEnvelopeValue(EnvelopeValue);
-		}
 	}
 }
 
