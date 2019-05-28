@@ -144,28 +144,31 @@ void UPhysicalAnimationComponent::ApplyPhysicalAnimationProfileBelow(FName BodyN
 	UPhysicsAsset* PhysAsset = SkeletalMeshComponent ? SkeletalMeshComponent->GetPhysicsAsset() : nullptr;
 	if (PhysAsset && SkeletalMeshComponent)
 	{
-		TArray<FPhysicalAnimationData>& NewDriveData = DriveData;
-		bool bNeedsUpdating = false;
-		SkeletalMeshComponent->ForEachBodyBelow(BodyName, bIncludeSelf, /*bSkipCustomType=*/false, [bClearNotFound, ProfileName, PhysAsset, &NewDriveData, &bNeedsUpdating](const FBodyInstance* BI)
+		if (DriveData.Num() > 0)
 		{
-			if(USkeletalBodySetup* BodySetup = Cast<USkeletalBodySetup>(BI->BodySetup.Get()))
+			TArray<FPhysicalAnimationData>& NewDriveData = DriveData;
+			bool bNeedsUpdating = false;
+			SkeletalMeshComponent->ForEachBodyBelow(BodyName, bIncludeSelf, /*bSkipCustomType=*/false, [bClearNotFound, ProfileName, PhysAsset, &NewDriveData, &bNeedsUpdating](const FBodyInstance* BI)
 			{
-				const FName IterBodyName = PhysAsset->SkeletalBodySetups[BI->InstanceBodyIndex]->BoneName;
-				if(FPhysicalAnimationProfile* Profile = BodySetup->FindPhysicalAnimationProfile(ProfileName))
+				if (USkeletalBodySetup* BodySetup = Cast<USkeletalBodySetup>(BI->BodySetup.Get()))
 				{
-					bNeedsUpdating |= UpdatePhysicalAnimationSettings(IterBodyName, Profile->PhysicalAnimationData, NewDriveData, *PhysAsset);
+					const FName IterBodyName = PhysAsset->SkeletalBodySetups[BI->InstanceBodyIndex]->BoneName;
+					if (FPhysicalAnimationProfile* Profile = BodySetup->FindPhysicalAnimationProfile(ProfileName))
+					{
+						bNeedsUpdating |= UpdatePhysicalAnimationSettings(IterBodyName, Profile->PhysicalAnimationData, NewDriveData, *PhysAsset);
+					}
+					else if (bClearNotFound)
+					{
+						bNeedsUpdating |= UpdatePhysicalAnimationSettings(IterBodyName, FPhysicalAnimationData(), NewDriveData, *PhysAsset);
+					}
 				}
-				else if(bClearNotFound)
-				{
-					bNeedsUpdating |= UpdatePhysicalAnimationSettings(IterBodyName, FPhysicalAnimationData(), NewDriveData, *PhysAsset);
-				}
-			}
-			
-		});
 
-		if (bNeedsUpdating)
-		{
-			UpdatePhysicsEngine();
+			});
+
+			if (bNeedsUpdating)
+			{
+				UpdatePhysicsEngine();
+			}
 		}
 	}
 }
