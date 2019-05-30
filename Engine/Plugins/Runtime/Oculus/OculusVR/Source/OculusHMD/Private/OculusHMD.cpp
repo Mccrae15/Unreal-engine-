@@ -1408,6 +1408,19 @@ namespace OculusHMD
 		check(InOutSizeX != 0 && InOutSizeY != 0);
 	}
 
+	void FOculusHMD::AllocateEyeBuffer()
+	{
+		CheckInGameThread();
+
+		ExecuteOnRenderThread([&]()
+		{
+			InitializeEyeLayer_RenderThread(GetImmediateCommandList_ForRenderCommand());
+
+			const FTextureSetProxyPtr& TextureSetProxy = EyeLayer_RenderThread->GetTextureSetProxy();
+			UE_LOG(LogHMD, Log, TEXT("Allocating Oculus %d x %d rendertarget swapchain"), TextureSetProxy->GetTexture2D()->GetSizeX(), TextureSetProxy->GetTexture2D()->GetSizeY());
+		});
+		bNeedReAllocateViewportRenderTarget = true;
+	}
 
 	bool FOculusHMD::NeedReAllocateViewportRenderTarget(const FViewport& Viewport)
 	{
@@ -1437,10 +1450,6 @@ namespace OculusHMD
 
 		if (LayerMap[0].IsValid())
 		{
-			InitializeEyeLayer_RenderThread(GetImmediateCommandList_ForRenderCommand());
-
-			UE_LOG(LogHMD, Log, TEXT("Allocating Oculus %d x %d rendertarget swapchain"), SizeX, SizeY);
-
 			const FTextureSetProxyPtr& TextureSetProxy = EyeLayer_RenderThread->GetTextureSetProxy();
 
 			if (TextureSetProxy.IsValid())
@@ -2572,7 +2581,7 @@ namespace OculusHMD
 			// Flag if need to recreate render targets
 			if (!EyeLayer->CanReuseResources(EyeLayer_RenderThread.Get()))
 			{
-				bNeedReAllocateViewportRenderTarget = true;
+				AllocateEyeBuffer();
 			}
 		}
 	}

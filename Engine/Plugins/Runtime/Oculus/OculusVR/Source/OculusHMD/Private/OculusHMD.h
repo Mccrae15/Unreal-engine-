@@ -195,6 +195,7 @@ public:
 	virtual void UpdateViewportWidget(bool bUseSeparateRenderTarget, const class FViewport& Viewport, class SViewport* ViewportWidget) override;
 	virtual FXRRenderBridge* GetActiveRenderBridge_GameThread(bool bUseSeparateRenderTarget);
 
+	void AllocateEyeBuffer();
 	// IStereoLayers interface
 	virtual uint32 CreateLayer(const IStereoLayers::FLayerDesc& InLayerDesc) override;
 	virtual void DestroyLayer(uint32 LayerId) override;
