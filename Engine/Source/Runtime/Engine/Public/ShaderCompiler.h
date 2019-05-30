@@ -555,6 +555,11 @@ public:
 	 */
 	ENGINE_API void AddJobs(TArray<FShaderCommonCompileJob*>& NewJobs, bool bApplyCompletedShaderMapForRendering, bool bOptimizeForLowLatency, bool bRecreateComponentRenderStateOnCompletion);
 
+	/*
+	 * Removes all outstanding compile jobs
+	*/
+	ENGINE_API void CancelAllCompilations();
+
 	/**
 	* Removes all outstanding compile jobs for the passed shader maps.
 	*/

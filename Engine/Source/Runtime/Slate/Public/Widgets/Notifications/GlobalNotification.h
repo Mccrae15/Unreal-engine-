@@ -25,6 +25,11 @@ public:
 	void TickNotification(float DeltaTime);
 
 protected:
+	/*
+	 * Allows derived global notifcations to override the notification info setup in order to be more customizeable.
+	 */
+	virtual void OverrideNotifcationInfo(struct FNotificationInfo& OutInfo) const {};
+
 	/** 
 	 * Used to work out whether the notification should currently be visible
 	 * (causes BeginNotification, EndNotification, and SetNotificationText to be called at appropriate points) 
