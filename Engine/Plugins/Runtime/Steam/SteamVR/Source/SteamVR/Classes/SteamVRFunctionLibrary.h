@@ -70,4 +70,7 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "SteamVR")
 		static FString GetVersionString_2();
+
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+		static FString GetControllerName(int32 DeviceIndex);
 };
