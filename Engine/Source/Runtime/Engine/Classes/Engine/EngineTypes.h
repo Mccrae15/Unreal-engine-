@@ -53,7 +53,7 @@ namespace EBrowseReturnVal
 }
 
 /** Rules for attaching components - needs to be kept synced to EDetachmentRule */
-UENUM()
+UENUM(BlueprintType)
 enum class EAttachmentRule : uint8
 {
 	/** Keeps current relative transform as the relative transform to the new parent. */
@@ -155,7 +155,7 @@ struct ENGINE_API FDetachmentTransformRules
 };
 
 /** Deprecated rules for setting transform on attachment, new functions should use FAttachmentTransformRules isntead */
-UENUM()
+UENUM(BlueprintType)
 namespace EAttachLocation
 {
 	enum Type
@@ -3013,6 +3013,7 @@ namespace EEndPlayReason
 }
 
 DECLARE_DYNAMIC_DELEGATE(FTimerDynamicDelegate);
+DECLARE_DYNAMIC_DELEGATE_TwoParams(FActionFinished_2, AActor*, Actor, bool, Success);
 
 /** Unique handle that can be used to distinguish timers that have identical delegates. */
 USTRUCT(BlueprintType)
