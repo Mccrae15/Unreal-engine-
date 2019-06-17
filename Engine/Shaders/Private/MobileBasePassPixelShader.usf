@@ -658,8 +658,8 @@ void Main(
 	#else
 		OutColor.rgb = Color * VertexFog.a + VertexFog.rgb;
 
-		// Scene color alpha is not used yet so we set it to 0
-		OutColor.a = 0.0;
+		// Set alpha to 1 for opaque, overwrite with alternate values as needed
+		OutColor.a = 1.0;
 
 		#if OUTPUT_MOBILE_HDR 
 			if (GetHDR32bppEncodeMode() == HDR_ENCODE_NONE)
