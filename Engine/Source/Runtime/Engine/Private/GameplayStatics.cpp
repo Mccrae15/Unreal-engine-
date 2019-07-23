@@ -1,6 +1,7 @@
 // Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetMathLibrary.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/CustomVersion.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
@@ -2180,7 +2181,7 @@ bool UGameplayStatics::PredictProjectilePath(const UObject* WorldContextObject, 
 		FHitResult ChannelTraceHit(NoInit);
 		ObjectTraceHit.Time = 1.f;
 		ChannelTraceHit.Time = 1.f;
-
+		int ilerazy = 0;
 		const float MaxSimTime = PredictParams.MaxSimTime;
 		while (CurrentTime < MaxSimTime)
 		{
@@ -2195,6 +2196,8 @@ bool UGameplayStatics::PredictProjectilePath(const UObject* WorldContextObject, 
 			CurrentVel = OldVelocity + FVector(0.f, 0.f, GravityZ * ActualStepDeltaTime);
 			TraceEnd = TraceStart + (OldVelocity + CurrentVel) * (0.5f * ActualStepDeltaTime);
 			PredictResult.LastTraceDestination.Set(TraceEnd, CurrentVel, CurrentTime);
+			ilerazy++;
+			UE_LOG(LogTemp, Warning, TEXT("petla wypalila :%d razy"), ilerazy);
 
 			if (bTracePath)
 			{
@@ -2251,6 +2254,135 @@ bool UGameplayStatics::PredictProjectilePath(const UObject* WorldContextObject, 
 	return bBlockingHit;
 }
 
+// note: this will automatically fall back to line test if radius is small enough
+bool UGameplayStatics::PredictProjectilePathChaingingRadius(const UObject* WorldContextObject, const FPredictProjectilePathParams& PredictParams, FPredictProjectilePathResult& PredictResult, float minRadius, float maxRadius, float minDistance, float maxDistance)
+{
+	PredictResult.Reset();
+	bool bBlockingHit = false;
+
+	UWorld const* const World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (World && PredictParams.SimFrequency > KINDA_SMALL_NUMBER)
+	{
+		const float SubstepDeltaTime = 1.f / PredictParams.SimFrequency;
+		const float GravityZ = FMath::IsNearlyEqual(PredictParams.OverrideGravityZ, 0.0f) ? World->GetGravityZ() : PredictParams.OverrideGravityZ;
+		float ProjectileRadius = PredictParams.ProjectileRadius;
+
+		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(PredictProjectilePath), PredictParams.bTraceComplex);
+		FCollisionObjectQueryParams ObjQueryParams;
+		const bool bTraceWithObjectType = (PredictParams.ObjectTypes.Num() > 0);
+		const bool bTracePath = PredictParams.bTraceWithCollision && (PredictParams.bTraceWithChannel || bTraceWithObjectType);
+		if (bTracePath)
+		{
+			QueryParams.AddIgnoredActors(PredictParams.ActorsToIgnore);
+			if (bTraceWithObjectType)
+			{
+				for (auto Iter = PredictParams.ObjectTypes.CreateConstIterator(); Iter; ++Iter)
+				{
+					const ECollisionChannel& Channel = UCollisionProfile::Get()->ConvertToCollisionChannel(false, *Iter);
+					ObjQueryParams.AddObjectTypesToQuery(Channel);
+				}
+			}
+		}
+
+		FVector CurrentVel = PredictParams.LaunchVelocity;
+		FVector TraceStart = PredictParams.StartLocation;
+		FVector TraceEnd = TraceStart;
+		float CurrentTime = 0.f;
+		PredictResult.PathData.Reserve(FMath::Min(128, FMath::CeilToInt(PredictParams.MaxSimTime * PredictParams.SimFrequency)));
+		PredictResult.AddPoint(TraceStart, CurrentVel, CurrentTime);
+		FHitResult ObjectTraceHit(NoInit);
+		FHitResult ChannelTraceHit(NoInit);
+		ObjectTraceHit.Time = 1.f;
+		ChannelTraceHit.Time = 1.f;
+
+		float StartingRadius = ProjectileRadius;
+		FVector lastPosition;
+		float DistTraveled;
+		FVector TraceStartForCalc = PredictParams.StartLocation;
+
+		const float MaxSimTime = PredictParams.MaxSimTime;
+		while (CurrentTime < MaxSimTime)
+		{
+
+			lastPosition = PredictResult.PathData.Last().Location;
+			DistTraveled = FVector::Dist(TraceStartForCalc, lastPosition);
+
+			ProjectileRadius = UKismetMathLibrary::Lerp(minRadius, maxRadius, FMath::Clamp(UKismetMathLibrary::NormalizeToRange(DistTraveled, minDistance, maxDistance),0.f, 1.f));
+			UE_LOG(LogTemp, Warning, TEXT("Radius during tracing: %f"), ProjectileRadius);
+
+			// Limit step to not go further than total time.
+			const float PreviousTime = CurrentTime;
+			const float ActualStepDeltaTime = FMath::Min(MaxSimTime - CurrentTime, SubstepDeltaTime);
+			CurrentTime += ActualStepDeltaTime;
+
+			// Integrate (Velocity Verlet method)
+			TraceStart = TraceEnd;
+			FVector OldVelocity = CurrentVel;
+			CurrentVel = OldVelocity + FVector(0.f, 0.f, GravityZ * ActualStepDeltaTime);
+			TraceEnd = TraceStart + (OldVelocity + CurrentVel) * (0.5f * ActualStepDeltaTime);
+			PredictResult.LastTraceDestination.Set(TraceEnd, CurrentVel, CurrentTime);
+			
+			if (bTracePath)
+			{
+				bool bObjectHit = false;
+				bool bChannelHit = false;
+				if (bTraceWithObjectType)
+				{
+					bObjectHit = World->SweepSingleByObjectType(ObjectTraceHit, TraceStart, TraceEnd, FQuat::Identity, ObjQueryParams, FCollisionShape::MakeSphere(ProjectileRadius), QueryParams);
+				}
+				if (PredictParams.bTraceWithChannel)
+				{
+					bChannelHit = World->SweepSingleByChannel(ChannelTraceHit, TraceStart, TraceEnd, FQuat::Identity, PredictParams.TraceChannel, FCollisionShape::MakeSphere(ProjectileRadius), QueryParams);
+				}
+
+				// See if there were any hits.
+				if (bObjectHit || bChannelHit)
+				{
+					// Hit! We are done. Choose trace with earliest hit time.
+					PredictResult.HitResult = (ObjectTraceHit.Time < ChannelTraceHit.Time) ? ObjectTraceHit : ChannelTraceHit;
+					const float HitTimeDelta = ActualStepDeltaTime * PredictResult.HitResult.Time;
+					const float TotalTimeAtHit = PreviousTime + HitTimeDelta;
+					const FVector VelocityAtHit = OldVelocity + FVector(0.f, 0.f, GravityZ * HitTimeDelta);
+					PredictResult.AddPoint(PredictResult.HitResult.Location, VelocityAtHit, TotalTimeAtHit);
+					bBlockingHit = true;
+					break;
+				}
+			}
+			
+			PredictResult.AddPoint(TraceEnd, CurrentVel, CurrentTime);
+		}
+
+		// Draw debug path
+#if ENABLE_DRAW_DEBUG
+		if (PredictParams.DrawDebugType != EDrawDebugTrace::None)
+		{
+			const bool bPersistent = PredictParams.DrawDebugType == EDrawDebugTrace::Persistent;
+			const float LifeTime = (PredictParams.DrawDebugType == EDrawDebugTrace::ForDuration) ? PredictParams.DrawDebugTime : 0.f;
+			float DrawRadius = (ProjectileRadius > 0.f) ? ProjectileRadius : 5.f;
+			ProjectileRadius = StartingRadius;
+			// draw the path
+			for (const FPredictProjectilePathPointData& PathPt : PredictResult.PathData)
+			{
+				lastPosition = PathPt.Location;
+				DistTraveled = FVector::Dist(TraceStartForCalc, lastPosition);
+				ProjectileRadius = UKismetMathLibrary::Lerp(minRadius, maxRadius, FMath::Clamp(UKismetMathLibrary::NormalizeToRange(DistTraveled, minDistance, maxDistance), 0.f, 1.f));
+				UE_LOG(LogTemp, Warning, TEXT("Radius during debug drawing: %f "), ProjectileRadius);
+				::DrawDebugSphere(World, PathPt.Location, ProjectileRadius, 12, FColor::Green, bPersistent, LifeTime);
+			}
+			// draw the impact point
+			if (bBlockingHit)
+			{
+				lastPosition = PredictResult.HitResult.Location;
+				DistTraveled = FVector::Dist(TraceStartForCalc, lastPosition);
+				ProjectileRadius = UKismetMathLibrary::Lerp(minRadius, maxRadius, FMath::Clamp(UKismetMathLibrary::NormalizeToRange(DistTraveled, minDistance, maxDistance), 0.f, 1.f));
+				::DrawDebugSphere(World, PredictResult.HitResult.Location, ProjectileRadius + 1.0f, 12, FColor::Red, bPersistent, LifeTime);
+			}
+		}
+#endif //ENABLE_DRAW_DEBUG
+	}
+
+	return bBlockingHit;
+}
 
 // TODO: Deprecated, remove
 bool UGameplayStatics::PredictProjectilePath(
@@ -2384,6 +2516,52 @@ bool UGameplayStatics::Blueprint_PredictProjectilePath_ByTraceChannel(
 	return bHit;
 }
 
+// BP wrapper to general-purpose function.
+bool UGameplayStatics::Blueprint_PredictProjectilePath_ByTraceChannel_ChaingingRadius(
+	const UObject* WorldContextObject,
+	FHitResult& OutHit,
+	TArray<FVector>& OutPathPositions,
+	FVector& OutLastTraceDestination,
+	FVector StartPos,
+	FVector LaunchVelocity,
+	bool bTracePath,
+	TEnumAsByte<ECollisionChannel> TraceChannel,
+	bool bTraceComplex,
+	const TArray<AActor*>& ActorsToIgnore,
+	EDrawDebugTrace::Type DrawDebugType,
+	float DrawDebugTime,
+	float SimFrequency,
+	float MaxSimTime,
+	float OverrideGravityZ,
+	float minRadius,
+	float maxRadius,
+	float minDistance,
+	float maxDistance)
+{
+	FPredictProjectilePathParams Params = FPredictProjectilePathParams(minRadius, StartPos, LaunchVelocity, MaxSimTime);
+	Params.bTraceWithCollision = bTracePath;
+	Params.bTraceComplex = bTraceComplex;
+	Params.ActorsToIgnore = ActorsToIgnore;
+	Params.DrawDebugType = DrawDebugType;
+	Params.DrawDebugTime = DrawDebugTime;
+	Params.SimFrequency = SimFrequency;
+	Params.OverrideGravityZ = OverrideGravityZ;
+	Params.TraceChannel = TraceChannel; // Trace by channel
+
+	// Do the trace
+	FPredictProjectilePathResult PredictResult;
+	bool bHit = PredictProjectilePathChaingingRadius(WorldContextObject, Params, PredictResult, minRadius,  maxRadius, minDistance, maxDistance);
+
+	// Fill in results.
+	OutHit = PredictResult.HitResult;
+	OutLastTraceDestination = PredictResult.LastTraceDestination.Location;
+	OutPathPositions.Empty(PredictResult.PathData.Num());
+	for (const FPredictProjectilePathPointData& PathPoint : PredictResult.PathData)
+	{
+		OutPathPositions.Add(PathPoint.Location);
+	}
+	return bHit;
+}
 
 bool UGameplayStatics::SuggestProjectileVelocity_CustomArc(const UObject* WorldContextObject, FVector& OutLaunchVelocity, FVector StartPos, FVector EndPos, float OverrideGravityZ /*= 0*/, float ArcParam /*= 0.5f */)
 {

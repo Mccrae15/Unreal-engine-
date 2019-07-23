@@ -1109,6 +1109,19 @@ FString FSteamVRHMD::GetVersionString() const
 	return FString::Printf(TEXT("%s, Driver: %s, Serial: %s, HMD Device: %s %s, Driver version: %s"), *FEngineVersion::Current().ToString(), *DriverId, *Serial, *Manufacturer, *Model, *DriverVersion);
 }
 
+FString FSteamVRHMD::GetControllerName(uint32 DeviceIndex) const
+{
+	if (VRSystem == nullptr)
+	{
+		return FString();
+	}
+
+	const FString Model = GetFStringTrackedDeviceProperty(VRSystem, DeviceIndex, vr::Prop_ModelNumber_String);
+
+	return FString::Printf(TEXT("%s"), *Model);
+
+}
+
 bool FSteamVRHMD::OnStartGameFrame(FWorldContext& WorldContext)
 {
 	static const double kShutdownTimeout = 4.0; // How many seconds to allow the renderer to exit stereo mode before shutting down the VR subsystem

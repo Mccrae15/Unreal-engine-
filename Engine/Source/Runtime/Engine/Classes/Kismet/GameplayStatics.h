@@ -988,6 +988,33 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Game", DisplayName="Predict Projectile Path By TraceChannel", meta = (WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", AdvancedDisplay = "DrawDebugTime, DrawDebugType, SimFrequency, MaxSimTime, OverrideGravityZ", TraceChannel = ECC_WorldDynamic, bTracePath = true))
 	static bool Blueprint_PredictProjectilePath_ByTraceChannel(const UObject* WorldContextObject, FHitResult& OutHit, TArray<FVector>& OutPathPositions, FVector& OutLastTraceDestination, FVector StartPos, FVector LaunchVelocity, bool bTracePath, float ProjectileRadius, TEnumAsByte<ECollisionChannel> TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, float DrawDebugTime, float SimFrequency = 15.f, float MaxSimTime = 2.f, float OverrideGravityZ = 0);
+	
+	//CARBON STUDIO CUSTOM FUNCTIONALITY (MADE BY ŁUKASZ PANDER)
+	/** 
+	* Predict the arc of a virtual projectile affected by gravity with collision checks along the arc. Returns a list of positions of the simulated arc and the destination reached by the simulation.
+	* Returns true if it hit something (if tracing with collision).
+	*
+	* @param OutPathPositions			Predicted projectile path. Ordered series of positions from StartPos to the end. Includes location at point of impact if it hit something.
+	* @param OutHit						Predicted hit result, if the projectile will hit something
+	* @param OutLastTraceDestination	Goal position of the final trace it did. Will not be in the path if there is a hit.
+	* @param StartPos					First start trace location
+	* @param LaunchVelocity				Velocity the "virtual projectile" is launched at
+	* @param bTracePath					Trace along the entire path to look for blocking hits
+	* @param ProjectileRadius			Radius of the virtual projectile to sweep against the environment
+	* @param TraceChannel				TraceChannel to trace against, if bTracePath is true.
+	* @param bTraceComplex				Use TraceComplex (trace against triangles not primitives)
+	* @param ActorsToIgnore				Actors to exclude from the traces
+	* @param DrawDebugType				Debug type (one-frame, duration, persistent)
+	* @param DrawDebugTime				Duration of debug lines (only relevant for DrawDebugType::Duration)
+	* @param SimFrequency				Determines size of each sub-step in the simulation (chopping up MaxSimTime)
+	* @param MaxSimTime					Maximum simulation time for the virtual projectile.
+	* @param OverrideGravityZ			Optional override of Gravity (if 0, uses WorldGravityZ)
+	* @return							True if hit something along the path (if tracing with collision).
+	*/
+	
+	UFUNCTION(BlueprintCallable, Category = "Game", DisplayName = "Predict Projectile Path By TraceChannel ChaingingRadius", meta = (WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", AdvancedDisplay = "DrawDebugTime, DrawDebugType, SimFrequency, MaxSimTime, OverrideGravityZ", TraceChannel = ECC_WorldDynamic, bTracePath = true))
+		static bool Blueprint_PredictProjectilePath_ByTraceChannel_ChaingingRadius(const UObject* WorldContextObject, FHitResult& OutHit, TArray<FVector>& OutPathPositions, FVector& OutLastTraceDestination, FVector StartPos, FVector LaunchVelocity, bool bTracePath, TEnumAsByte<ECollisionChannel> TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, float DrawDebugTime, float SimFrequency = 15.f, float MaxSimTime = 2.f, float OverrideGravityZ = 0, float minRadius = 0.f, float maxRadius = 0.f, float minDistance = 0.f, float maxDistance = 0.f);
+
 
 	/**
 	* Predict the arc of a virtual projectile affected by gravity with collision checks along the arc.
@@ -998,6 +1025,17 @@ public:
 	* @return							True if hit something along the path (if tracing with collision).
 	*/
 	static bool PredictProjectilePath(const UObject* WorldContextObject, const FPredictProjectilePathParams& PredictParams, FPredictProjectilePathResult& PredictResult);
+
+	//CARBON STUDIO CUSTOM FUNCTIONALITY (MADE BY ŁUKASZ PANDER)
+	/**
+	* Predict the arc of a virtual projectile affected by gravity with collision checks along the arc with sphere radius chainging in steps.
+	* Returns true if it hit something.
+	*
+	* @param PredictParams				Input params to the trace (start location, velocity, time to simulate, etc).
+	* @param PredictResult				Output result of the trace (Hit result, array of location/velocity/times for each trace step, etc).
+	* @return							True if hit something along the path (if tracing with collision).
+	*/
+	static bool PredictProjectilePathChaingingRadius(const UObject* WorldContextObject, const FPredictProjectilePathParams& PredictParams, FPredictProjectilePathResult& PredictResult, float minRadius, float maxRadius , float minDistance , float maxDistance);
 
 	/**
 	* Deprecated version, use version with input/output struct params instead.
