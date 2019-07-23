@@ -1109,6 +1109,15 @@ void FSteamVRHMD::OnEndPlay(FWorldContext& InWorldContext)
 
 const FName FSteamVRHMD::SteamSystemName(TEXT("SteamVR"));
 
+FString  FSteamVRHMD::GetHMDModel() const
+{
+	if (VRSystem == nullptr)
+	{
+		return FString();
+	}
+
+	return GetFStringTrackedDeviceProperty(VRSystem, vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_ModelNumber_String);
+}
 FString FSteamVRHMD::GetVersionString() const
 {
 	if (VRSystem == nullptr)
@@ -1123,6 +1132,19 @@ FString FSteamVRHMD::GetVersionString() const
 	const FString DriverVersion = GetFStringTrackedDeviceProperty(VRSystem, vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_DriverVersion_String);
 
 	return FString::Printf(TEXT("%s, Driver: %s, Serial: %s, HMD Device: %s %s, Driver version: %s"), *FEngineVersion::Current().ToString(), *DriverId, *Serial, *Manufacturer, *Model, *DriverVersion);
+}
+
+FString FSteamVRHMD::GetControllerName(uint32 DeviceIndex) const
+{
+	if (VRSystem == nullptr)
+	{
+		return FString();
+	}
+
+	const FString Model = GetFStringTrackedDeviceProperty(VRSystem, DeviceIndex, vr::Prop_ModelNumber_String);
+
+	return FString::Printf(TEXT("%s"), *Model);
+
 }
 
 bool FSteamVRHMD::OnStartGameFrame(FWorldContext& WorldContext)
@@ -1297,7 +1319,7 @@ void FSteamVRHMD::SetBaseRotation(const FRotator& BaseRot)
 }
 FRotator FSteamVRHMD::GetBaseRotation() const
 {
-	return FRotator::ZeroRotator;
+	return FSteamVRHMD::GetBaseOrientation().Rotator();
 }
 
 void FSteamVRHMD::SetBaseOrientation(const FQuat& BaseOrient)
@@ -1911,7 +1933,7 @@ static void SetupHiddenAreaMeshes(vr::IVRSystem* const VRSystem, FHMDViewMesh Re
 	const vr::HiddenAreaMesh_t RightEyeMesh = VRSystem->GetHiddenAreaMesh(vr::Hmd_Eye::Eye_Right, MeshType);
 
 	const uint32 VertexCount = LeftEyeMesh.unTriangleCount * 3;
-	check(LeftEyeMesh.unTriangleCount == RightEyeMesh.unTriangleCount);
+	//check(LeftEyeMesh.unTriangleCount == RightEyeMesh.unTriangleCount);
 
 	// Copy mesh data from SteamVR format to ours, then initialize the meshes.
 	if (VertexCount > 0)

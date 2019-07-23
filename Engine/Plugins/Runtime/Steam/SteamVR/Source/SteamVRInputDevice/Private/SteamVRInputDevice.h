@@ -356,6 +356,9 @@ public:
 	/** Device identifier used to check for class validity */
 	int32 DeviceSignature = 2019;
 
+
+	int32 GetDeviceSignature() { return DeviceSignature; }
+
 private:
 	/** 
 	 * Generate the controller bindings for SteamVR supported controllers
