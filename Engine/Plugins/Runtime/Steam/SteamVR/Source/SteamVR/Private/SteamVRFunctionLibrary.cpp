@@ -101,3 +101,16 @@ bool USteamVRFunctionLibrary::GetHandPositionAndOrientation(int32 ControllerInde
 
 	return RetVal;
 }
+
+FString USteamVRFunctionLibrary::GetControllerName(int32 DeviceIndex)
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetControllerName(DeviceIndex);
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FString();
+}
