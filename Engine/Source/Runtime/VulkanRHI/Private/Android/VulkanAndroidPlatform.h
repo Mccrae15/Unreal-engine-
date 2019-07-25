@@ -70,7 +70,7 @@ public:
 	static EPixelFormat GetPixelFormatForNonDefaultSwapchain();
 
 	static bool SupportsDepthFetchDuringDepthTest() { return true; }
-	static bool SupportsTimestampRenderQueries() { return false; }
+	static bool SupportsTimestampRenderQueries();
 
 	static bool RequiresMobileRenderer() { return true; }
 	static void OverridePlatformHandlers(bool bInit);

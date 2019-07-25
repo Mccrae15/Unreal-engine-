@@ -367,14 +367,10 @@ void FTransitionAndLayoutManager::BeginRealRenderPass(FVulkanCommandListContext&
 			ClearValues[ClearValueIndex].depthStencil.depth = Depth;
 			ClearValues[ClearValueIndex].depthStencil.stencil = Stencil;
 			++ClearValueIndex;
-			if (Surface.GetNumSamples() > 1)
-			{
-				++ClearValueIndex;
-			}
 		}
 	}
 
-	ensure(ClearValueIndex <= RenderPass->GetNumUsedClearValues());
+	ensure(ClearValueIndex <=  RenderPass->GetNumUsedClearValues());
 
 	Barrier.Execute(CmdBuffer);
 
@@ -693,9 +689,11 @@ void FVulkanCommandListContext::RHICopyToResolveTarget(FTextureRHIParamRef Sourc
 	};
 
 	FRHITexture2D* SourceTexture2D = SourceTextureRHI->GetTexture2D();
+	FRHITexture2DArray* SourceTexture2DArray = SourceTextureRHI->GetTexture2DArray();
 	FRHITexture3D* SourceTexture3D = SourceTextureRHI->GetTexture3D();
 	FRHITextureCube* SourceTextureCube = SourceTextureRHI->GetTextureCube();
 	FRHITexture2D* DestTexture2D = DestTextureRHI->GetTexture2D();
+	FRHITexture2DArray* DestTexture2DArray = DestTextureRHI->GetTexture2DArray();
 	FRHITexture3D* DestTexture3D = DestTextureRHI->GetTexture3D();
 	FRHITextureCube* DestTextureCube = DestTextureRHI->GetTextureCube();
 	FVulkanCmdBuffer* CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
@@ -736,6 +734,15 @@ void FVulkanCommandListContext::RHICopyToResolveTarget(FTextureRHIParamRef Sourc
 			CopyImage(TransitionAndLayoutManager, CmdBuffer, VulkanSourceTexture->Surface, VulkanDestTexture->Surface, 1, 1, InResolveParams);
 		}
 	}
+	else if (SourceTexture2DArray && DestTexture2DArray)
+	{
+		FVulkanTexture2DArray* VulkanSourceTexture = (FVulkanTexture2DArray*)SourceTexture2DArray;
+		FVulkanTexture2DArray* VulkanDestTexture = (FVulkanTexture2DArray*)DestTexture2DArray;
+		if (VulkanSourceTexture->Surface.Image != VulkanDestTexture->Surface.Image)
+		{
+			CopyImage(TransitionAndLayoutManager, CmdBuffer, VulkanSourceTexture->Surface, VulkanDestTexture->Surface, VulkanDestTexture->GetSizeZ(), VulkanSourceTexture->GetSizeZ(), InResolveParams);
+		}
+	} 
 	else 
 	{
 		checkf(false, TEXT("Using unsupported Resolve combination"));
@@ -766,7 +773,7 @@ void FVulkanDynamicRHI::RHIReadSurfaceData(FTextureRHIParamRef TextureRHI, FIntR
 	ensure(Texture2D->Surface.StorageFormat == VK_FORMAT_R8G8B8A8_UNORM || Texture2D->Surface.StorageFormat == VK_FORMAT_B8G8R8A8_UNORM || Texture2D->Surface.StorageFormat == VK_FORMAT_R16G16B16A16_SFLOAT || Texture2D->Surface.StorageFormat == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || Texture2D->Surface.StorageFormat == VK_FORMAT_R16G16B16A16_UNORM);
 	const bool bIs8Bpp = (Texture2D->Surface.StorageFormat == VK_FORMAT_R16G16B16A16_SFLOAT);
 	const uint32 Size = NumPixels * sizeof(FColor) * (bIs8Bpp ? 2 : 1);
-	VulkanRHI::FStagingBuffer* StagingBuffer = Device->GetStagingManager().AcquireBuffer(Size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+	VulkanRHI::FStagingBuffer* StagingBuffer = Device->GetStagingManager().AcquireBuffer(Size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, ECPUReadType::NonConcurrent);
 	if (GIgnoreCPUReads == 0)
 	{
 		VkBufferImageCopy CopyRegion;
@@ -953,7 +960,7 @@ void FVulkanDynamicRHI::RHIMapStagingSurface(FTextureRHIParamRef TextureRHI,void
 	OutHeight = Texture2D->GetSizeY();
 
 	uint32 BufferSize = OutWidth * OutHeight * VulkanRHI::GetNumBitsPerPixel(Texture2D->Surface.ViewFormat) / 8;
-	VulkanRHI::FStagingBuffer* StagingBuffer = Device->GetStagingManager().AcquireBuffer(BufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+	VulkanRHI::FStagingBuffer* StagingBuffer = Device->GetStagingManager().AcquireBuffer(BufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, ECPUReadType::NonConcurrent);
 	*StagingBufferPtr = StagingBuffer;
 
 	Device->PrepareForCPURead(); //make sure the results are ready 
@@ -1030,7 +1037,7 @@ void FVulkanDynamicRHI::RHIReadSurfaceFloatData(FTextureRHIParamRef TextureRHI, 
 
 		uint32 NumPixels = (Surface.Width >> InMipIndex) * (Surface.Height >> InMipIndex);
 		const uint32 Size = NumPixels * sizeof(FFloat16Color);
-		VulkanRHI::FStagingBuffer* StagingBuffer = InDevice->GetStagingManager().AcquireBuffer(Size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+		VulkanRHI::FStagingBuffer* StagingBuffer = InDevice->GetStagingManager().AcquireBuffer(Size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, ECPUReadType::NonConcurrent);
 
 		if (GIgnoreCPUReads == 0)
 		{
@@ -1171,7 +1178,7 @@ void FVulkanDynamicRHI::RHIRead3DSurfaceFloatData(FTextureRHIParamRef TextureRHI
 
 	ensure(Surface.StorageFormat == VK_FORMAT_R16G16B16A16_SFLOAT);
 
-	VulkanRHI::FStagingBuffer* StagingBuffer = Device->GetStagingManager().AcquireBuffer(Size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+	VulkanRHI::FStagingBuffer* StagingBuffer = Device->GetStagingManager().AcquireBuffer(Size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, ECPUReadType::NonConcurrent);
 	if (GIgnoreCPUReads == 0)
 	{
 		VkBufferImageCopy CopyRegion;
@@ -1767,9 +1774,10 @@ struct FRenderPassCompatibleHashableStruct
 	}
 
 	uint8						NumAttachments;
+	uint8						bIsMultiview;
 	uint8						NumSamples;
-	// +1 for DepthStencil
-	VkFormat					Formats[MaxSimultaneousRenderTargets + 1];
+	// +1 for DepthStencil, +1 for Fragment Density
+	VkFormat					Formats[MaxSimultaneousRenderTargets + 2];
 };
 
 // Need a separate struct so we can memzero/remove dependencies on reference counts
@@ -1780,14 +1788,14 @@ struct FRenderPassFullHashableStruct
 		FMemory::Memzero(*this);
 	}
 
-	// +1 for Depth, +1 for Stencil
-	TEnumAsByte<VkAttachmentLoadOp>		LoadOps[MaxSimultaneousRenderTargets + 2];
-	TEnumAsByte<VkAttachmentStoreOp>	StoreOps[MaxSimultaneousRenderTargets + 2];
+	// +1 for Depth, +1 for Stencil, +1 for Fragment Density
+	TEnumAsByte<VkAttachmentLoadOp>		LoadOps[MaxSimultaneousRenderTargets + 3];
+	TEnumAsByte<VkAttachmentStoreOp>	StoreOps[MaxSimultaneousRenderTargets + 3];
 #if VULKAN_USE_REAL_RENDERPASS_COMPATIBILITY
 	// If the initial != final we need to add FinalLayout and potentially RefLayout
-	VkImageLayout						InitialLayout[MaxSimultaneousRenderTargets + 1];
-	//VkImageLayout						FinalLayout[MaxSimultaneousRenderTargets + 1];
-	//VkImageLayout						RefLayout[MaxSimultaneousRenderTargets + 1];
+	VkImageLayout						InitialLayout[MaxSimultaneousRenderTargets + 2];
+	//VkImageLayout						FinalLayout[MaxSimultaneousRenderTargets + 2];
+	//VkImageLayout						RefLayout[MaxSimultaneousRenderTargets + 2];
 #endif
 };
 
@@ -1797,11 +1805,14 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 	, NumColorAttachments(0)
 	, bHasDepthStencil(false)
 	, bHasResolveAttachments(false)
+	, bHasFragmentDensityAttachment(false)
 	, NumSamples(0)
 	, NumUsedClearValues(0)
+	, bIsMultiView(0)
 {
 	FMemory::Memzero(ColorReferences);
 	FMemory::Memzero(DepthStencilReference);
+	FMemory::Memzero(FragmentDensityReference);
 	FMemory::Memzero(ResolveReferences);
 	FMemory::Memzero(InputAttachments);
 	FMemory::Memzero(Desc);
@@ -1834,11 +1845,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 				Extent.Extent3D.depth = Texture->Surface.Depth;
 			}
 
-#if VULKAN_USE_MSAA_RESOLVE_ATTACHMENTS
-			FVulkanSurface* Surface = Texture->MSAASurface ? Texture->MSAASurface : &Texture->Surface;
-#else
 			FVulkanSurface* Surface = &Texture->Surface;
-#endif
 
 			ensure(!NumSamples || NumSamples == Surface->GetNumSamples());
 			NumSamples = Surface->GetNumSamples();
@@ -1858,12 +1865,14 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 
 			ColorReferences[NumColorAttachments].attachment = NumAttachmentDescriptions;
 			ColorReferences[NumColorAttachments].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			if (CurrDesc.samples > VK_SAMPLE_COUNT_1_BIT)
+
+			if (CurrDesc.samples > VK_SAMPLE_COUNT_1_BIT && RTInfo.bHasResolveAttachments && RTInfo.ColorResolveRenderTarget[Index].Texture)
 			{
 				Desc[NumAttachmentDescriptions + 1] = Desc[NumAttachmentDescriptions];
 				Desc[NumAttachmentDescriptions + 1].samples = VK_SAMPLE_COUNT_1_BIT;
+				Desc[NumAttachmentDescriptions + 1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 				ResolveReferences[NumColorAttachments].attachment = NumAttachmentDescriptions + 1;
-				ResolveReferences[NumColorAttachments].layout = VK_IMAGE_LAYOUT_GENERAL;
+				ResolveReferences[NumColorAttachments].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 				++NumAttachmentDescriptions;
 				bHasResolveAttachments = true;
 			}
@@ -1889,11 +1898,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 		FVulkanTextureBase* Texture = FVulkanTextureBase::Cast(RTInfo.DepthStencilRenderTarget.Texture);
 		check(Texture);
 
-#if VULKAN_USE_MSAA_RESOLVE_ATTACHMENTS
-		FVulkanSurface* Surface = Texture->MSAASurface ? Texture->MSAASurface : &Texture->Surface;
-#else
 		FVulkanSurface* Surface = &Texture->Surface;
-#endif
 		ensure(!NumSamples || NumSamples == Surface->GetNumSamples());
 		NumSamples = Surface->GetNumSamples();
 
@@ -1957,11 +1962,46 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 			bSetExtent = true;
 			Extent.Extent3D.width = Texture->Surface.Width;
 			Extent.Extent3D.height = Texture->Surface.Height;
-			Extent.Extent3D.depth = 1;
+			Extent.Extent3D.depth = Texture->Surface.NumArrayLevels;
 		}
 	}
 
+	if (RTInfo.VariableResolutionTexture && InDevice.GetOptionalExtensions().HasEXTFragmentDensityMap)
+	{
+		FVulkanTextureBase* Texture = FVulkanTextureBase::Cast(RTInfo.VariableResolutionTexture);
+		check(Texture);
+
+		VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
+		FMemory::Memzero(CurrDesc);
+
+		const VkImageLayout FragmentDensityLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+
+		CurrDesc.flags = 0;
+		CurrDesc.format = UEToVkTextureFormat(RTInfo.VariableResolutionTexture->GetFormat(), false);
+		CurrDesc.samples = static_cast<VkSampleCountFlagBits>(RTInfo.VariableResolutionTexture->GetNumSamples());
+		CurrDesc.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		CurrDesc.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		CurrDesc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		CurrDesc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		CurrDesc.initialLayout = FragmentDensityLayout;
+		CurrDesc.finalLayout = FragmentDensityLayout;
+
+		FragmentDensityReference.attachment = NumAttachmentDescriptions;
+		FragmentDensityReference.layout = FragmentDensityLayout;
+
+		FullHashInfo.LoadOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilLoadOp;
+		FullHashInfo.StoreOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilStoreOp;
+#if VULKAN_USE_REAL_RENDERPASS_COMPATIBILITY
+		FullHashInfo.InitialLayout[MaxSimultaneousRenderTargets + 1] = FragmentDensityLayout;
+#endif
+		CompatibleHashInfo.Formats[MaxSimultaneousRenderTargets + 1] = CurrDesc.format;
+
+		++NumAttachmentDescriptions;
+		bHasFragmentDensityAttachment = true;
+	}
+
 	CompatibleHashInfo.NumSamples = NumSamples;
+	CompatibleHashInfo.bIsMultiview = bIsMultiView;
 
 	RenderPassCompatibleHash = FCrc::MemCrc32(&CompatibleHashInfo, sizeof(CompatibleHashInfo));
 	RenderPassFullHash = FCrc::MemCrc32(&FullHashInfo, sizeof(FullHashInfo), RenderPassCompatibleHash);
@@ -1975,11 +2015,14 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 	, NumColorAttachments(0)
 	, bHasDepthStencil(false)
 	, bHasResolveAttachments(false)
+	, bHasFragmentDensityAttachment(false)
 	, NumSamples(0)
 	, NumUsedClearValues(0)
+	, bIsMultiView(RPInfo.bMultiviewPass)
 {
 	FMemory::Memzero(ColorReferences);
 	FMemory::Memzero(DepthStencilReference);
+	FMemory::Memzero(FragmentDensityReference);
 	FMemory::Memzero(ResolveReferences);
 	FMemory::Memzero(InputAttachments);
 	FMemory::Memzero(Desc);
@@ -1990,6 +2033,8 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 
 	bool bSetExtent = false;
 	bool bFoundClearOp = false;
+	bool bMultiviewRenderTargets = false;
+
 	int32 NumColorRenderTargets = RPInfo.GetNumColorRenderTargets();
 	for (int32 Index = 0; Index < NumColorRenderTargets; ++Index)
 	{
@@ -2014,6 +2059,9 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 		ensure(!NumSamples || NumSamples == ColorEntry.RenderTarget->GetNumSamples());
 		NumSamples = ColorEntry.RenderTarget->GetNumSamples();
 
+		ensure( !bMultiviewRenderTargets || Texture->Surface.NumArrayLevels > 1 );
+		bMultiviewRenderTargets = Texture->Surface.NumArrayLevels > 1;
+
 		VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
 		CurrDesc.samples = static_cast<VkSampleCountFlagBits>(NumSamples);
 		CurrDesc.format = UEToVkTextureFormat(ColorEntry.RenderTarget->GetFormat(), (Texture->Surface.UEFlags & TexCreate_SRGB) == TexCreate_SRGB);
@@ -2029,10 +2077,12 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 
 		ColorReferences[NumColorAttachments].attachment = NumAttachmentDescriptions;
 		ColorReferences[NumColorAttachments].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		if (CurrDesc.samples > VK_SAMPLE_COUNT_1_BIT)
+
+		if (CurrDesc.samples > VK_SAMPLE_COUNT_1_BIT && ColorEntry.ResolveTarget)
 		{
 			Desc[NumAttachmentDescriptions + 1] = Desc[NumAttachmentDescriptions];
 			Desc[NumAttachmentDescriptions + 1].samples = VK_SAMPLE_COUNT_1_BIT;
+			Desc[NumAttachmentDescriptions + 1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 			ResolveReferences[NumColorAttachments].attachment = NumAttachmentDescriptions + 1;
 			ResolveReferences[NumColorAttachments].layout = VK_IMAGE_LAYOUT_GENERAL;
 			++NumAttachmentDescriptions;
@@ -2106,6 +2156,9 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 
 		bHasDepthStencil = true;
 
+		ensure(!bMultiviewRenderTargets || Texture->Surface.NumArrayLevels > 1);
+		bMultiviewRenderTargets = Texture->Surface.NumArrayLevels > 1;
+
 		if (bSetExtent)
 		{
 			// Depth can be greater or equal to color
@@ -2117,11 +2170,51 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 			bSetExtent = true;
 			Extent.Extent3D.width = Texture->Surface.Width;
 			Extent.Extent3D.height = Texture->Surface.Height;
-			Extent.Extent3D.depth = 1;
+			Extent.Extent3D.depth = Texture->Surface.NumArrayLevels;
 		}
 	}
 
+	if (RPInfo.VariableResolutionTexture && InDevice.GetOptionalExtensions().HasEXTFragmentDensityMap)
+	{
+		FVulkanTextureBase* Texture = FVulkanTextureBase::Cast(RPInfo.VariableResolutionTexture);
+		check(Texture);
+
+		VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
+		FMemory::Memzero(CurrDesc);
+
+		const VkImageLayout FragmentDensityLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+
+		CurrDesc.flags = 0;
+		CurrDesc.format = UEToVkTextureFormat(RPInfo.VariableResolutionTexture->GetFormat(), false);
+		CurrDesc.samples = static_cast<VkSampleCountFlagBits>(RPInfo.VariableResolutionTexture->GetNumSamples());
+		CurrDesc.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		CurrDesc.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		CurrDesc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		CurrDesc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		CurrDesc.initialLayout = FragmentDensityLayout;
+		CurrDesc.finalLayout = FragmentDensityLayout;
+
+		FragmentDensityReference.attachment = NumAttachmentDescriptions;
+		FragmentDensityReference.layout = FragmentDensityLayout;
+
+		FullHashInfo.LoadOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilLoadOp;
+		FullHashInfo.StoreOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilStoreOp;
+#if VULKAN_USE_REAL_RENDERPASS_COMPATIBILITY
+		FullHashInfo.InitialLayout[MaxSimultaneousRenderTargets + 1] = FragmentDensityLayout;
+#endif
+		CompatibleHashInfo.Formats[MaxSimultaneousRenderTargets + 1] = CurrDesc.format;
+
+		++NumAttachmentDescriptions;
+		bHasFragmentDensityAttachment = true;
+	}
+
 	CompatibleHashInfo.NumSamples = NumSamples;
+	CompatibleHashInfo.bIsMultiview = bIsMultiView;
+
+	if (bIsMultiView && !bMultiviewRenderTargets)
+	{
+		UE_LOG(LogVulkan, Error, TEXT("Non multiview textures on a multiview layout!"));
+	}
 
 	RenderPassCompatibleHash = FCrc::MemCrc32(&CompatibleHashInfo, sizeof(CompatibleHashInfo));
 	RenderPassFullHash = FCrc::MemCrc32(&FullHashInfo, sizeof(FullHashInfo), RenderPassCompatibleHash);
@@ -2134,11 +2227,14 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 	, NumColorAttachments(0)
 	, bHasDepthStencil(false)
 	, bHasResolveAttachments(false)
+	, bHasFragmentDensityAttachment(false)
 	, NumSamples(0)
 	, NumUsedClearValues(0)
+	, bIsMultiView(0)
 {
 	FMemory::Memzero(ColorReferences);
 	FMemory::Memzero(DepthStencilReference);
+	FMemory::Memzero(FragmentDensityReference);
 	FMemory::Memzero(ResolveReferences);
 	FMemory::Memzero(InputAttachments);
 	FMemory::Memzero(Desc);
@@ -2149,6 +2245,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 
 	bool bSetExtent = false;
 	bool bFoundClearOp = false;
+	bIsMultiView = Initializer.bMultiView;
 	NumSamples = Initializer.NumSamples;
 	for (uint32 Index = 0; Index < Initializer.RenderTargetsEnabled; ++Index)
 	{
@@ -2169,15 +2266,17 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 
 			ColorReferences[NumColorAttachments].attachment = NumAttachmentDescriptions;
 			ColorReferences[NumColorAttachments].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			if (CurrDesc.samples > VK_SAMPLE_COUNT_1_BIT)
+
+			/*if (CurrDesc.samples > VK_SAMPLE_COUNT_1_BIT)
 			{
 				Desc[NumAttachmentDescriptions + 1] = Desc[NumAttachmentDescriptions];
 				Desc[NumAttachmentDescriptions + 1].samples = VK_SAMPLE_COUNT_1_BIT;
+				Desc[NumAttachmentDescriptions + 1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 				ResolveReferences[NumColorAttachments].attachment = NumAttachmentDescriptions + 1;
 				ResolveReferences[NumColorAttachments].layout = VK_IMAGE_LAYOUT_GENERAL;
 				++NumAttachmentDescriptions;
 				bHasResolveAttachments = true;
-			}
+			}*/
 
 			CompatibleHashInfo.Formats[NumColorAttachments] = CurrDesc.format;
 			FullHashInfo.LoadOps[NumColorAttachments] = CurrDesc.loadOp;
@@ -2248,6 +2347,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 	}
 
 	CompatibleHashInfo.NumSamples = NumSamples;
+	CompatibleHashInfo.bIsMultiview = bIsMultiView;
 
 	RenderPassCompatibleHash = FCrc::MemCrc32(&CompatibleHashInfo, sizeof(CompatibleHashInfo));
 	RenderPassFullHash = FCrc::MemCrc32(&FullHashInfo, sizeof(FullHashInfo), RenderPassCompatibleHash);

@@ -314,6 +314,7 @@ public:
 			TArray<FAttachmentRef> ColorAttachments;
 			TArray<FAttachmentRef> ResolveAttachments;
 			FAttachmentRef DepthStencil;
+			FAttachmentRef FragmentDensity;
 
 			struct FAttachmentDesc
 			{
@@ -349,6 +350,7 @@ public:
 			uint8 NumColorAttachments;
 			uint8 bHasDepthStencil;
 			uint8 bHasResolveAttachments;
+			uint8 bHasFragmentDensityAttachment;
 			uint8 NumUsedClearValues;
 			uint32 RenderPassCompatibleHash;
 			FVector Extent3D;
@@ -361,11 +363,13 @@ public:
 				return ColorAttachments == In.ColorAttachments &&
 					ResolveAttachments == In.ResolveAttachments &&
 					DepthStencil == In.DepthStencil &&
+					FragmentDensity == In.FragmentDensity &&
 					Descriptions == In.Descriptions &&
 					NumAttachments == In.NumAttachments &&
 					NumColorAttachments == In.NumColorAttachments &&
 					bHasDepthStencil == In.bHasDepthStencil &&
 					bHasResolveAttachments == In.bHasResolveAttachments &&
+					bHasFragmentDensityAttachment == In.bHasFragmentDensityAttachment &&
 					NumUsedClearValues == In.NumUsedClearValues &&
 					RenderPassCompatibleHash == In.RenderPassCompatibleHash &&
 					Extent3D == In.Extent3D;

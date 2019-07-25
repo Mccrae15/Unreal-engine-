@@ -19,9 +19,12 @@ public class LibOVRAvatar : ModuleRules
 			isLibrarySupported = true;
 		}
         else if (Target.Platform == UnrealTargetPlatform.Android)
-        {
-            PublicAdditionalLibraries.Add(OculusThirdPartyDirectory + "/lib/armeabi-v7a/libovravatarloader.so");
-            string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
+        { 
+            PublicLibraryPaths.Add(OculusThirdPartyDirectory + "/lib/armeabi-v7a/");
+			PublicLibraryPaths.Add(OculusThirdPartyDirectory + "/lib/arm64-v8a/");
+			PublicAdditionalLibraries.Add(OculusThirdPartyDirectory + "/lib/armeabi-v7a/libovravatarloader.so");
+			PublicAdditionalLibraries.Add(OculusThirdPartyDirectory + "/lib/arm64-v8a/libovravatarloader.so");
+			string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
             AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "LibOVRAvatar_APL.xml"));
             isLibrarySupported = true;
         }
