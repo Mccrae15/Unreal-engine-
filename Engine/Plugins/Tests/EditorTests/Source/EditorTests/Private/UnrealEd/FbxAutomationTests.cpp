@@ -289,7 +289,7 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 					ImportData->bBuildReversedIndexBuffer = TestPlan->ImportUI->StaticMeshImportData->bBuildReversedIndexBuffer;
 					ImportData->bGenerateLightmapUVs = TestPlan->ImportUI->StaticMeshImportData->bGenerateLightmapUVs;
 					ImportData->bOneConvexHullPerUCX = TestPlan->ImportUI->StaticMeshImportData->bOneConvexHullPerUCX;
-					ImportData->bAutoGenerateCollision = TestPlan->ImportUI->StaticMeshImportData->bAutoGenerateCollision;
+					//ImportData->bAutoGenerateCollision = TestPlan->ImportUI->StaticMeshImportData->bAutoGenerateCollision;
 					//Copy UFbxMeshImportData
 					ImportData->bTransformVertexToAbsolute = TestPlan->ImportUI->StaticMeshImportData->bTransformVertexToAbsolute;
 					ImportData->bBakePivotInVertex = TestPlan->ImportUI->StaticMeshImportData->bBakePivotInVertex;
@@ -394,7 +394,7 @@ bool FFbxImportAssetsAutomationTest::RunTest(const FString& Parameters)
 					ImportData->bBuildReversedIndexBuffer = TestPlan->ImportUI->StaticMeshImportData->bBuildReversedIndexBuffer;
 					ImportData->bGenerateLightmapUVs = TestPlan->ImportUI->StaticMeshImportData->bGenerateLightmapUVs;
 					ImportData->bOneConvexHullPerUCX = TestPlan->ImportUI->StaticMeshImportData->bOneConvexHullPerUCX;
-					ImportData->bAutoGenerateCollision = TestPlan->ImportUI->StaticMeshImportData->bAutoGenerateCollision;
+					//ImportData->bAutoGenerateCollision = TestPlan->ImportUI->StaticMeshImportData->bAutoGenerateCollision;
 					//Copy UFbxMeshImportData
 					ImportData->bTransformVertexToAbsolute = TestPlan->ImportUI->StaticMeshImportData->bTransformVertexToAbsolute;
 					ImportData->bBakePivotInVertex = TestPlan->ImportUI->StaticMeshImportData->bBakePivotInVertex;

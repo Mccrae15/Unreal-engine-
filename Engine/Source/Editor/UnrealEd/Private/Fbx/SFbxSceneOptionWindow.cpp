@@ -1397,7 +1397,7 @@ void SFbxSceneOptionWindow::CopyFbxOptionsToFbxOptions(UnFbx::FBXImportOptions *
 
 void SFbxSceneOptionWindow::CopyStaticMeshOptionsToFbxOptions(UnFbx::FBXImportOptions *ImportSettings, UFbxSceneImportOptionsStaticMesh* StaticMeshOptions)
 {
-	ImportSettings->bAutoGenerateCollision = StaticMeshOptions->bAutoGenerateCollision;
+	//ImportSettings->bAutoGenerateCollision = StaticMeshOptions->bAutoGenerateCollision;
 	ImportSettings->bBuildAdjacencyBuffer = StaticMeshOptions->bBuildAdjacencyBuffer;
 	ImportSettings->bBuildReversedIndexBuffer = StaticMeshOptions->bBuildReversedIndexBuffer;
 	ImportSettings->bGenerateLightmapUVs = StaticMeshOptions->bGenerateLightmapUVs;
@@ -1444,7 +1444,7 @@ void SFbxSceneOptionWindow::CopyStaticMeshOptionsToFbxOptions(UnFbx::FBXImportOp
 
 void SFbxSceneOptionWindow::CopyFbxOptionsToStaticMeshOptions(UnFbx::FBXImportOptions *ImportSettings, UFbxSceneImportOptionsStaticMesh* StaticMeshOptions)
 {
-	StaticMeshOptions->bAutoGenerateCollision = ImportSettings->bAutoGenerateCollision;
+	//StaticMeshOptions->bAutoGenerateCollision = ImportSettings->bAutoGenerateCollision;
 	StaticMeshOptions->bBuildAdjacencyBuffer = ImportSettings->bBuildAdjacencyBuffer;
 	StaticMeshOptions->bBuildReversedIndexBuffer = ImportSettings->bBuildReversedIndexBuffer;
 	StaticMeshOptions->bGenerateLightmapUVs = ImportSettings->bGenerateLightmapUVs;
