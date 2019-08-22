@@ -49,6 +49,7 @@ enum class SubtitlesLanguage : uint8
 	Japanese,
 	Spanish,
 	Russian,
+	Korean,
 	French,
 
 };
