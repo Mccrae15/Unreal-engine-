@@ -913,13 +913,20 @@ namespace VulkanRHI
 		void DestroyResourceAllocations();
 	};
 
+	enum class ECPUReadType
+	{
+		None,
+		NonConcurrent,
+		Concurrent
+	};
+
 	class FStagingBuffer : public FRefCount
 	{
 	public:
 		FStagingBuffer()
 			: ResourceAllocation(nullptr)
 			, Buffer(VK_NULL_HANDLE)
-			, bCPURead(false)
+			, CPUReadType(ECPUReadType::None)
 			, BufferSize(0)
 		{
 		}
@@ -957,7 +964,7 @@ namespace VulkanRHI
 	protected:
 		TRefCountPtr<FOldResourceAllocation> ResourceAllocation;
 		VkBuffer Buffer;
-		bool bCPURead;
+		ECPUReadType CPUReadType;
 		uint32 BufferSize;
 
 		// Owner maintains lifetime
@@ -986,7 +993,7 @@ namespace VulkanRHI
 
 		void Deinit();
 
-		FStagingBuffer* AcquireBuffer(uint32 Size, VkBufferUsageFlags InUsageFlags = VK_BUFFER_USAGE_TRANSFER_SRC_BIT, bool bCPURead = false);
+		FStagingBuffer* AcquireBuffer(uint32 Size, VkBufferUsageFlags InUsageFlags = VK_BUFFER_USAGE_TRANSFER_SRC_BIT, ECPUReadType CPUReadType = ECPUReadType::None);
 
 		// Sets pointer to nullptr
 		void ReleaseBuffer(FVulkanCmdBuffer* CmdBuffer, FStagingBuffer*& StagingBuffer);

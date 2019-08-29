@@ -79,12 +79,14 @@ struct FHmdUserProfile
 };
 
 UENUM(BlueprintType)
-enum class ETiledMultiResLevel : uint8
+enum class EFixedFoveatedRenderingLevel : uint8
 {
-	ETiledMultiResLevel_Off = 0,
-	ETiledMultiResLevel_LMSLow,
-	ETiledMultiResLevel_LMSMedium,
-	ETiledMultiResLevel_LMSHigh
+	FFR_Off = 0,
+	FFR_Low = 1,
+	FFR_Medium = 2,
+	FFR_High = 3,
+	// High foveation setting with more detail toward the bottom of the view and more foveation near the top (Same as High on Oculus Go)
+	FFR_HighTop = 4
 };
 
 /* Guardian boundary types*/
@@ -371,13 +373,13 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	* Returns the current multiresolution level
 	*/
 	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
-	static ETiledMultiResLevel GetTiledMultiresLevel();
+	static EFixedFoveatedRenderingLevel GetFixedFoveatedRenderingLevel();
 
 	/**
 	* Set the requested multiresolution level for the next frame
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
-	static void SetTiledMultiresLevel(ETiledMultiResLevel level);
+	static void SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level);
 
 	/**
 	* Returns the current device's name
@@ -432,6 +434,13 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	*/
 	UFUNCTION(BlueprintPure, Category = "OculusLibrary|Guardian")
 	static bool IsGuardianDisplayed();
+
+	/* GUARDIAN API */
+	/**
+	* Returns true if the Guardian has been set up by the user, false if the user is in "seated" mode and has not set up a play space.
+	*/
+	UFUNCTION(BlueprintPure, Category = "OculusLibrary|Guardian")
+	static bool IsGuardianConfigured();
 
 	/**
 	* Returns the list of points in UE world space of the requested Boundary Type 
