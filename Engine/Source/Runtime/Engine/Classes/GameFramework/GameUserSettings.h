@@ -44,10 +44,12 @@ enum class SubtitlesLanguage : uint8
 {
 	English,
 	Deustch,
-	Chineese,
+	Chineese_Simplified,
+	Chineese_Traditional,
 	Japanese,
 	Spanish,
 	Russian,
+	Korean,
 	French,
 
 }; 
