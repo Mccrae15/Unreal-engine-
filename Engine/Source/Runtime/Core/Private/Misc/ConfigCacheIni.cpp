@@ -3196,36 +3196,47 @@ void FConfigCacheIni::InitializeConfigSystem()
 	{
 		case -1:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded Default Input"));
 			break;
 		case 0:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputOculusTouchRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputOculusTouchRight"));
 			break;
 		case 1:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputOculusTouchLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputOculusTouchLeft"));
 			break;
 		case 2:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputViveWandsRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputViveWandsRight"));
 			break;
 		case 3:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputViveWandsLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputViveWandsLeft"));
 			break;
 		case 4:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputKnucklesRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputKnucklesRight"));
 			break;
 		case 5:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputKnucklesLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputKnucklesLeft"));
 			break;
 		case 6:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputWMRRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputWMRRight"));
 			break;
 		case 7:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputWMRLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputWMRLeft"));
 			break;
 		case 8:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputPSVRRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputPSVRRight"));
 			break;
 		case 9:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputPSVRLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputPSVRLeft"));
 			break;
 	}
 
