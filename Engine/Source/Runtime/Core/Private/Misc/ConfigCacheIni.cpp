@@ -3190,7 +3190,47 @@ void FConfigCacheIni::InitializeConfigSystem()
 	}
 
 	FConfigCacheIni::LoadGlobalIniFile(GGameIni, TEXT("Game"));
-	FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
+	int Option;
+	GConfig->GetInt(TEXT("InputScheme"), TEXT("CurrentControllSet"), Option, GGameIni);
+	switch (Option)
+	{
+		case -1:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
+			break;
+		case 0:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputOculusTouchRight"));
+			break;
+		case 1:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputOculusTouchLeft"));
+			break;
+		case 2:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputViveWandsRight"));
+			break;
+		case 3:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputViveWandsLeft"));
+			break;
+		case 4:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputKnucklesRight"));
+			break;
+		case 5:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputKnucklesLeft"));
+			break;
+		case 6:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputWMRRight"));
+			break;
+		case 7:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputWMRLeft"));
+			break;
+		case 8:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputPSVRRight"));
+			break;
+		case 9:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputPSVRLeft"));
+			break;
+	}
+
+
+	//FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
 #if WITH_EDITOR
 	// load some editor specific .ini files
 
@@ -3242,7 +3282,7 @@ bool FConfigCacheIni::LoadGlobalIniFile(FString& FinalIniFilename, const TCHAR* 
 {
 	// figure out where the end ini file is
 	FinalIniFilename = GetDestIniFilename(BaseIniName, Platform, GeneratedConfigDir);
-	
+
 	// Start the loading process for the remote config file when appropriate
 	if (FRemoteConfig::Get()->ShouldReadRemoteFile(*FinalIniFilename))
 	{
