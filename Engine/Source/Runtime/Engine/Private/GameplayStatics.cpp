@@ -2206,7 +2206,7 @@ bool UGameplayStatics::PredictProjectilePath(const UObject* WorldContextObject, 
 			TraceEnd = TraceStart + (OldVelocity + CurrentVel) * (0.5f * ActualStepDeltaTime);
 			PredictResult.LastTraceDestination.Set(TraceEnd, CurrentVel, CurrentTime);
 			ilerazy++;
-			UE_LOG(LogTemp, Warning, TEXT("petla wypalila :%d razy"), ilerazy);
+			//UE_LOG(LogTemp, Warning, TEXT("petla wypalila :%d razy"), ilerazy);
 
 			if (bTracePath)
 			{
