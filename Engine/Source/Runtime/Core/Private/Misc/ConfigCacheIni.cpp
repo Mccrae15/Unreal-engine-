@@ -3191,13 +3191,10 @@ void FConfigCacheIni::InitializeConfigSystem()
 
 	FConfigCacheIni::LoadGlobalIniFile(GGameIni, TEXT("Game"));
 	int Option;
-	GConfig->GetInt(TEXT("InputScheme"), TEXT("CurrentControllSet"), Option, GGameIni);
+	GConfig->GetInt(TEXT("/Script/Carbon_VR_Template.MyDeveloperSettings"), TEXT("CurrentControllSet"), Option, GGameIni);
 	switch (Option)
 	{
-		case -1:
-			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
-			UE_LOG(LogConfig, Warning, TEXT("Loaded Default Input"));
-			break;
+		
 		case 0:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputOculusTouchRight"));
 			UE_LOG(LogConfig, Warning, TEXT("Loaded InputOculusTouchRight"));
@@ -3237,6 +3234,14 @@ void FConfigCacheIni::InitializeConfigSystem()
 		case 9:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputPSVRLeft"));
 			UE_LOG(LogConfig, Warning, TEXT("Loaded InputPSVRLeft"));
+			break;
+		case 10:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded Default Input"));
+			break;
+		default:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded Default Inputdasda"));
 			break;
 	}
 
