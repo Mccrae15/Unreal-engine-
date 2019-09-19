@@ -816,7 +816,7 @@ int32 FPS4Tracker::CreateTracker(int32 DeviceHandle, int32 ControllerIndex, EDev
 	{
 		return INVALID_TRACKER_HANDLE;
 	}
-
+	///TODO tutaj szukaj jak dostać ten jebany handle
 	// Find an unused device state
 	int32 TrackerHandle = 0;
 	for (; TrackerHandle < ARRAY_COUNT(DeviceStates); ++TrackerHandle)
@@ -1526,6 +1526,7 @@ void FPS4Tracker::PollTrackingData(FDeviceState& DeviceState, FTrackingData& Tra
 		TrackingData.TimeStamp = TrackerState.timestamp;
 		TrackingData.SensorReadSystemTimestamp = TrackerState.hmdInfo.sensorReadSystemTimestamp;
 		TrackingData.FrameNumber = GFrameNumberRenderThread;
+		TrackingData.CameraOrientation = FQuat(TrackerState.cameraOrientation.w, TrackerState.cameraOrientation.x, TrackerState.cameraOrientation.y, TrackerState.cameraOrientation.z);
 
 		if (TrackerState.status == SCE_VR_TRACKER_STATUS_TRACKING)
 		{

@@ -49,6 +49,7 @@ public:
 		uint64					TimeStamp;			// The time at which the data was sampled
 		uint64					SensorReadSystemTimestamp;
 		uint32					FrameNumber;
+		FQuat					CameraOrientation;	//Carbon edit
 
 		static void DefaultInitialize(FTrackingData& TrackingData)
 		{
