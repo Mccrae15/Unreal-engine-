@@ -22,7 +22,6 @@ public class OVRPlugin : ModuleRules
 
             PublicAdditionalLibraries.Add("OVRPlugin");
             PublicAdditionalLibraries.Add("vrapi");
-            PublicAdditionalLibraries.Add("vrintegrationloader");
         }
         if (Target.Platform == UnrealTargetPlatform.Win64)
 		{

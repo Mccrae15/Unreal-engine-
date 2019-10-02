@@ -101,8 +101,23 @@ void UMotionControllerComponent::CreateRenderState_Concurrent()
 
 void UMotionControllerComponent::SendRenderTransform_Concurrent()
 {
-	RenderThreadRelativeTransform = GetRelativeTransform();
-	RenderThreadComponentScale = GetComponentScale();
+	struct FPrimitiveUpdateRenderThreadRelativeTransformParams
+	{
+		FTransform RenderThreadRelativeTransform;
+		FVector RenderThreadComponentScale;
+	};
+
+	FPrimitiveUpdateRenderThreadRelativeTransformParams UpdateParams;
+	UpdateParams.RenderThreadRelativeTransform = GetRelativeTransform();
+	UpdateParams.RenderThreadComponentScale = GetComponentScale();
+
+	ENQUEUE_RENDER_COMMAND(UpdateRTRelativeTransformCommand)(
+		[UpdateParams, this](FRHICommandListImmediate& RHICmdList)
+	{
+		RenderThreadRelativeTransform = UpdateParams.RenderThreadRelativeTransform;
+		RenderThreadComponentScale = UpdateParams.RenderThreadComponentScale;
+	});
+
 	Super::SendRenderTransform_Concurrent();
 }
 
@@ -113,8 +128,8 @@ void UMotionControllerComponent::TickComponent(float DeltaTime, enum ELevelTick 
 
 	if (bIsActive)
 	{
-		FVector Position;
-		FRotator Orientation;
+		FVector Position = GetRelativeTransform().GetTranslation();
+		FRotator Orientation = GetRelativeTransform().GetRotation().Rotator();
 		float WorldToMeters = GetWorld() ? GetWorld()->GetWorldSettings()->WorldToMeters : 100.0f;
 		const bool bNewTrackedState = PollControllerState(Position, Orientation, WorldToMeters);
 		if (bNewTrackedState)
@@ -567,8 +582,8 @@ void UMotionControllerComponent::FViewExtension::PreRenderViewFamily_RenderThrea
 		}
 
 		// Poll state for the most recent controller transform
-		FVector Position;
-		FRotator Orientation;
+		FVector Position = MotionControllerComponent->RenderThreadRelativeTransform.GetTranslation();
+		FRotator Orientation = MotionControllerComponent->RenderThreadRelativeTransform.GetRotation().Rotator();
 		if (!MotionControllerComponent->PollControllerState(Position, Orientation, WorldToMetersScale))
 		{
 			return;

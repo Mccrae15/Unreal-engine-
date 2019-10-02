@@ -1408,7 +1408,12 @@ void UPackageMapClient::AppendNetFieldExports(FArchive& Archive)
 
 void UPackageMapClient::ReceiveNetFieldExportsCompat(FInBunch &InBunch)
 {
-	check(Connection->InternalAck);
+	if(!Connection->InternalAck)
+	{
+		UE_LOG(LogNetPackageMap, Error, TEXT("ReceiveNetFieldExportsCompat: connection is not a replay connection."));
+		InBunch.SetError();
+		return;
+	}
 
 	// Read number of net field exports
 	uint32 NumLayoutCmdExports = 0;
@@ -1479,7 +1484,7 @@ void UPackageMapClient::ReceiveNetFieldExportsCompat(FInBunch &InBunch)
 
 		TArray<FNetFieldExport>& NetFieldExportsRef = NetFieldExportGroup->NetFieldExports;
 
-		if ((int32)NetFieldExport.Handle < NetFieldExportsRef.Num())
+		if (NetFieldExportsRef.IsValidIndex((int32)NetFieldExport.Handle))
 		{
 			// Assign it to the correct slot (NetFieldExport.Handle is just the index into the array)
 			NetFieldExportGroup->NetFieldExports[NetFieldExport.Handle] = NetFieldExport;
