@@ -1,0 +1,31 @@
+﻿INTSourceChangelist:3569151
+Availability: Licensee
+Crumbs: %ROOT%
+Title: Set Spectator Screen Mode
+Description: 소셜 (관람자) 화면을 설정하는 노드입니다.
+Type: Reference
+Version: 4.17
+Parent: Platforms/PS4/PSVR/SpectatorScreen
+Order: 
+Tags: VR 
+Tags: PS VR
+
+[TOC(start:2 end:2)]
+[EXCERPT:SetSpectatorScreenModeNode_Ref]
+![](SetSpectatorScreenModeNode.png)
+
+소셜 (관람자) 화면 모드를 설정하는 노드입니다.
+
+**입력**
+
+| 핀 위치 | 이름 | 설명 |
+| ---------------------- | ------------------------- | ----------------------------------- |
+| ![](SetSpectatorScreenModeNode_1.png) |  (In) Exec | 입력 실행 핀입니다. |
+| ![](SetSpectatorScreenModeNode_2.png) |  Mode      | 소셜 (관람자) 화면 모드입니다. |
+
+**출력**
+
+| 핀 위치 | 이름 | 설명 |
+| ------------------------------------- | ------------ | --------------------- |
+| ![](SetSpectatorScreenModeNode_3.png) |  (Out) Exec  | 출력 실행 핀입니다. |
+[/EXCERPT:SetSpectatorScreenModeNode_Ref]

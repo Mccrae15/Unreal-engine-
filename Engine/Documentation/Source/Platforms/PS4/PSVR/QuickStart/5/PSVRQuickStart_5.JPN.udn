@@ -1,0 +1,90 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:5.PlayStation VR 対応の UE4 をビルドする
+Crumbs:%ROOT%, Platforms
+Description:PlayStation VR に対応したUE4 プロジェクトのビルドおよび設定方法
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:5
+tags:VR
+tags:PlayStation VR
+
+[nav]
+
+PlayStation VR ツールのインストールとセットアップが完了し、PS4 Neighborhood で PS4 開発キットが見れるようになったので、PlayStation VR 開発をインクルードするためにソースコードからアンリアル エンジンをビルドします。これにより、UE4 プロジェクトを PS4 開発キットと PlayStation VR に作成およびデプロイすることが可能になります。 
+
+[region:warning]
+PS4 開発に対応するためには、Github または Perforce から UE4 をダウンロードする必要があります。ランチャーに付いている UE4 バイナリ ビルドからは、必要とされる PS4 開発ファイルをダウンロードすることはできません。  
+[/region]
+
+## ステップ
+
+1. 最新の UE4 リリースを [Epic Github](https://github.com/EpicGames/UnrealEngine) ページからダウンロードし、ダウンロードしたファイルを PC 上に解凍してください。 
+
+	[region:note]
+	上記のリンクをクリックする前に、Github にログインしていることを確認してください。ログインしないままクリックすると、リンクにつながりません。
+	[/region]
+
+1. ファイルの解凍先フォルダの **「Setup.BAT」** ファイルを実行して、PC にダウンロードした残りのエンジンを取得します。
+
+    [REGION:lightbox]
+    [![](PSVR_Run_Setup.png)(w:504)](PSVR_Run_Setup.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. すべてのフィアルがダウンロードされたら、対応するコンソール zip をダウンロードおよび解凍する必要があります。このファイルは、登録済みの PS4 コンソール デベロッパーであることを確認したエピックから提供されます。
+
+    [region:note]
+    Github から UE4 をダウンロードした場合、コンソール ファイルがインクルードされたセキュアな FPT へのリンクが送られてきます。ライセンシー向け Perforce で UE4 をダウンロードした場合、これらのファイルは既に入っています。
+    [/region]
+
+1. 解凍したフォルダの中に、Engne フォルダがあります。この Engine フォルダをコピーして、ステップ 2 でダウンロードした Engine ファイルと置き換えます。 
+
+    [region:tip]
+    必要なファイルはすべてコンソール版で更新されるように、オーバーライトはすべて許可してください。
+    [/region]
+
+1. Engine フォルダの中にある **「Generate Project files.BAT」** ファイルを実行します。
+
+    [REGION:lightbox]
+    [![](PSVR_Run_GenProjectFiles.png)(w:504)](PSVR_Run_GenProjectFiles.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. プロジェクト ファイルの生成が完了したら、UE4.sln ファイルをダブルクリックして、UE4 Visual Studio プロジェクトを起動します。
+
+    [REGION:lightbox]
+    [![](PSVR_Launch_Project.png)(w:504)](PSVR_Launch_Project.png)
+    [/REGION]
+
+    [REGION:caption]
+    クリックしてフルサイズで表示
+    [/REGION]
+
+1. Visual Studio の上部のソリューション コンフィギュレーションが **[Development Editor]** に設定されており、ソリューション プラットフォームが **[Win64]** になっていることを確認してください。  
+
+    ![](PSVR_VS_Settings.png)
+
+1. Solution Explorer で UE4 プロジェクトを右クリックし、コンテキスト メニューから **[Build]** オプションを選択します。
+
+    ![](PSVR_Build_UE4.png)
+
+1. ビルドが完了したら、**[Solution Platform]** を **[PS4]** に変更し、**「Programs」** フォルダを展開し、**PS4DevKitUtil** を探します。見つけたら **右クリック** して、**[Build]** オプションを選択します。
+
+    ![](PSVR_Build_PSDevKitUtil.png)
+
+
+UE4 コードのコンパイルはこれで完了です。次のセクションでは、PlayStation VR が使用できるように UE4 プロジェクトを作成および設定します。
+
+
+
+[nav]

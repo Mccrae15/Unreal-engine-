@@ -1,0 +1,30 @@
+Availability:Licensee
+Title:1. Obtaining the PS4 Development Tools
+Crumbs:
+Description:How to obtain the required tool to develop PS VR games for UE4.
+Platform:PS4
+Version: 4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 1
+tags: VR
+tags: PlayStation VR
+
+[NAV]
+Before you can start to develop PlayStation VR titles, you will first need to register as a PlayStation VR developer with Sony. After completing your registration, you will then need to contact Epic who will confirm your PS VR registration status. In the following section, we will go over how you go about doing this.
+
+## Steps 
+
+1. You will first need to register with Sony to gain access to the PS4 and PS VR development tools. You can register for PS4 and PlayStation VR development tools by going to [http://us.playstation.com/develop/](http://us.playstation.com/develop/) and filling out the required forms to gain access to the development tools.
+
+1. Once Sony has approved you for PlayStation VR development, email **consoles@unrealengine.com** to inform Epic that you have been approved for PlayStation VR development.
+
+1. After Epic confirms your registration, you will be notified of where to download the necessary tools. 
+
+
+In the next section we will take a look at how to install and set up the PS4 development tools so that you can start to develop your PlayStation VR projects.
+
+[NAV]
+
+

@@ -1,0 +1,43 @@
+Availability:Licensee
+Title:3. PS4 Development Kit Setup
+Crumbs:%ROOT%, Platforms
+Description:Taking a look at how to setup your PS4 development kit.
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 3
+tags: VR
+tags: PlayStation VR
+
+[nav]
+For your PS4 development kit to work it will need to be setup in a certain way. In the following section, we will go over what you need to do to your PS4 Dev kit to get it working with UE4.
+
+## Steps
+
+1. Make sure that both the **LAN** and **DEV** ports have working ethernet cables plugged into them as the DEV kit needs both to work.
+
+    [REGION:lightbox]
+    [![](PSVR_Lan_Ports.png)(w:504)](PSVR_Lan_Ports.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. Go to **Debug Settings** > **Boot Parameters** > **Release Check Mode** and set your DevKit to **Development Mode**.
+
+    [REGION:lightbox]
+    [![](PSVR_Boot_Params.png)(w:504)](PSVR_Boot_Params.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+
+Now that your PS4 has been connected to the Network and setup in development mode, in the next section, we will take a look at how to get your PS4 visible in the Neighborhood for Playstation tool.
+
+
+[nav]

@@ -1,0 +1,54 @@
+Availability:Licensee
+Title:Additional Information
+Description:Additional information and resources for reference when setting up your PS4 for use with Unreal Engine 4.
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version: 4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:5
+
+
+[nav]
+
+[EXCERPT:main]
+In this page you'll find additional information and quick references mentioned in the previous pages for setting up your PlayStation 4 Developer Kit for use with Unreal Engine 4. 
+
+## Accessing the PlayStation 4 Support Files
+
+[PUBLISH:rocket]
+1. Log into http://ftp.epicgames.com/ with the FTP Credentials you received from Epic Games when you registered as a PlayStation 4 developer.
+1. Navigate to the FTP's **UE4PS4** directory and download the **PS4-xxxx.zip** where "xxxx" matches the GitHub branch you are synced with.
+[/PUBLISH:rocket]
+
+[PUBLISH:licensee]
+All PlayStation 4 support files should be visible if your account has PS4 access permissions.
+[/PUBLISH:licensee]
+
+## Setup Reminders
+
+* If you're developing for other platforms, be sure to install all prerequisites for those platforms before generating your project files.
+* Platform support is based on which SDKs are installed at the time the project files are generated. So, anytime you make an update to the SDK version, you'll need to run `[UE4Directory]/GenerateProjectFiles.bat`. 
+* When installing your SDK, make sure the SDK version matches the value assigned in **PS4PlatformSDK::ExpectedSDKVersion** located in your `[UE4Directory]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs` file.
+
+## Batch Building with Visual Studio
+
+To make the build process easier on yourself, you can use Batch Building to build multiple configurations of your project by using the **Batch Build** option from the **Build** menu. 
+
+You can see an example of how this is used in Step 6 of the [Required Setup](Platforms/PS4/GettingStarted/1) page.
+
+## Additional Resources
+
+* Use the [Release and HotFix Notes](Support/Builds) to which SDK is required for your specific version of Unreal Engine. 
+* [Sony documentation for PlayStation 4's Neighborhood tool](https://ps4.scedev.net/resources/documents/SDK/4.500/Neighborhood_and_Utilities-Users_Guide/__document_toc.html)
+[PUBLISH:licensee]
+* For Perforce access issues regarding PlayStation 4 support files, contact your Epic Games account representative. 
+[/PUBLISH:licensee]
+[/EXCERPT:main]
+
+[nav]
+
+

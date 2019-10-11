@@ -1,0 +1,25 @@
+﻿INTSourceChangelist:4369158
+Availability:Licensee
+Crumbs: 
+Title: 配置文件引导优化
+Description: 学习使用虚幻引擎4的完整资源。
+Type: overview
+Version: 
+Parent: Platforms/Performance
+Order: 1
+Tags: PlayStation 4
+Tags: Additional
+PLatform:PS4
+
+[REGION:note]我们提前发布本内容的草稿版以便于你启动和运行。后续更新将很快发布，敬请关注！[/REGION]
+
+初步支持引擎的仪器化配置文件引导优化（PGO）。PGO可为编译器和连接器提供从作品的通关过程中收集的额外数据。这允许进行一系列优化，超出了常规编译和链接时间优化所能提供的优势。如果能正确实现PGO，可在CPU上节省几毫秒（ms）的帧时间。 
+
+要支持仪器化版本PGO，需要一定量的作品特定工作，使作品自动运行一些代表性Gameplay，然后自动化脚本可在需要时使用它来生成新的PGO数据。PGO分析还需要使用特殊的仪器化二进制文件。这些文件可通过[虚幻编译工具](https://docs.unrealengine.com/en-us/Programming/BuildTools#unrealbuildtool) (UBT)生成，只需在编译配置中将 **bPGOProfile** 设置为True即可。
+
+在启动游戏以运行PGO时，自动化脚本会在命令行上传递 **-pgoprofile**。例如，你可将此触发器用于仅限AI的通关、摄像机飞越鸟瞰世界场景或启动录制的录像。在作品退出时，PGO数据被自动收集并保存到磁盘，自动化脚本将其复制并检入版本控制。 
+
+生成PGO数据后，可通过在编译配置中将 **bPGOOptimize** 设置为True来创建经优化的版本。要从PGO中获得最佳性能提升，必须保持数据最新。此外，仪器化二进制文件应尽可能匹配发行二进制文件。 
+
+在使用PGO性能分析会话时，建议使用 **发行（Shipping）** 配置编译。由于发行版本通常具有由编译器定义剥离的所有自动化和调试功能，编译工具将定义 **ENABLE_PGO_PROFILE** 宏。你可以选择性地重启发行二进制文件中的自动化代码，特别是在进行PGO分析时。
+

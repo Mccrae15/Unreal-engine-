@@ -1,0 +1,106 @@
+Availability:Licensee
+Title:Using Build Operations and Cooking Content
+Description:Using the available build operations to choose the best method for cooking content for your workflow.
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version: 4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:3
+
+[nav]
+
+[EXCERPT:main]
+All Build Operations (build, cook, package, deploy, and run) are performed using [Unreal Automation Tool](Programming/Automation). When using valid arguments this tool can be run on the command line 
+by using the following:
+
+`[UE4Directory]/Engine/Build/BatchFiles/RunUAT.bat`
+
+When you use the Project Launcher (**Window** > **Project Launcher**) from the Editor, it will generate the command line on your behalf which it then automatically passes to `RunUAT.bat`.
+
+[REGION:tip]
+Running a profile from the Project Launcher in the Editor will output the generated command line in the log. The text from **BuildCookRun** onward can be passed to `RunUAT.bat`.
+[/REGION]
+
+**Project Launcher Generated Log Output**
+
+`Automation.ParseCommandLine: Parsing commandline: -ScriptsForProject=MyProject.uproject BuildCookRun -project=MyProject.uproject -clientconfig=Development ...`
+
+**Equivalent Command Line**
+
+`[UE4Directory]/Engine/Build/BatchFiles/RunUAT.bat BuildCookRun -project=MyProject.uproject -clientconfig=Development`
+
+[REGION:tip]
+As a "Best Practice", the arguments supplied to UAT can be quite involved, therefore we recommend that you use a Custom Profile in the Project Launcher to make your builds. Even if you prefer to run UAT from a command line,
+the best route is to use the Project Launcher at least to generate the proper command line rather than attempting to author it by hand.
+[/REGION]
+
+
+## Cooking Content
+
+Before you can use your content on your PS4 it must be cooked. [Content Cooking](Engine/Deployment/Cooking) refers to the files which have been compiled and converted to the final format which is most optimized for the target platform.
+You can do this right from the **Project Launcher** where you have two ways to go about cooking your content; **By the Book** or **on the fly**. 
+
+To open the Project Launcher, go to the main menu > **Window** > and select **Project Launcher**.
+
+![](ProjectLauncher.png)(w:700)
+
+Before you can use these cook methods, you will first need to create a **Custom Launch Profile**.
+
+### Creating a Custom Launch Profile
+
+1. In the Project Launcher window, click the **add** (**+**) sign in the **Custom Launch Profile** section. 
+
+	![](AddCustomLaunchProfile.png)(w:700)
+1. In the same window, it will now display the options available for your new "Custom Launch Profile." Make sure to give your profile a **name** and assign a specific **project**, if necessary.
+
+	![](NewCustomProfile.png)(w:700)
+
+1. Now that you've got your own Custom Launch Profile, choose between **Cook By the Book** and **Cook on the fly** below to determine which method best fits your work environment and deployment needs. 
+
+## Cook By The Book
+
+When you choose to cook content **By the Book** it means performing the entirety of the cook ahead of time, allowing the build to deploy the cooked assets all at once. This is useful if you're not iterating on individual assets or for those who
+want the game to perform at full speed without waiting for a server to deliver the cooked content. Typically performance testing and play tests will want to use this method. 
+
+There's no extra setup required to perform a cook by the book build. In the Project Launcher under your **Custom Launch Profile**, choose the **Cook** method from the drop-down selection to set **By The Book**.
+
+![](CookByTheBook.png)(w:900)
+
+
+## Cook On The Fly
+
+When you choose to cook content **on the fly** it will delay cooking until after the game has been deployed. Only the executable and some other basic files are installed which use network communication with a Cook Server to make requests on-demand.
+Cook on the fly enables faster iteration for developers who will be making changes to content regularly or those who will be exploring sections of the game (which means they don't need to be cooked at all).
+
+In order to cook on the fly, you will need to start a Cook Server on a machine which has the full project. This can be either the local machine, or a remote server which performs the cook. The Cook Server can be run by
+starting the UE4 Editor in command line mode as follows:
+
+`UE4Editor-cmd.exe [fullAbsolutePathToProject.uproject] -run=cook -targetplatform=PS4 -cookonthefly`
+		
+On the Developer's machine, in the Project Launcher under your Custom Launch Profile, choose the **Deploy** method from the drop-down selection to set **File Server**. Use the drop-down selection to set the target to **Default Deploy Platform: PS4**.
+
+![](DeploySettings.png)(w:900)
+
+With the executable running on the PS4, it will need to be made aware of the IP address from the machine which is running the Cook Server. To do this pass the following command line argument on the client command line (where x.x.x.x represents your host's IP):
+
+`-filehostip=x.x.x.x`
+
+This can be specified in your Custom Launch Profile's **Launch** section under the **Additional Command Line Parameters**. The default is 0.0.0.0 (local host)
+
+![](LaunchSettings.png)(w:900)
+[/EXCERPT:main]
+
+## End Result
+
+![](ProjectLauncher_EndResult.png)(w:900)
+
+By now, you've learned about the available Build Operations that you can use along with how to set up your own Custom Launch Profile to properly cook your content for deployment to your PS4 Dev Kit. 
+In the next and final step, you'll learn about the debugging options you can use from Visual Studio.
+
+
+
+[nav]

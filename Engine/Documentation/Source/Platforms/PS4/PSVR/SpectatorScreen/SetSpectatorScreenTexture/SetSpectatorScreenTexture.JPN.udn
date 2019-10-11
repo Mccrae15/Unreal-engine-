@@ -1,0 +1,31 @@
+﻿INTSourceChangelist:3584409
+Availability:Licensee
+Crumbs: %ROOT%
+Title:Set Spectator Screen Mode
+Description:Social (Spectator) Screen に表示されているテクスチャを変更するノードです。
+Type:Reference
+Version:4.17
+Parent:Platforms/PS4/PSVR/SpectatorScreen
+Order:
+Tags:VR 
+Tags:PS VR
+
+[TOC(start:2 end:2)]
+[EXCERPT:SetSpectatorScreenTextureNode_Ref]
+![](SetSpectatorScreenTextureNode.png)
+
+Social (Spectator) Screen モードに表示されているテクスチャを変更するノードです。
+
+**入力**
+
+| ピンの位置           | 名前                                                  | 詳細                                                                                                                                                                |
+| ---------------------- | --------------- | ------------------------------------------------------------- |
+| ![](SetSpectatorScreenTextureNode_1.png) |  (In) Exec  | 入力実行ピンです。                    |
+| ![](SetSpectatorScreenTextureNode_2.png) |  In Texture | 新しいテクスチャ (2D) オブジェクトへの参照です。 |
+
+**出力**
+
+| ピンの位置           | 名前        | 説明                                                                                                                                                            |
+| ---------------------- | ----------- | ---------------------------------------- |
+| ![](SetSpectatorScreenTextureNode_3.png) |  (Out) Exec  | 出力実行ピンです。  |
+[/EXCERPT:SetSpectatorScreenTextureNode_Ref]

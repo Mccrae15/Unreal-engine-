@@ -1,0 +1,71 @@
+﻿INTSourceChangelist:3810467
+Availability:Licensee
+Title:미디어 프레임워크 PS4
+Crumbs:%ROOT%, Platforms, Platforms/PS4
+Description:비디오 재생에 미디어 프레임워크를 사용할 때 PS4 에서 고려할 사항에 대한 설명입니다.
+Platform:PS4
+parent:Platforms/PS4
+order:2
+Version: 4.13
+Related: Engine\MediaFramework\Overview
+Related: Engine\MediaFramework\HowTo
+Related: Engine\MediaFramework\TechReference
+
+언리얼 엔진 4 의 **Media Framework** (미디어 프레임워크)를 사용할 때 PS4 관련 개발 부분에 대한 글입니다.
+
+[REGION:note]
+보다 일반적인 정보는 [](Engine\MediaFramework\Overview) 문서를 참고하세요.
+[/REGION]
+
+
+## PS4Media 플레이어 활성화
+
+PS4Media 플레이어 플러그인은 기본으로 비활성화되어 있으며, 프로젝트의 [플러그인 세팅](Programming/Plugins/) 에서 활성화시켜 줘야 합니다.
+
+PS4 의 비디오 디코더는 Onion 메모리를, HLS 와 함께는 특히 더 많이 소모합니다. 동시에 둘 이상의 비디오 재생을 시도할 때는 메모리가 부족할 수 있는데, 메모리 기본 할당량이 200 MB 뿐이기 때문입니다.
+현재, 이 기본 세팅은 UI 에 노출되어 있지 않지만, 수동으로 변경할 수 있습니다.
+
+활성화는, **PS4Engine.ini** 에 다음과 같이 추가하면 됩니다: 
+
+	[SystemSettings]
+	r.GarlicHeapSizeMB=2600
+	r.OnionHeapSizeMB=200
+
+그리고 게임의 ***.Target.cs** 에서:
+
+	public override void SetupGlobalEnvironment(
+            	TargetInfo Target,
+            	ref LinkEnvironmentConfiguration OutLinkEnvironmentConfiguration,
+            	ref CPPEnvironmentConfiguration OutCPPEnvironmentConfiguration)
+	{
+            	// ...
+
+            	if (Target.Platform == UnrealTargetPlatform.PS4)
+            	{
+	OutCPPEnvironmentConfiguration.Definitions
+	.Add("GARLIC_HEAP_SIZE= (2900ULL * 1024 * 1024)");
+
+	OutCPPEnvironmentConfiguration.Definitions
+	.Add("ONION_HEAP_SIZE= (100ULL * 1024 * 1024)");
+            	}
+
+            	// ...
+	}
+
+## 팁
+
+PS4 의 재생 퍼포먼스 향상을 위해서는, 비디오 파일이 인터리브 방식으로 인코딩되어 있어야 합니다. 그래야 미디어 파일 각기 다른 부분을 탐색하지 않고 하나의 시퀀스 작업으로 오디오와 비디오를 읽을 수 있습니다.
+이 작업은 다시 인코딩하지 않고도 [**mp4box**](https://gpac.wp.mines-telecom.fr/mp4box/) 를 통해 가능합니다:
+
+	mp4box.exe -add non-interleaved-source.mp4 --inter 100 -delay 2=0 -new output.mp4
+
+플레이어의 CPU 및 GPU 부담을 크게 줄여주므로, 인코딩이 PS4 최적화되어 있는지 반드시 확인해야 할 것입니다.
+[**FFMPEG**](https://ffmpeg.org/) 로도 할 수 있습니다. 예를 들어, 1080p mp4 파일의 경우 다음과 같이 제안합니다:
+
+	ffmpeg.exe -i "highqualitysource.mp4" -c:v libx264 -crf 20 -preset veryslow -maxrate 15000k -bufsize 30000k -slices 24 -x264opts b-pyramid=0:no-cabac:weightb=0:weightp=0 -refs 1 -pix_fmt yuv420p "non-interleaved-output.mp4"
+
+## 알려진 문제점 & 고려사항
+
+PS4 개발에 미디어 프레임워크를 사용하는 데 관련해서 알려진 문제점은 다음과 같습니다:
+
+* **미디어 플레이리스트** 는 현재(4.13 기준) 작동하지 않습니다.

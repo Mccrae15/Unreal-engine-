@@ -1,0 +1,85 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:设置 PS 运动控制器
+Crumbs:
+Description:说明如何设置和使用 PlayStation VR 的运动控制器。  
+Version:4.13
+SkillLevel:Beginner
+parent:Platforms/PS4/PSVR/HowTo
+type:how-to
+order:1
+tags:VR
+tags:PlayStation VR
+tags:Motion Controllers
+Related:Platforms\VR\MotionController
+prereq:Platforms\VR\MotionController.
+Reference-image:![](PSVR_MC_Header_Image.png)
+
+![](PSVR_MC_Header_Image.png)
+
+PlayStation VR 支持将 PlayStation Move 控制器用作运动控制器，使用户能以全新的方式与 UE4 项目进行交互。与 UE4 运动控制器支持颇为相似，它的工作方式与其他 VR 设备相似。以下部分将说明如何进行设置，将 PlayStation Move 控制器用作运动控制器。
+
+## 步骤
+
+[region:note]
+我们将使用 PlayStation VR 快速入门教程中的同一个项目，因为它使用的模板已设置好运动控制器支持，可立即使用。
+[/region]
+
+1. 在使用运动控制器之前，首先需要在主工具栏中选择 **Edit** > **Plugins** 打开插件菜单，启用运动控制器插件。
+
+    ![](PSVR_Move_Plugin_Menu.png)
+
+1. 插件菜单打开后，点击 **Input Devices**，然后在设备列表中寻找 **Move Controller Plugin**，并按下它旁边的勾选符号将其启用，然后按下 **Restart Now** 按钮重新启动 UE4 编辑器。
+
+    [REGION:lightbox]
+    [![](PSVR_Enable_Move_Support.png)(w:488)](PSVR_Enable_Move_Support.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. UE4 编辑器重启后，前往 Content Browser 中的 **Maps** 文件夹，双击 **MotionControllerMap** 将其打开。
+
+    ![](PSVR_Load_MC_Map.png)
+
+    [region:note]
+    如项目中没有 MotionControllerMap，则可随意进行创建或加载。 
+    [/region]
+
+1. MotionControllerMap 打开后，点击 **Launch** 旁的白色小三角形，然后从快捷菜单列表中选择 PS4。
+
+    ![](Platforms\PS4\PSVR\QuickStart\7\PSVR_Launch_On_PS4.png)
+
+1. 项目部署到 PS4 后，戴上 PlayStation VR 头戴显示器并拿起 PlayStation Move 控制器。移动 Move 控制器时，您会看到前方有一双机器人的手臂，和您手臂的运动完全匹配。
+
+    [REGION:lightbox]
+    [![](PSVR_MC_Hands.png)(w:512)](PSVR_MC_Hands.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+我们使用的是 VR 模板，因此可以立即使用部分内置运动功能。以下是交互类型的简单描述，以及执行方式。
+
+* **移动**：按下 Move 控制器上的 **方框** 按钮则可启动瞬移系统，可在游戏区域中随意瞬移。按住方框键，用 Move 控制器瞄准需要瞬移的位置即可进行瞬移。找好位置后，松开方框键即可立即瞬移到此位置。
+
+    [REGION:lightbox]
+    [![](PSVR_MC_Move_Arc.png)(w:512)](PSVR_MC_Move_Arc.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+* **抓取**：在需要抓取的物体上方移动 Move 控制器，按下扳机键捡起物体，松开扳机键放下物体。
+
+    [REGION:lightbox]
+    [![](PSVR_MC_Grabbing.png)(w:512)](PSVR_MC_Grabbing.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
