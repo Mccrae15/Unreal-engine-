@@ -1,0 +1,32 @@
+title: Developing for Sony PlayStation 4 with Unreal Engine
+description:
+crumbs:
+availability:epic
+
+![](Platforms/PS4/GettingStarted/PS4GettingStarted_Banner.png)
+
+[COMMENT:none]
+## %Platforms/PS4/GettingStarted:title%
+[/COMMENT]
+
+### %Platforms/PS4/GettingStarted/1:title%
+
+[INCLUDE:Platforms/PS4/GettingStarted/1#main(offset:2)]
+
+### %Platforms/PS4/GettingStarted/2:title%
+
+[INCLUDE:Platforms/PS4/GettingStarted/2#main(offset:2)]
+
+### %Platforms/PS4/GettingStarted/3:title%
+
+[INCLUDE:Platforms/PS4/GettingStarted/3#main(offset:2)]
+
+### %Platforms/PS4/GettingStarted/4:title%
+
+[INCLUDE:Platforms/PS4/GettingStarted/4#main(offset:2)]
+
+### %Platforms/PS4/GettingStarted/5:title%
+
+[INCLUDE:Platforms/PS4/GettingStarted/5#main(offset:2)]
+
+

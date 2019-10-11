@@ -1,0 +1,44 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:PlayStation 4 개발 퀵 스타트
+Description:언리얼 엔진 4 를 PlayStation 4 하드웨어에서 구동되도록 셋업하는 방법 안내서입니다.
+Crumbs:%ROOT%
+Parent:Platforms/PS4
+Order:1
+Version: 4.16
+Tags:Platform
+Type:quick start
+type:landing
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Related:Engine/Deployment
+topic-image:PS4GettingStarted_Topic.png
+
+[REGION:banner]
+![](PS4GettingStarted_Banner.png)
+[/REGION]
+
+
+언리얼 엔진 4 에서 PlayStation 4 관련 개발을 시작하기 위해서는, 먼저 개발 키트에 필요한 부분을 전부 셋업한 뒤 연결해 줘야 합니다.
+여기서는 PlayStation 4 용 빌드를 개발하고 디플로이하는 데 필요한 절차를 안내해 드리겠습니다.
+
+## 목적
+
+언리얼 엔진 4 에서 PlayStation 4 개발 셋업 및 작업 방법을 알려드립니다.
+
+## 목표
+
+이 튜토리얼에서 습득할 수 있는 지식은 다음과 같습니다:
+
+* UE4 에서 PS4 SDK 를 셋업하고 컴파일하는 방법.
+* PS4 에 연결하여 게임을 디플로이하고 테스트하는 방법.
+* 빌드 작업 명령으로 PS4 용 콘텐츠를 쿠킹하는 방법.
+* 게임이나 에디터를 실행한 상태로 Visual Studio 에서 디버깅을 하는 방법.
+
+## 단계
+
+[DIR(output:"checkpoint" parent:"Platforms/PS4/GettingStarted" org:"hierarchy")]
+	
+[REGION:call_to_action]
+	[클릭하면 시작합니다.](Platforms\PS4\GettingStarted\1 "%Platforms\PS4\GettingStarted\1:title%")
+[/REGION]

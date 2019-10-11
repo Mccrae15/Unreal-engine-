@@ -1,0 +1,43 @@
+Availability:Licensee
+Title:PlayStation 4 Development Quick Start
+Description:Guide to setting up and running Unreal Engine 4 on PlayStation 4 hardware. 
+Crumbs:%ROOT%
+Parent:Platforms/PS4
+Order:1
+Version: 4.16
+Tags:Platform
+Type:quick start
+type:landing
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Related:Engine/Deployment
+topic-image:PS4GettingStarted_Topic.png
+
+[REGION:banner]
+![](PS4GettingStarted_Banner.png)
+[/REGION]
+
+
+Before you can begin development with the PlayStation 4 in Unreal Engine 4, you'll first need to set up all the things you'll need and then connect to your developer kit. 
+This guide will walk you through all the necessary steps to develop and deploy your builds to the PlayStation 4.
+
+## Goal
+
+This guide teaches you how to set up and work with PlayStation 4 development in Unreal Engine 4.
+
+## Objectives
+
+After working through this tutorial, you'll know the following: 
+
+* How to set up and compile your PS4 SDK with UE4.
+* How to connect to your PS4 to deploy and test your game.
+* How to use build operations to cook content for your PS4.
+* How to debug from Visual Studio while running the game or the Editor. 
+
+## Steps
+
+[DIR(output:"checkpoint" parent:"Platforms/PS4/GettingStarted" org:"hierarchy")]
+	
+[REGION:call_to_action]
+	[Click to Start](Platforms\PS4\GettingStarted\1 "%Platforms\PS4\GettingStarted\1:title%")
+[/REGION]

@@ -1,0 +1,36 @@
+﻿INTSourceChangelist:3584409
+Availability:Licensee
+Crumbs: %ROOT%
+Title:设置观众画面模式的 Texture Plus Eye 布局。
+Description:此节点在 ESpectatorScreenMode 中设置 TexturePlusEye 函数的布局。
+Type:Reference
+Version:4.17
+Parent:Platforms/PS4/PSVR/SpectatorScreen
+Order: 
+Tags:VR 
+Tags:PS VR
+
+[TOC(start:2 end:2)]
+[EXCERPT:SetSpectatorScreenModeTexturePlusEyeLayoutNode_Ref]
+![](SetSpectatorScreenModeTexturePlusEyeLayoutNode.png)
+
+此节点在 `ESpectatorScreenMode` 中设置 `TexturePlusEye` 函数的布局。
+
+**输入**
+
+| 引脚位置           | 命名                                                  | 描述                                                                                                                                                                |
+| ---------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_1.png) |  (In) Exec         | 输入执行引脚。                                                                                                                                                       |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_2.png) |  Eye Rect Min      | 一个矢量 2D 结构，设置绘制眼睛的画面矩形的最小位置。 [REGION:note]值被标准化为 `0.0` 和 `1.0` 之间。[/REGION]     |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_3.png) |  Eye Rect Max      | 一个矢量 2D 结构，设置绘制眼睛的画面矩形的最大位置。 [REGION:note]值被标准化为 `0.0` 和 `1.0` 之间。[/REGION]     | 
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_4.png) |  Texture Rect Min  | 一个矢量 2D 结构，设置绘制纹理的画面矩形的最小位置。 [REGION:note]值被标准化为 `0.0` 和 `1.0` 之间。[/REGION] |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_5.png) |  Texture Rect Max  | 一个矢量 2D 结构，设置绘制纹理的画面矩形的最大位置。 [REGION:note]值被标准化为 `0.0` 和 `1.0` 之间。[/REGION] |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_6.png) |  Draw Eye First    | 如果此标记设为 `True`，则眼睛在纹理之前被绘制；如此标记设为 false，纹理将在眼睛之前被绘制。                      |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_7.png) |  Clear Black       | 如果此标记设为 `True`，任意矩形被绘制之前渲染目标将被绘制为黑色。                                                                    |
+
+**输出**
+
+| 引脚位置           | 命名                             | 描述                          |
+| ---------------------- | -------------------------------- | ------------------------------------ |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_8.png) |  (Out) Exec  | 输出执行引脚。 |
+[/EXCERPT:SetSpectatorScreenModeTexturePlusEyeLayoutNode_Ref]

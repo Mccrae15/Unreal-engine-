@@ -1,0 +1,111 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:PS4 Dev Kit へ接続する
+Description:PlayStation 4 開発キットへの接続を設定します 
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version:4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:2
+
+[nav]
+
+[EXCERPT:main]
+PS4 Neighborhood or Device Manager を使用して PS4 へ接続する前に、Dev Kit を利用可能なターゲット リストに追加する必要があります。
+まず最初に Neighborhood からこの設定を行い、その後で、自分のワークフローに最も適した接続メソッドを選択します。 
+
+## PS4 を Neighborhood に追加する方法
+
+![](PS4Neighborhood.png)(w:700)
+
+1. **Neighborhood for PlayStation 4** アプリケーションを開き、**[Navigate (ナビゲート)]** セクションの **[Add Network Target (ネットワーク ターゲットを追加)]** をクリックします。
+
+	![](AddNetworkTarget.png)(w:450)
+
+1. [New Asset (新規アセット)] ウィンドウが開きます。発見されたターゲットの中から選択、あるいは **[Host Address]** でネットワーク上にある Dev Kit を "発見" するように指定します。 
+
+	![](SpecifyHostIP.png)(w:450)
+
+1. PS4 Dev Kit が "発見" されると、**[Status]** 欄にその状態が [available (利用可能)]、[unavailable (利用不可)]、[connected (接続済み)] のいずれかで表示されます。 
+
+	[REGION:lightbox]
+	[![](PS4Status.png)(w:500)](PS4Status.png)
+	[/REGION]
+	[REGION:caption]
+	_クリックしてフルサイズで表示_
+	[/REGION]
+
+## Neighborhood による接続方法
+
+1. Neighborhood を使って接続するには、表示された Dev Kit を右クリックしてメニューから **[Connect (接続する)]** を選択します。
+
+	[REGION:lightbox]
+	[![](PS4Connect.png)(w:500)](PS4Connect.png)
+	[/REGION]
+	[REGION:caption]
+	_クリックしてフルサイズで表示_
+	[/REGION]
+
+[REGION:note]
+Neighborhood ツールの詳細は、[Sony Documentation](https://ps4.scedev.net/resources/documents/SDK/4.500/Neighborhood_and_Utilities-Users_Guide/__document_toc.html) を参照してください。
+[/REGION]
+
+
+
+## UE4 の Device Manager による接続方法
+
+![](DeviceManager.png)(w:700)
+
+1. UE4 エディタを開くと、デバイス マネージャから 2 種類の方法でアクセスすることができます。メイン メニュー > **[Window]** > **[Developer Tools]** >  **[Device Manager]** を選択する、または
+メイン ツールバー > **[Launch]** の横の矢印をクリックして、メニュー リストから **[Device Manager]** を選択します。
+
+	[REGION:imagetable]
+	| ![](MainMenuDeviceManager.png)(w:325) | ![](ToolbarDeviceManager.png)(w:325) |
+	| --- | --- |
+	| メイン メニュー | メイン ツールバー |
+	[/REGION]
+
+1. 利用可能なプラットフォームが Device Manager の中に表示されます。そのデバイス リストの中に PS4 が含まれているはずです。
+
+	[REGION:lightbox]
+	[![](DeviceManagerList.png)(w:500)](DeviceManagerList.png)
+	[/REGION]
+	[REGION:caption]
+	_クリックしてフルサイズで表示_
+	[/REGION]
+
+1. 接続する PS4 デバイスを選択し、メイン ツールバーから **[Connect]** を選択するか、デバイスを右クリックしてコンテキスト メニューから **[Connect]** を選択します。
+
+	[REGION:imagetable]
+	| ![](DMRightClickConnect.png)(w:350) | ![](DMToolbarConnect.png)(w:450) |
+	| --- | --- |
+	| コンテキスト メニューを右クリック | メイン ツールバー |
+	[/REGION]
+
+	デバイス リストの PS4 の横にある **[Status]** 欄に [Connected] と表示されます。
+
+	[REGION:lightbox]
+	[![](DM_Connected.png)(w:500)](DM_Connected.png)
+	[/REGION]
+	[REGION:caption]
+	_クリックしてフルサイズで表示_
+	[/REGION]
+[/EXCERPT:main]
+
+## 結果
+
+[REGION:lightbox]
+[![](PS4Step2_EndResult.png)(w:1280)](PS4Step2_EndResult.png)
+[/REGION]
+[REGION:caption] 画像をクリックしてフルサイズで表示 [/REGION]
+
+以上の手順で、Neighborhood に設定したターゲットの Dev Kists がリスト表示され、Neighborhood あるいは Device Manager のいずれかの方法で接続できるようになりました。 
+
+次のステップでは、利用可能なビルド操作と、Dev Kit のプロジェクトのデプロイおよびテストができるようにコンテンツをクックする方法について学習します。 
+
+
+[nav]

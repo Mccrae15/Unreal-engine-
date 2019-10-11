@@ -1,0 +1,73 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:6.创建用于 PlayStation VR 的 UE4 项目
+Crumbs:%ROOT%, Platforms
+Description:了解如何创建并设置 UE4 PlayStation VR 项目。
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:6
+tags:VR
+tags:PlayStation VR
+
+[nav]
+
+UE4 引擎代码编译后，即可新建一个与 PlayStation VR 兼容的 UE4 项目。 
+
+## 步骤
+
+1. **右键点击** UE4 项目，从快捷菜单中选择 **Set as StartUp Project**。
+
+    ![](PSVR_Set_As_Start_Up_Project.png)
+
+1. 将 Solution Platform 切回 **Win64**，在键盘上按下 **CTRL + F5** 组合键启动 UE4 编辑器。
+    
+    [region:note]
+    如弹出进行编译的提示，则需要完成编译后再继续。
+    [/region]
+
+1. **Unreal 项目浏览器** 加载后，前往 **New Project** 标签并选择 **Blueprint** 标签。如此处没有这个标签，则在 Templates 部分选择 **Virtual Reality** 模板。保留默认设置，移除不需要的 **Starter Content**。完成设置后，按下 **Create Project** 按钮新建项目。
+
+    [REGION:lightbox]
+    [![](PSVR_New_Project_Settings.png)(w:555)](PSVR_New_Project_Settings.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 项目启动后，前往 **Edit** > **Plug-ins** 打开 Plugins 菜单。
+
+    ![](PSVR_Plugins_Menu.png)
+
+1. 在 Plug-ins 菜单的侧面选择 **Virtual Reality** 类目，在可用的插件中点击 **Morpheus** 插件旁的勾选框，然后按下 **Restart Now** 按钮重启编辑器。
+
+    [REGION:lightbox]
+    [![](PSVR_Enable_Morpheus.png)(w:613)](PSVR_Enable_Morpheus.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 编辑器重启后，前往 **Edit** > **Project Settings** 启用以下选项。
+
+* **Project Settings** **Project** > **Description** > **Settings**  Start in VR = True
+
+    ![](PSVR_Project_Settings_00.png)
+
+* **Project Settings** > **Plugins** > **Morpheus**  Enable Morpheus = True
+
+    ![](PSVR_Project_Settings_01.png)
+
+在项目中启用 PlayStation VR 支持后，下一部分将介绍如何将项目部署到 PS4。
+
+
+
+
+
+
+
+[nav]

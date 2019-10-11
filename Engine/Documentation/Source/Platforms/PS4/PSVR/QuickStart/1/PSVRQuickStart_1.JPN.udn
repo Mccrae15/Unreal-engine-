@@ -1,0 +1,31 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:1.PS4 開発ツールを取得する
+Crumbs:
+Description:UE4 向け PS VR ゲームを開発するために必要なツールを取得する方法
+Platform:PS4
+Version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:1
+tags:VR
+tags:PlayStation VR
+
+[NAV]
+PlayStation VR タイトルを開発する前に、PlayStation VR デベロッパーとして Sony に登録する必要があります。登録が完了したら、Epic に連絡をして PS VR 登録状況を確認してもらいます。次のセクションでこの方法について説明します。
+
+## ステップ 
+
+1. まず最初に、PS4 および PS VR 開発ツールのアクセス権を取得するために Sony に登録します。PS4 および PlayStation VR 開発ツールの登録は、[http://us.playstation.com/develop/](http://us.playstation.com/develop/) にアクセスして、開発ツールを利用するためのフォームに必要事項を記入します。
+
+1. Sony から PlayStation VR 開発の許可がおりたら、**consoles@unrealengine.com** へメールして PlayStation VR 開発の許可が下りたことをエピックに伝えます。
+
+1. 登録を確認した後、エピックから必要なツールのダウンロード場所の通知が来ます。 
+
+
+次のセクションでは、PlayStation VR プロジェクトの開発を開始するために、PS4 開発ツールをインストールおよび設定する方法を説明します。
+
+[NAV]
+
+

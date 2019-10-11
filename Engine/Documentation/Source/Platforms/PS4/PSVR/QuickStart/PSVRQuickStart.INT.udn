@@ -1,0 +1,28 @@
+Availability:Licensee
+Title: PlayStation VR Quick Start
+Crumbs:
+Description:A look at getting your UE4 project working with PSVR.
+Navigation:platform
+Version: 4.13
+parent:Platforms/PS4/PSVR
+order:1
+type:quick start
+type:landing
+tags: VR
+tags: PlayStation VR
+tags:Getting Started
+Platform:PS4
+topic-image:PSVR_Header_Image.png
+
+
+![](PSVR_Header_Image.png)
+
+With the consumer release of PlayStation VR and the Playstation Head Mounted Display (HMD), you can now set up any Playstation project to work with the PlayStation VR HMD . In the following quick start, we will take a look at how you can set up your UE4 Playstation project to work with PS VR. When you have completed this quick start you will have a UE4 project that will work with PS VR.
+
+## Steps
+
+[DIR(output:"checkpoint" parent:"Platforms/PS4/PSVR/quickstart")]
+
+[REGION:call_to_action]
+    [Click to Start](Platforms\PS4\PSVR\QuickStart\1 "%Platforms\PS4\PSVR\QuickStart\1:title%")
+[/REGION]

@@ -1,0 +1,44 @@
+{
+	"FileVersion" : 3,
+	
+	"FriendlyName" : "Online Subsystem PS4",
+	"Version" : 1,
+	"VersionName" : "1.0",
+	"Description" : "Access to PSN platform",
+	"Category" : "Online Platform",
+	"CreatedBy" : "Epic Games, Inc.",
+	"CreatedByURL" : "http://epicgames.com",
+	"EnabledByDefault" : false,
+	"SupportedTargetPlatforms": [
+		"PS4"
+	],
+	
+    "Modules": [
+        {
+            "Name": "OnlineSubsystemPS4",
+            "Type": "Runtime",
+            "LoadingPhase": "Default",
+            "WhitelistPlatforms" :
+			[
+				"PS4"
+			]
+        }
+    ],
+	"LocalizationTargets": [
+		{
+			"Name": "OnlineSubsystemPS4",
+			"LoadingPolicy": "Always"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "OnlineSubsystem",
+			"Enabled": true
+		},
+		{
+			"Name": "OnlineSubsystemUtils",
+			"Enabled": true
+		}
+	]
+
+}

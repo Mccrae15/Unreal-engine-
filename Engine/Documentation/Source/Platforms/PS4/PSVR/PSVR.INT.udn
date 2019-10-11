@@ -1,0 +1,30 @@
+Availability:Licensee
+Title:Developing for PlayStation VR
+Crumbs:%ROOT%, Platforms
+Description:Developing VR games for PlayStation 4 consoles.
+Platform:PS4
+Navigation:platform
+type:landing
+parent:Platforms/PS4
+version:4.13
+tags: VR
+tags: PSVR
+
+![](PSVR_Header_Image.png)
+
+Developing content for Playstation VR is similar to developing content for Playstation 4. However, there are few things that will need to be done to your UE4 project to make sure that it will work with PlayStation VR. In the following sections, we will go over how to setup your UE4 project so that it can be used with the PlayStation VR HMD.
+
+## Starting Out 
+
+[DIR(end:"1" output:"topic" type:"quick start" parent:"Platforms/PS4/PSVR")]
+
+## Samsung Gear VR Development
+
+[DIR(end:"1" output:"topic" type:"reference,overview" parent:"Platforms/PS4/PSVR")]
+
+## Guides
+
+[DIR(output:"fancy" type:"how-to" skilllevel:"Beginner" parent:"Platforms/PS4/PSVR" org:"flat")]
+[DIR(output:"fancy" type:"how-to" skilllevel:"Intermediate" parent:"Platforms/PS4/PSVR" org:"flat")]
+[DIR(output:"fancy" type:"how-to" skilllevel:"Advanced" parent:"Platforms/PS4/PSVR" org:"flat")]
+[DIR(output:"fancy" type:"how-to" skilllevel:"Expert" parent:"Platforms/PS4/PSVR" org:"flat")]

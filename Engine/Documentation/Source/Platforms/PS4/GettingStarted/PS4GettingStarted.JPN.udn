@@ -1,0 +1,44 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:PlayStation 4 開発のクイック スタート
+Description:PlayStation 4 でのアンリアル エンジン 4 の設定および実行ガイド 
+Crumbs:%ROOT%
+Parent:Platforms/PS4
+Order:1
+Version:4.16
+Tags:Platform
+Type:quick start
+type:landing
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Related:Engine/Deployment
+topic-image:PS4GettingStarted_Topic.png
+
+[REGION:banner]
+![](PS4GettingStarted_Banner.png)
+[/REGION]
+
+
+アンリアル エンジン 4 で PlayStation 4 の開発を開始する前に、必要な設定をすべて行ってからデベロッパー キットに接続してください。 
+このガイドでは、PlayStation 4 向けビルドの開発およびデプロイに必要なすべてのステップを説明します。
+
+## 目標
+
+このガイドでは、アンリアル エンジン 4 で PlayStation 4 向けの開発を行うための設定および作業方法を説明します。
+
+## 目的
+
+このチュートリアルでは、以下の習得を目指します。 
+
+* UE4 で PS4 SDK を設定およびコンパイルする方法。
+* PS4 を接続し、ゲームをデプロイおよびテストする方法。
+* PS4 向けにコンテンツをクックするビルド演算子の使用方法。
+* ゲームまたはエディタの実行中に Visual Studio からデバッグする方法。 
+
+## ステップ
+
+[DIR(output:"checkpoint" parent:"Platforms/PS4/GettingStarted" org:"hierarchy")]
+
+[REGION:call_to_action]
+	[クリックして開始](Platforms\PS4\GettingStarted\1 "%Platforms\PS4\GettingStarted\1:title%")
+[/REGION]

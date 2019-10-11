@@ -1,0 +1,89 @@
+Availability:Licensee
+Title:5. Building UE4 for PlayStation VR Support
+Crumbs:%ROOT%, Platforms
+Description:Taking a look at how to build and get your UE4 project to work with PlayStation VR.
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 5
+tags: VR
+tags: PlayStation VR
+
+[nav]
+
+Now that the PlayStation VR tools have been installed, setup, and you can see your PS4 Development Kit in the PS4 Neighborhood, we will need to build the Unreal Engine from source code to include PlayStation VR Development. This will allow us to create and deploy our UE4 projects to our PS4 Dev Kits and our PlayStation VR. 
+
+[region:warning]
+To get PS4 development support you will need to download UE4 from either Github or Perforce. The required PS4 development files can not be downloaded from the binary build of UE4 that comes with the launcher.  
+[/region]
+
+## Steps
+
+1. Download the latest UE4 release from the [Epic Github](https://github.com/EpicGames/UnrealEngine) page and once downloaded extract it to your PC. 
+	
+	[region:note]
+	Make sure you are logged into Github before clicking on the link above. Failing to do this will result in the link not working correctly.
+	[/region]
+
+1. In the folder where you extracted the files, locate and run the **Setup.BAT** file to get the rest of the engine downloaded to your development PC.
+
+    [REGION:lightbox]
+    [![](PSVR_Run_Setup.png)(w:504)](PSVR_Run_Setup.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. Once all of the files are downloaded, you will then need to download and extract the corresponding console zips. The files will be provided to you by Epic once Epic verifies you are a registered PS4 console developer.
+
+    [region:note]
+    If you downloaded UE4 via Github, you will be sent a link to a secure FTP that contains the console files. If you downloaded UE4 via the licensees Perforce, then you will already have these files.
+    [/region]
+
+1. Inside of the newly extracted folder, you will see an Engine folder. Copy that Engine folder and then replace the Engine folder that was downloaded in step 2. 
+
+    [region:tip]
+    Make sure to accept all of the overwrites as you need to make sure all needed files are updated with the console version.
+    [/region]
+
+1. Inside of the Engine folder locate and run the **Generate Project files.BAT** file.
+
+    [REGION:lightbox]
+    [![](PSVR_Run_GenProjectFiles.png)(w:504)](PSVR_Run_GenProjectFiles.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. Once the project files have finished generating, Double - click on the UE4.sln file to launch the UE4 Visual Studio Project.
+
+    [REGION:lightbox]
+    [![](PSVR_Launch_Project.png)(w:504)](PSVR_Launch_Project.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. At the top of Visual Studio make sure your Solution Configuration is set to **Development Editor** and your Solution Platform is set to **Win64**.  
+
+    ![](PSVR_VS_Settings.png)
+
+1. Over in the Solution Explorer, Right-click on the UE4 project and from the context menu, select the **Build** option.
+
+    ![](PSVR_Build_UE4.png)
+
+1. When the build has finished, change the **Solution Platform** to **PS4** and then expand the **Programs** folder and look for the **PS4DevKitUtil**.  When PS4DevKitUtil is located, **Right-click** on it and select the **Build** option.
+
+    ![](PSVR_Build_PSDevKitUtil.png)
+
+
+With your UE4 code now compiled, in the next section we will take a look at creating and setting up a new UE4 project that will work with PlayStation VR.
+
+
+
+[nav]

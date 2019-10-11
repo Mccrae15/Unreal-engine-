@@ -1,0 +1,41 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:2.安装 PS4 和 PlayStation VR 开发工具
+Crumbs:%ROOT%, Platforms
+Description:了解如何安装 PS VR 开发工具。
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:2
+tags:VR
+tags:PlayStation VR
+
+[NAV]
+
+为将内容安装到 PS4 并可用于 PlayStation VR，首先需要安装 Sony 提供的数个工具。以下部分将讲述索尼 SDK 的安装流程，帮助您在开发电脑上安装必备工具。
+
+## 步骤
+1. 导航至下载的索尼工具，双击 **SDK_Manager.exe** 文件开始安装进程。
+
+    ![](PSVR_SDK_Tools_Install.png)
+
+1. 在 SDK Manager 顶部选择 **English Documentation**。 
+
+    ![](PSVR_Tools_Setup_1.png)
+
+1. 勾选 SDK 版本号旁边的框，选中以下的每个文件，然后按下 **Next** 按钮开始安装。
+
+    ![](PSVR_Tools_Setup_2.png)
+
+1. 安装进程中将弹出提示，按下 **Next** 按钮即可进入下一部分。安装完成后需要重启电脑，使所有修改生效。 
+
+    [region:note]
+    安装过程需花费大约 25 至 35 分钟，其间可能打开一个命令窗口。这是正常情况，安装进行中时请保持命令窗口打开。
+    [/region]
+
+安装必要工具后，下一部分将讲述开发机的设置，以便进行内容推送。
+
+[NAV]
+

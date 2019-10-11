@@ -1,0 +1,30 @@
+Availability: Licensee
+Crumbs: %ROOT%
+Title: Set Spectator Screen Texture
+Description: This node changes the texture being displayed on the Social (Spectator) Screen.
+Type: Reference
+Version: 4.17
+Parent: Platforms/PS4/PSVR/SpectatorScreen
+Order:
+Tags: VR 
+Tags: PS VR
+
+[TOC(start:2 end:2)]
+[EXCERPT:SetSpectatorScreenTextureNode_Ref]
+![](SetSpectatorScreenTextureNode.png)
+
+This node changes the texture being displayed on the Social (Spectator) Screen.
+
+**Inputs**
+
+| Pin Location           | Name            | Description                                                                                                                                                            |
+| ---------------------- | --------------- | ------------------------------------------------------------- |
+| ![](SetSpectatorScreenTextureNode_1.png) |  (In) Exec  | Input execution pin.                            |
+| ![](SetSpectatorScreenTextureNode_2.png) |  In Texture | A reference to the new Texture (2D) Object. |
+
+**Output**
+
+| Pin Location           | Name        | Description                                                                                                                                                            |
+| ---------------------- | ----------- | ---------------------------------------- |
+| ![](SetSpectatorScreenTextureNode_3.png) |  (Out) Exec  | Output execution pin. |
+[/EXCERPT:SetSpectatorScreenTextureNode_Ref]

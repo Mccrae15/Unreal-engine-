@@ -1,0 +1,95 @@
+Availability:Licensee
+Title:7. Deploying your Project to the PS4
+Crumbs:%ROOT%, Platforms
+Description:Taking a look at how to get your UE4 PlayStation VR project running on the PS4.
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 7
+tags: VR
+tags: PlayStation VR
+
+[nav]
+
+Now that your UE4 project has had PlayStation VR support enabled, we will now take a look at how to get your project up and running on the PS4.
+
+## Steps
+
+1. First, to give our UE4 project the ability to use PlayStation VR, we will need to create a new .SFO file. To accomplish this, locate and open the SP Editor Tools which can be found in the following location: 
+
+        C:\Program Files (x86)\SCE\ORBIS\Tools\Publishing Tools\bin\orbis-pub-sfo.exe  
+
+    ![](PSVR_Orbis_Tools_Location.png)
+
+1. Locate your projects **param.sfo** file which can be found at the following location inside your UE4 Engine folder.
+
+        Engine\Build\PS4
+
+    ![](PSVR_ParamSFO_Location.png)
+
+1.  Inside the Param File Editor for PlayStation 4, go to **File** > **Open** and then open your param.sfo file that is located in your **Engine\Build\PS4** folder.
+
+    ![](PSVR_Open_SFO_File.png)
+
+1. Once the param.sfo file is open go to the CPU and Peripherals section and set the following items.
+
+    * **CPU Mode**: 6 CPU mode
+    * **PlayStationVR**: The application supports PlayStationVR
+
+    [REGION:lightbox]
+    [![](PSVR_CPU_Settings.png)(w:464)](PSVR_CPU_Settings.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. After the above options have been set, go to **File** > **Save as** and give your new params.sfo file a name.  Make sure to put the new pram.SFO file under **yourgame/build/PS4/sce_sys** or you will enable these options for all of your PS4 projects.
+	
+	[REGION:lightbox]
+    [![](PSVR_SaveSFO_File.png)(w:474)](PSVR_SaveSFO_File.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+    [region:note]
+   You will have to manually create the **sce_sys** folder that the pram.SFO file needs to be placed in as it is not there by default.
+    [/region]
+
+1. Back in the UE4 Editor, click on the Launch option drop-down menu, then select **Device Manager**.
+
+    ![](PSVR_Open_Device_Manager.png)
+
+1. Find your PS4 in the Device Manager and when you locate it, **Right - click** on it and from the context menu that is displayed, in the **Connectivity** section, click on the **Connect** option to connect to your PS4.
+
+    [REGION:lightbox]
+    [![](PSVR_Claim_PS4.png)(w:568)](PSVR_Claim_PS4.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+    [region:note]
+    If you see the word **Connected** under Status then you have been successfully connected to your PS4.
+    [/region]
+
+1. Now back in UE4 click on the Launch option dropdown that is next to **Launch** and from the displayed menu, under **Devices**, select your PS4 from the list.
+
+    ![](PSVR_Launch_On_PS4.png)
+
+1. On the bottom right of the screen, you will see a box that will display the progress of your deployment. If you click on the **Show Output** link, the output log will be displayed which will give you more detailed information about what is going on. It will also show any errors that might occur during the deployment process. 
+
+    ![](PSVR_Deploy_Status.png)
+
+1.  Once the progress box says **Running (Project Name) on (PS4 Name)...** go to your PS4, put on your PlayStation VR HMD and you should now see something similar to the following image.
+
+    ![](PSVR_Final_Result.png)
+
+In this Quick Start, we covered all of the required steps that are needed to get your UE4 project working with PlayStation VR.  To further build on this example check out the [PlayStation VR Motion Controller How - To](Platforms\PS4\PSVR\HowTo\PSVRMotionControllers) for information about getting your PlayStation VR project to work with the PlayStation Move Controllers.
+
+[nav]
