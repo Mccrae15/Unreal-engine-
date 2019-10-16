@@ -2308,7 +2308,7 @@ bool UGameplayStatics::PredictProjectilePathChaingingRadius(const UObject* World
 			DistTraveled = FVector::Dist(TraceStartForCalc, lastPosition);
 
 			ProjectileRadius = UKismetMathLibrary::Lerp(minRadius, maxRadius, FMath::Clamp(UKismetMathLibrary::NormalizeToRange(DistTraveled, minDistance, maxDistance),0.f, 1.f));
-			UE_LOG(LogTemp, Warning, TEXT("Radius during tracing: %f"), ProjectileRadius);
+			//UE_LOG(LogTemp, Warning, TEXT("Radius during tracing: %f"), ProjectileRadius);
 
 			// Limit step to not go further than total time.
 			const float PreviousTime = CurrentTime;

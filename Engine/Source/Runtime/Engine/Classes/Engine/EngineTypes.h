@@ -154,7 +154,7 @@ struct ENGINE_API FDetachmentTransformRules
 };
 
 /** Deprecated rules for setting transform on attachment, new functions should use FAttachmentTransformRules isntead */
-UENUM()
+UENUM(BlueprintType)
 namespace EAttachLocation
 {
 	enum Type
