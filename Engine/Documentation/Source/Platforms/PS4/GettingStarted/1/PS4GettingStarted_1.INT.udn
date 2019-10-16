@@ -1,0 +1,92 @@
+Availability:Licensee
+Title:Required Setup
+Description:Setting up and compiling the engine for use with the PlayStation 4 SDK.
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version: 4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:1
+
+[nav]
+
+[EXCERPT:main]
+Before you can get started developing for the PlayStation 4, you'll have to install your PS4 SDK, setup a source build of the engine, and install the requisite PS4 support files for integration into your build.
+
+[PUBLISH:licensee]
+1. Download the Unreal Engine 4 source code from [P4](GettingStarted/DownloadingUnrealEngine/Perforce/Basics).
+[/PUBLISH:licensee]
+[PUBLISH:rocket]
+1. Download the Unreal Engine 4 source code version of the engine available via [GitHub](https://github.com/EpicGames/UnrealEngine).
+
+	[REGION:note]
+	The Binary version of the engine available in the Epic Games Launcher does not support console development. 
+	[/REGION]
+[/PUBLISH:rocket]
+
+[PUBLISH:rocket]
+
+1. Download the available PS4 Support files by logging into http://ftp.epicgames.com/ with the FTP Credentials you received from Epic Games when you registered as a PS4 developer and navigating to the FTP's **UE4PS4** directory and download the **PS4-xxxx.zip** where "xxxx" matches the GitHub branch you are synced with.
+[/PUBLISH:rocket]
+
+1. Install the PS4 SDK and make sure that the SDK version matches the value assigned to **PS4PlatformSDK::ExpectedSDKVersion** that is located in:
+	
+	`[UE4Directory]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs`
+	
+	If you upgrade your SDK, you will need to be sure to update this value as well. 
+	
+	[REGION:note]
+	In order to see which version of the PS4 SDK Unreal Engine is expecting, you can look in the `HasRequiredSDKsInstalled()` function in the file below:
+	
+	`[UE4Directory]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs`
+					
+	Refer to your project version [Release and HotFix notes](Support/Builds) for latest supported or recommended Platform SDKs.
+	[/REGION]
+
+[PUBLISH:rocket]
+
+1. Run the `setup.bat` and extract the **PS4-xxxx.zip** into your `[UE4Directory]` root folder.
+[/PUBLISH:rocket]	
+
+1. Run `[UE4Directory]/GenerateProjectFiles.bat`. This step should be performed after installing the PS4 SDK so that it will know you have the necessary PS4 Support files installed. 
+
+1. Compile the Editor, the related tools, and your project. The following targets are a good starting point.
+
+	| Target | Config | Platform |
+	| ------ | ------ | -------- |
+	| [ProjectName] | Development Editor | Win64 |
+	| PS4DevKitUtil | Development Editor | Win64 |
+	| ShaderCompileWorker | Development Editor | Win64 |
+	| UnrealFrontend | Development Editor | Win64 |
+	| [ProjectName] | Development | PS4 |
+
+	[REGION:tip]
+	Alternatively, to make building these projects easier, you can use the **Batch Build** functionality that is available in Visual Studio by performing the following steps:
+	
+	1. In the **Build** menu, choose **Build > Batch Build**.
+
+	1. Setup the following options:
+
+		| Target | Config | Platform |
+		| ------ | ------ | -------- |
+		| [ProjectName] | Development_Editor | x64 |
+		| PS4DevKitUtil | Development Editor | Win64 |
+		| ShaderCompileWorker | Development_Editor | x64 |
+		| UnrealFrontend | Development Editor | x64 |
+		| [ProjectName] | Development | ORBIS |
+
+	1. Click the **Build** or **Rebuild** button to compile the Editor, related tools, and your project.
+	[/REGION]
+
+[/EXCERPT:main]
+
+## End Result
+
+At this point, you've installed the PlayStation 4 SDK, setup a new source build of the engine from GitHub or the Epic Games Perforce repository and integrated the PS4 support files needed to make
+everything work together can compile correctly. In the next step, you'll learn how to setup the connection for your PS4 so that you can deploy builds from the Editor to your PS4 Dev Kit. 
+
+
+[nav]

@@ -3212,12 +3212,12 @@ void FConfigCacheIni::InitializeConfigSystem()
 			UE_LOG(LogConfig, Warning, TEXT("Loaded InputViveWandsLeft"));
 			break;
 		case 4:
-			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputKnucklesRight"));
-			UE_LOG(LogConfig, Warning, TEXT("Loaded InputKnucklesRight"));
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputIndexRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputIndexRight"));
 			break;
 		case 5:
-			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputKnucklesLeft"));
-			UE_LOG(LogConfig, Warning, TEXT("Loaded InputKnucklesLeft"));
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputIndexLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputIndexLeft"));
 			break;
 		case 6:
 			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputWMRRight"));

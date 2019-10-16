@@ -1,0 +1,55 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:额外信息
+Description:设置 PS4 兼容虚幻引擎 4 时的额外信息和参考资源。
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version:4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:5
+
+
+[nav]
+
+[EXCERPT:main]
+此页面中包含之前页面中所提及的设置 PlayStation 4 兼容虚幻引擎 4 时的额外信息和快速参考。 
+
+## 访问 PlayStation 4 支持文件
+
+[PUBLISH:rocket]
+1. 用注册成为 PlayStation 4 开发者时从 Epic Games 获得的 FTP 登录信息登入 http://ftp.epicgames.com/。
+1. 导航至 FTP 的 **UE4PS4** 目录，下载 **PS4-xxxx.zip**，其中 xxxx 代表同步的 Github 分支。
+[/PUBLISH:rocket]
+
+[PUBLISH:licensee]
+如您的账户拥有 PS4 访问许可，所有 PlayStation 4 支援文件都将显示。
+[/PUBLISH:licensee]
+
+## 设置提醒
+
+* 如您也在针对其他平台进行开发，生成项目文件之前则需要安装这些平台的全部必备条件。
+* 平台支持基于生成项目文件时安装的 SDK。因此，每次更新 SDK 版本时都需要运行 `[UE4 目录]/GenerateProjectFiles.bat`。 
+* 安装 SDK 时，确保 SDK 版本与 **PS4PlatformSDK::ExpectedSDKVersion** 中（在 `[UE4 目录]/Engine/Source/Programs/UnrealBuildTool/PS4/UEBuildPS4.cs` 文件中）指定的值相匹配。
+
+## 用 Visual Studio 进行批编译
+
+让编译更简便的方法是使用 **Build** 菜单中的 **Batch Build** 选项，利用批编译来编译多个项目配置。 
+
+可在 [必要设置](Platforms/PS4/GettingStarted/1) 页面中的第 6 步查看使用范例。
+
+## 附加资源
+
+* 使用 [版本和热更新信息](Support/Builds) 来确定您使用的虚幻引擎版本需要的 SDK。 
+* [索尼 PlayStation 4 Neighborhood 工具文档](https://ps4.scedev.net/resources/documents/SDK/4.500/Neighborhood_and_Utilities-Users_Guide/__document_toc.html)
+[PUBLISH:licensee]
+* 如遇 PlayStation 4 支持文件的 Perforce 访问问题，请联络您的 Epic Games 账户代表。 
+[/PUBLISH:licensee]
+[/EXCERPT:main]
+
+[nav]
+
+

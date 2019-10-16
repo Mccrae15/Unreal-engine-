@@ -1,0 +1,35 @@
+Availability: Licensee
+Crumbs: %ROOT%
+Title: Set Spectator Screen Mode Texture Plus Eye Layout
+Description: This node sets up the layout for the TexturePlusEye function in ESpectatorScreenMode.
+Type: Reference
+Version: 4.17
+Parent: Platforms/PS4/PSVR/SpectatorScreen
+Order: 
+Tags: VR 
+Tags: PS VR
+
+[TOC(start:2 end:2)]
+[EXCERPT:SetSpectatorScreenModeTexturePlusEyeLayoutNode_Ref]
+![](SetSpectatorScreenModeTexturePlusEyeLayoutNode.png)
+
+This node sets up the layout for the `TexturePlusEye` function in `ESpectatorScreenMode`.
+
+**Inputs**
+
+| Pin Location           | Name                                                  | Description                                                                                                                                                                |
+| ---------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_1.png) |  (In) Exec         | Input execution pin.                                                                                                                                                       |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_2.png) |  Eye Rect Min      | A Vector 2D Structure, setting the minimum position of the screen rectangle that the Eye will be drawn in. [REGION:note]Values are normalized between `0.0` and `1.0`.[/REGION]     |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_3.png) |  Eye Rect Max      | A Vector 2D Structure, setting the maximum position of the screen rectangle that the Eye will be drawn in. [REGION:note]Values are normalized between `0.0` and `1.0`.[/REGION]     | 
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_4.png) |  Texture Rect Min  | A Vector 2D Structure, setting the minimum position of the screen rectangle that the Texture will be drawn in. [REGION:note]Values are normalized between `0.0` and `1.0`.[/REGION] |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_5.png) |  Texture Rect Max  | A Vector 2D Structure, setting the maximum position of the screen rectangle that the Texture will be drawn in. [REGION:note]Values are normalized between `0.0` and `1.0`.[/REGION] |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_6.png) |  Draw Eye First    | If this flag is set to `True`, the Eye is drawn before the Texture; however, if this flag is set to false, the Texture will be drawn before the Eye.                      |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_7.png) |  Clear Black       | If this flag is set to `True`, the Render Target will be drawn black before either rectangle is drawn.                                                                    |
+
+**Output**
+
+| Pin Location           | Name                             | Description                          |
+| ---------------------- | -------------------------------- | ------------------------------------ |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_8.png) |  (Out) Exec  | Output execution pin. |
+[/EXCERPT:SetSpectatorScreenModeTexturePlusEyeLayoutNode_Ref]

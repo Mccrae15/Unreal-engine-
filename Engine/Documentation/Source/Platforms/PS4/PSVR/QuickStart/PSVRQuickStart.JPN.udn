@@ -1,0 +1,29 @@
+﻿INTSourceChangelist:3643552
+Availability:Licensee
+Title:Title:Google VR クイックスタート
+Crumbs:
+Description:UE4 プロジェクトで PSVR を使用する
+Navigation:platform
+Version:4.13
+parent:Platforms/PS4/PSVR
+order:1
+type:quick start
+type:landing
+tags:VR
+tags:PlayStation VR
+tags:Getting Started
+Platform:PS4
+topic-image:PSVR_Header_Image.png
+
+
+![](PSVR_Header_Image.png)
+
+PlayStation VR および Playstation Head Mounted Display (HMD) が一般消費者向けにリリースされましたので、Playstation プロジェクトで PlayStation VR HMD を使用する設定が可能になります。クイックスタートでは、Playstation プロジェクトで PS VR を使用するための設定方法を説明します。このクイックスタートが完了すると、UE4 プロジェクトで PS VR が使用できるようになります。
+
+## ステップ
+
+[DIR(output:"checkpoint" parent:"Platforms/PS4/PSVR/quickstart")]
+
+[REGION:call_to_action]
+    [Click to Start](Platforms\PS4\PSVR\QuickStart\1 "%Platforms\PS4\PSVR\QuickStart\1:title%")
+[/REGION]

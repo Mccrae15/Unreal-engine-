@@ -1,0 +1,44 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:3.PS4 开发机设置
+Crumbs:%ROOT%, Platforms
+Description:了解如何设置 PS4 开发机。
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:3
+tags:VR
+tags:PlayStation VR
+
+[nav]
+为使 PS4 开发机正常工作，需要对其进行一些设置。以下部分将讲述需要对 PS4 开发机进行的设置，使其兼容 UE4。
+
+## 步骤
+
+1. 请确保 **LAN** 和 **DEV** 端口已插入网线，需要进行此操作开发机才能正常工作。
+
+    [REGION:lightbox]
+    [![](PSVR_Lan_Ports.png)(w:504)](PSVR_Lan_Ports.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 前往 **Debug Settings** > **Boot Parameters** > **Release Check Mode** 并将开发机设为 **Development Mode**。
+
+    [REGION:lightbox]
+    [![](PSVR_Boot_Params.png)(w:504)](PSVR_Boot_Params.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+
+现在 PS4 便已连接到网络并设为开发模式。下一部分将讲述如何让 PS4 在 Neighborhood for Playstation 工具中显示出来。
+
+
+[nav]

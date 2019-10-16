@@ -1,0 +1,100 @@
+﻿INTSourceChangelist:3608217
+Availability:Licensee
+Title:使用版本操作和烘焙内容
+Description:使用可用的版本操作选择最适合您工作流的内容烘焙方法。
+Crumbs:%ROOT%
+Parent:Platforms/PS4/GettingStarted
+Version:4.16
+Tags:Platform
+Type:quick start
+type:multi-step
+Skilllevel:Advanced
+Checkpoint:PS4GettingStarted
+Order:3
+
+[nav]
+
+[EXCERPT:main]
+所有版本操作（编译、烘焙、打包、部署和运行）均使用 [Unreal 自动工具](Programming/Automation) 进行。使用有效参数时，可使用以下内容在命令行上运行此工具：
+
+`[UE4Directory]/Engine/Build/BatchFiles/RunUAT.bat`
+
+在编辑器中使用 Project Launcher（**Window** > **Project Launcher**）时，它将生成命令行，然后自动传至 `RunUAT.bat`。
+
+[REGION:tip]
+在编辑器中从 Project Launcher 运行配置文件，将在日志在输出生成的命令行。**BuildCookRun** 向前的文本可被传至 `RunUAT.bat`。
+[/REGION]
+
+**Project Launcher 生成的日志输出**
+
+`Automation.ParseCommandLine:Parsing commandline:-ScriptsForProject=MyProject.uproject BuildCookRun -project=MyProject.uproject -clientconfig=Development ...`
+
+**相等的命令行**
+
+`[UE4Directory]/Engine/Build/BatchFiles/RunUAT.bat BuildCookRun -project=MyProject.uproject -clientconfig=Development`
+
+[REGION:tip]
+作为最佳方法，应用到 UAT 的参数可能非常复杂，因此我们推荐在 Project Launcher 中使用自定义配置文件制作版本。即使您偏向于从命令行运行 UAT，最佳方式是至少将 Project Launcher 用于生成恰当的命令行，而非纯手动进行编写。
+[/REGION]
+
+
+## 烘焙内容
+
+在 PS4 上使用内容之前，必须将其烘焙。[内容烘焙](Engine/Deployment/Cooking) 指的是已编译并已转换为最优于目标平台最终格式的文件。可从 **Project Launcher** 中以两种方式烘焙内容：**常规（By the Book）** 或 **即时（on the fly）**。 
+
+前往主菜单 > **Window** > 并选择 **Project Launcher**，打开 Project Launcher。
+
+![](ProjectLauncher.png)(w:700)
+
+使用这些烘焙方法之前，首先需要创建一个 **自定义运行配置文件**。
+
+### 创建自定义运行配置文件
+
+1. 在 Project Launcher 窗口中点击 **Custom Launch Profile** 部分的 **添加**（**+**）标记。 
+
+	![](AddCustomLaunchProfile.png)(w:700)
+1. 同一个窗口中现在将显示新“自定义运行配置文件”可用的选项。为配置文件 **命名**；如有必要，则指定到特定 **项目**。
+
+	![](NewCustomProfile.png)(w:700)
+
+1. 拥有自定义运行配置文件后，在下方的 **Cook By the Book** 和 **Cook on the fly** 之间进行选择，确定最契合工作环境和部署需要的方法。 
+
+## 常规烘焙
+
+选择 **常规（By the Book）** 烘焙内容则会将整个烘焙提前，一次性部署所有烘焙资源。不再单个资源上进行迭代时、或需要游戏全速执行，不等待服务器传递烘焙内容时此方法十分实用。通常而言，性能测试和游玩测试使用此法。 
+
+执行“cook by the book”编译时无需进行额外设置。在 **Custom Launch Profile** 下的 Project Launcher 中，从下拉选项中选择 **Cook** 方法即可设置 **By The Book**。
+
+![](CookByTheBook.png)(w:900)
+
+
+## 即时烘焙
+
+选择 **即时（on the fly）** 烘焙内容后，烘焙将延迟，直到游戏完成部署。此方法使用烘焙服务器的网络通信随选执行请求，只安装可执行文件和部分基础文件。即时烘焙将进行快速迭代，便于开发者对内容进行定期修改，也便于玩家探索游戏的各个部分（意味着不必对其进行烘焙）。
+
+进行即时烘焙需要在拥有完整项目的电脑上架设烘焙服务器。这可以是本地电脑，也可以是执行烘焙的远程服务器。如下在命令行模式中启动 UE4 编辑器，即可运行烘焙服务器：
+
+`UE4Editor-cmd.exe [fullAbsolutePathToProject.uproject] -run=cook -targetplatform=PS4 -cookonthefly`
+		
+在开发者电脑上 Custom Launch Profile 下的 Project Launcher 中，从下拉选项中选择 **Deploy** 方法即可设置 **File Server**。使用下拉选项将目标设为 **Default Deploy Platform: PS4**。
+
+![](DeploySettings.png)(w:900)
+
+可执行文件在 PS4 上运行后，它需要了解运行烘焙服务器的电脑的 IP 地址。将以下命令行参数传至客户端命令行上即可执行此操作（x.x.x.x 代表主机的 IP）：
+
+`-filehostip=x.x.x.x`
+
+可在 **Additional Command Line Parameters** 下自定义运行配置文件的 **Launch** 部分中进行指定。默认为 0.0.0.0（本地主机）。
+
+![](LaunchSettings.png)(w:900)
+[/EXCERPT:main]
+
+## 最终结果
+
+![](ProjectLauncher_EndResult.png)(w:900)
+
+您现在便已学习到可用的版本操作，以及自定义运行配置文件的设置方法，用以正确烘焙内容部署到 PS4 开发机上。在下一部分中，您将了解到 Visual Studio 中可用的调试选项。
+
+
+
+[nav]

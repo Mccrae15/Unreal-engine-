@@ -1,0 +1,84 @@
+Availability:Licensee
+Title:Setting up PS Move Controllers
+Crumbs:
+Description:Shows how you can setup and use Motion Controllers for PlayStation VR.  
+Version: 4.13
+SkillLevel: Beginner
+parent:Platforms/PS4/PSVR/HowTo
+type:how-to
+order:1
+tags: VR
+tags: PlayStation VR
+tags: Motion Controllers
+Related: Platforms\VR\MotionController
+prereq: Platforms\VR\MotionController.
+Reference-image:![](PSVR_MC_Header_Image.png)
+
+![](PSVR_MC_Header_Image.png)
+
+PlayStation VR offers support for using the PlayStation Move controllers as Motion Controllers, allowing users to interact with your UE4 project in an entirely new way. As with many things in UE4 Motion Controller Support works in a simial manner to other VR devices. In the following How - To we will go over how you can setup and use PlayStation Move controllers as motion controllers.
+
+## Steps
+
+[region:note]
+We will be using the same project from the PlayStation VR Quick Start tutorial as it is using a Template that already has Motion Controller support setup and ready to be used.
+[/region]
+
+1. Before we can use Motion Controllers we will first need to enable the Move Controller Plugin by going to the main toolbar and selecting **Edit** > **Plugins** to open the plugin menu.
+
+    ![](PSVR_Move_Plugin_Menu.png)
+
+1. When the plugins menu is opened click on **Input Devices** and then in the list of devices, look for the **Move Controller Plugin** and press the checkmark box next to it to enable it and then press the **Restart Now** button to re-start the UE4 Editor.
+
+    [REGION:lightbox]
+    [![](PSVR_Enable_Move_Support.png)(w:488)](PSVR_Enable_Move_Support.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. Once the UE4 Editor has restarted, go to the **Maps** folder that is located in the Content Browser and double-click on the **MotionControllerMap** map to open it up.
+
+    ![](PSVR_Load_MC_Map.png)
+
+    [region:note]
+    If you do not have the MotionControllerMap in your project, you can create or load any map of your liking. 
+    [/region]
+
+1. With the MotionControllerMap now open click on the small white triangle next to **Launch**  and from the context menu, select your PS4 from the list.
+
+    ![](Platforms\PS4\PSVR\QuickStart\7\PSVR_Launch_On_PS4.png)
+
+1. When the project has been deployed to the PS4, put the PlayStation VR HMD on and grab your PlayStation Move controllers. As you move the, Move controllers around you should see the pair of robot hands in front of you match your hand movements.
+
+    [REGION:lightbox]
+    [![](PSVR_MC_Hands.png)(w:512)](PSVR_MC_Hands.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+Since we are using the VR Template, there is some built-in movement functionality that can be used right away. Below you will find a brief description of what types of interaction you can do and how you perform them.
+
+* **Movement**: If you press the **Square** button on the Move controller you will activate the teleport system that will allow you to teleport around the play area. To teleport, keep the Square button held down and aim your Move controller to the location you want to teleport to. When you find a location, you want to teleport to, release the Square button and you will be instantly teleported there.
+
+    [REGION:lightbox]
+    [![](PSVR_MC_Move_Arc.png)(w:512)](PSVR_MC_Move_Arc.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+* **Grabbing**: You can grab and throw objects in the scene by moving your Move controller over the object you want to pick up and then squeezing the trigger to pick the object up and releasing the trigger to drop the object.
+
+    [REGION:lightbox]
+    [![](PSVR_MC_Grabbing.png)(w:512)](PSVR_MC_Grabbing.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+

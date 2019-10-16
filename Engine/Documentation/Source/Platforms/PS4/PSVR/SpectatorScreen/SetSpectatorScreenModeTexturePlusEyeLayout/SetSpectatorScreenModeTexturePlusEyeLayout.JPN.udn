@@ -1,0 +1,36 @@
+﻿INTSourceChangelist:3584409
+Availability:Licensee
+Crumbs: %ROOT%
+Title:Set Spectator Screen Mode Texture Plus Eye Layout
+Description:SpectatorScreenMode に TexturePlusEye 関数のレイアウトを設定するノードです。
+Type:Reference
+Version:4.17
+Parent:Platforms/PS4/PSVR/SpectatorScreen
+Order: 
+Tags:VR 
+Tags:PS VR
+
+[TOC(start:2 end:2)]
+[EXCERPT:SetSpectatorScreenModeTexturePlusEyeLayoutNode_Ref]
+![](SetSpectatorScreenModeTexturePlusEyeLayoutNode.png)
+
+このノードは`ESpectatorScreenMode` に `TexturePlusEye` 関数のレイアウトを設定するノードです。
+
+**入力**
+
+| ピンの位置           | 名前                                                  | 詳細                                                                                                                                                                |
+| ---------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_1.png) |  (In) Exec         | Input execution pin.                                                                                                                                                       |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_2.png) |  Eye Rect Min      | 目が描画される画面の四角の最小位置を設定する Vector 2D Structure です。[REGION:note]値は `0.0` と `1.0` の間でノーマライズされます。[/REGION]     |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_3.png) |  Eye Rect Max      | 目が描画される画面の四角の最大位置を設定する Vector 2D Structure です。[REGION:note]値は `0.0` と `1.0` の間でノーマライズされます。[/REGION]     | 
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_4.png) |  Texture Rect Min   | テクスチャが描画される画面の四角の最小位置を設定する Vector 2D Structure です。[REGION:note]値は `0.0` と `1.0` の間でノーマライズされます。[/REGION] |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_5.png) |  Texture Rect Max  | テクスチャが描画される画面の四角の最大位置を設定する Vector 2D Structure です。[REGION:note]値は `0.0` と `1.0` の間でノーマライズされます。[/REGION] |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_6.png) |  Draw Eye First    | If このフラグを `True` に設定すると目はテクスチャの前に描画されます。false に設定するとテクスチャは目の前に描画されます。                      |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_7.png) |  Clear Black       | このフラグを `True` に設定すると、レンダー ターゲットが四角が描画される前に黒く描画されます。                                                                    |
+
+**出力**
+
+| ピンの位置           | 名前                                                  | 詳細                                                                                                                                                                |
+| ---------------------- | -------------------------------- | ------------------------------------ |
+| ![](SetSpectatorScreenModeTexturePlusEyeLayoutNode_8.png) |  (Out) Exec  | 出力実行ピンです。 |
+[/EXCERPT:SetSpectatorScreenModeTexturePlusEyeLayoutNode_Ref]

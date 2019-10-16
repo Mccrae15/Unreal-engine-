@@ -1,0 +1,172 @@
+﻿INTSourceChangelist:3801646
+Availability:Licensee
+Crumbs: %ROOT%
+Title:PlayStation VR の Virtual Reality Spectator Screen 機能
+Description:アンリアル エンジン 4 の Virtual Reality Spectator Screen 機能の概要を説明します。 
+Type:Overview
+SkillLevel:Advanced
+Version:4.17
+Parent:Platforms/PS4/PSVR
+Order: 
+Tags:VR
+Tags:PSVR
+topic-image:VRSpecScreen_topic_image.png
+social-image:VRSpecScreen_topic_image.png
+Contributors:Ghost Paint
+
+[TOC(start:2 end:2)]
+
+[EXCERPT:SpectatorScreen_Overview_1]
+他の人が VR 環境 (一人称視点) とインタラクティブしながら、自分は Viirtual Reality (VR) のスペクテイター (三人称視点) になりたい場合、 
+アンリアル エンジン 4 (UE4) の **VR Spectator Screen** が理想的な機能です。VR Spectator Screen を実行しながら、自分のコンピューター モニター (あるいはテレビ) で他のプレイヤーを観察することができるので、 
+イマーシブな体験でのフィードバックを集める時に役立ちます。 
+
+<sub>_画像提供：[GhostPaint.com](http://ghostpaint.com/)_</sub>  
+[REGION:imagetable]
+| ![VRSpecScreen.png](VRSpecScreen.png)(w:600) | ![VRPlayerPerspectiveScreen.png](VRPlayerPerspectiveScreen.png)(w:600) |
+| --- | --- |
+| VR Spectator Screen Perspective | VR プレイヤーの HMD の視点 |
+[/REGION]
+_左側の画像では、スペクテイターは VR の中でアーティストが煉瓦の壁に絵を描いているところを見ていますが、右側では、アーティストは VR の中で絵を見つめています。_  
+
+ヘッドマウントディスプレイ (HMD) のメーカーによっては、VR Spectator Screen は VR Social Screen と同期したり、VR Spectator モードを VR Mirror モードと同期したりすることができます。 
+本ページにおいては、**Spectator Screen** は VR デバイスに接続された標準出力デバイス (コンピューター モニターまたはテレビなど) を指します。さらに、 
+**Spectator Mode** を有効にすると、プレイヤーは VR 環境で HMD を使用しながら、自分は VR 体験を観察 (特定のシナリオではインタラクト) することができます。 
+
+## サポート対象プラットフォーム
+
+現在、以下のプラットフォームが UE4 の Spectator Screen モードをサポートしています。
+
+* [HTC Vive](https://www.vive.com/us/) 
+* [Oculus Rift](https://www.oculus.com/rift/)  
+* [Steam VR](http://store.steampowered.com/steamvr) 
+* [PlayStation VR (PS VR)](https://www.playstation.com/en-us/explore/playstation-vr/?emcid=pa-pe-97928)  
+
+この機能は他のパソコン デバイスやコンソールではサポートが期待できますが、モバイル VR デバイス (プラットフォーム) がサポートすることはないと思います。
+
+## Spectator Screen モードを始めてみましょう
+
+[REGION:tip]
+PS VR を除いて、現在、UE4 では Spectator Screen モードはデフォルトで有効になっています。
+[/REGION]
+
+Spectator Screen モードでテクスチャの作業をする場合、左上の座標は最低座標値を表し、右下の座標は最高座標値を表します。  
+
+![](VRSpec_BPTextureCoordinate.png)
+[/EXCERPT:SpectatorScreen_Overview_1]
+## Spectator Screen ブループリント ノード
+
+Example Usage 用に、以下のブループリント インターフェースを使用します。
+
+| ノード                                                           | 説明                                                          |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **[](Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenTexture)**                  | %Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenTexture:description%                  |
+| **[](Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenModeTexturePlusEyeLayout)** | %Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenModeTexturePlusEyeLayout:description% |
+| **[](Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenMode)**                     | %Platforms/PS4/PSVR/SpectatorScreen/SetSpectatorScreenMode:description%                     |
+[EXCERPT:SpectatorScreen_Overview_2]
+###使用例
+
+1.	 Spectator Screen をサポートしているプラットフォームに VR プロジェクトの設定を行います。 
+
+[PUBLISH:Licensee]
+
+	[REGION:note]
+	PS VR の場合は以下のステップを行います。
+	[/REGION]
+
+1.	PS VR の場合、**[Project Settings]** ウィンドウの **[Plugins]** サブメニューから **[Morpheus]** メニューを開きます。
+
+	![](VR_SpecPSVRSetting_Disabled.png)
+
+1.	PS VR 用の Spectator Screen モードを有効にするには、**[Enable Social Screen Separate Mode]** の横にあるチェックボックスを選択します。
+
+	![](VR_SpecPSVRSetting_Enabled.png)
+
+	[REGION:note]
+	ミラーリングは PS VR ハードウェアでネイティブにサポートされています。つまり、HMD は余分な負荷をかけることなくテレビにミラーリングされます。
+	[/REGION]
+[/PUBLISH:Licensee]
+
+1.	次に、ブループリント スクリプトを新規作成して、Spectator Screen に表示したい画像を特定します。説明しやすいように、以下のブループリント ノードを 3 つのブループリント入力に対応させます。
+
+	1.	例えば、**1** キーを押すと、最初のブループリント ノードはテクスチャ領域に描画される静的テクスチャを指定します。
+
+		![](VRSpec_BP_1.png)
+
+	2.	**2** キーを押すと、2 つ目のブループリント ノードは HDM 視点を全画面に描画するレイアウト (テクスチャを画面の左上隅に描画します) を指定します。さらに、このノードは Eye レイアウトが必ず最初に描かれるようにしつつ、Texture レイアウトを指定します。
+
+		![](VRSpec_BP_2.png) 
+
+		Eye および Texture rectangle minimum / maximum 値は、`[0.0, 1.0]` に正規化されます。 
+
+	3.	最後に、**3** キーを押すと、3 つ目のブループリント ノードが **TexturePlusEye** モードを有効にします (切り替わります)。
+
+		![](VRSpec_BP_3.png)
+
+### 最終結果
+
+要約すると、新しいブループリントで、使用したい Spectator Screen のテクスチャと Spectator Screen モード (Eye and Texture レイアウト) が設定できます。
+
+![](VRSpec_BP.png)
+
+テクスチャはレンダー ターゲット (**SceneCaptureComponent2D** から書き出せる) となる、あるいは User Interface エレメントのコンテナとなりますが、**SceneCapture** は演算負荷が高くなることがあります。
+
+[REGION:tip]
+ランタイムに様々なテクスチャまたはレイアウトをテストするために、Spectator Screen モードをアクティブにしたままテクスチャ (レイアウトでさえも) を切り替えることができます。
+[/REGION]
+
+## モードの切り替え方
+
+新しい Spectator Screen モードに切り替えるには、コンソールを開いて `vr.SpectatorScreenMode` **値** を入力します。例えば、`vr.SpectatorScreenMode 2` を入力すると **Distorted** モードが有効になります (現在 Oculus Rift がサポートしています)。
+
+![](VRSpec_CVarExample.png)
+
+### サポートされているモード
+
+プラットフォームによって、以下を始めとする特定の Screen Spectator モードがサポートされています。
+
+|値|モード| Oculus Rift | SteamVR | PS VR | 注釈 |
+|-----|----|------------ |-------- |------ |------ |
+|**0**| Disabled | &#x2713; | &#x2713; | | HMD のパフォーマンスを最高にするために、このモードは Spectator Screen 出力を無効にします。 |
+|**1**| SingleEyeLetterboxed | &#x2713; | &#x2713; | &#x2713; | 主にデバッグ目的のモードです。画面上に『片目分だけのレターボックス表示だけ表示します。 |
+|**2**| Undistorted |  &#x2713;| &#x2713; | &#x2713; | デバッグ モードです。両目のレンダリング領域全体を表示します。 |
+|**3**| Distorted | &#x2713; | | | 通常 Oculus のみがサポートしています。Oculus の特定のデバッグ モードでは、色収差を表示するものもあります。 |
+|**4**| SingleEye | &#x2713; | &#x2713; | &#x2713; | **Undistorted** モードのように、片目用のデバッグ モードです。このモードでシーンが引き延ばされるので、シーンの中の小さなアーティファクトを見つけるのに便利です。 |
+|**5**| SingleEyeCroppedToFit | &#x2713; | &#x2713; | &#x2713; | このモードは目をトリミングして画面全体を埋めます。 |
+|**6**| Texture | &#x2713; | &#x2713; | &#x2713; | 指定した **UTexture** を全画面表示します。 |
+|**7**| TexturePlusMirror | &#x2713; | &#x2713; | &#x2713; | テクスチャをある render rectangle で表示しながら、目は別の render rectangle で表示するモードです。. |
+|**8**| ViewPort | | | | 現在はサポートされていませんが、今後のリリースでサポートされます。1 人が HMD を装着し、別のユーザーがスペクテイターになる場合に、分割画面出力 (分割画面マルチプレイヤー ゲームを考えてください) をレンダリングします。 |
+
+## Spectator Screen モードを最適化する
+
+現時点では、Spectator Screen モードを最適にする標準設定はありません。Spectator Screen モードに独自の最適化ソリューションを実装するには、シーン キャプチャを 30 fps で実行することを推奨します (VR アプリケーションの実行速度は 60、90、120 fps を前提にします)。 
+さらに、Spectator Screen 出力を 30 fps に制限することを推奨します。Spectator Screen 出力を所定のハードウェアに制限したくなりますが、 
+VR フレームレートが 90 fps になるとレンダリングに問題が発生します (基本的には 3 フレームごとに低下します)。
+
+[PUBLISH:Licensee]
+
+## PS VR に関する注意事項
+
+以下は PS VR プラットフォームにのみ適用する注意事項です (特に PS VR 開発キットのデバッグ機能)。 
+
+*	現在 PS VR は、デフォルト ハードウェアをサポートするモードと PlayStation の技術要件チェックリスト (TRC) に従って、**Disabled** モードを実装していません。
+*	PS VR は **SingleEyeCroppedToFit** モードに備え付けハードウェアに対応するミラーリング機能を使用していることに注意しなくてはいけません。備え付けハードウェアに対応するミラーリング機能は、PS VR での非対応モードへのフォールバックにもなります。**SingleEyeCroppedToFit** モードは柔軟性がありませんが、追加の演算処理のオーバーヘッドはありません。 
+*	**Undistorted** モードで Spectator Screen を実行した場合と同じように、PS VR には PlayStation ハードウェアに両目分のレンダリング領域全体を表示させるデバッグ設定があります。PS VR デバッグ設定を有効にしたい場合は、**DebugSettings > PlayStationVR > SocialScreenOutputSettingForDebug=Bypass** を設定することができます。 
+*	別のモードを使用しながら、開発キットのハードウェアに対応するミラーリング機能をデフォルトにしたい場合は、**IgnoreSocialScreenSeparateMode** 設定を true に設定することができます。 
+
+### PS VR を最適化する
+
+[REGION:note]
+PS VR は例外ですが、他のすべてのプラットフォームは Spectator Screen モードの時は最速の VR フレームレートで出力します。 
+[/REGION]
+
+現在、PS VR は Spectator Screen (PS VR プラットフォームの Social Screen としても知られています) を 30 fps で出力します。つまり、30 fps でソースを Social Screen に出力します。 
+PS VR デバイスを 60 fps で Spectator Screen で出力する方法については、Sony のドキュメントを参照してください。 
+
+[/PUBLISH:Licensee]
+
+## Version 4.17 に関する現段階での周知の問題
+
+* ランタイム時に作成したレンダー ターゲットは、1 フレームパスされるまでは Spectator Texture として割り当てられません。従って、アプリケーションの最初のフレームがレンダリングされるまで何も処理されません。 
+* 現在、レンダーターゲットが Spectator Texture として割り当てられている間に破壊 (リリース) されると、アプリケーションがクラッシュすることがあります。 
+[/EXCERPT:SpectatorScreen_Overview_2]

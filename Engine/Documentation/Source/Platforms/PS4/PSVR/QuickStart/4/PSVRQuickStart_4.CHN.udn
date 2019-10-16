@@ -1,0 +1,102 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:4.PS4 Neighborhood 设置
+Crumbs:%ROOT%, Platforms
+Description:了解如何设置并使用 Neighborhood for PlayStation
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order:4
+tags:VR
+tags:PlayStation VR
+
+[nav]
+
+利用 Neighborhood for PlayStation 工具可迅速了解 PS4 进行的操作，也可从开发电脑安装、卸载或更新 PS4。 
+
+## 步骤
+
+1. 打开 Windows 浏览器，点击右侧的 **Neighborhood for PlayStation(R)4** 选项打开 PS4 Neighborhood 工具。
+
+    [REGION:lightbox]
+    [![](PSVR_Neighborhood_Open.png)(w:504)](PSVR_Neighborhood_Open.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 右键点击 Neighborhood 工具的空白部分，从显示的菜单中选择 **Add Target** 选项。
+
+    [REGION:lightbox]
+    [![](PSVR_Neighborhood_Add_New_PS4.png)(w:691)](PSVR_Neighborhood_Add_New_PS4.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 在 **Address** 框中输入 PS4 的 IP 地址，然后按下 **Finish** 添加 IP 地址。
+
+    ![](PSVR_Add_Your_PS4.png)
+
+    [region:note]
+    主菜单左上角的灰色小框中便是 PS4 的 IP 地址。
+
+    ![](PSVR_PS4_IP_Addr.png)
+    [/region]
+
+1. 右键点击新添加的 PS4，从快捷菜单中选择 **Set default** 选项。
+    
+    [REGION:lightbox]
+    [![](PSVR_Set_Default.png)(w:409)](PSVR_Set_Default.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 再次右键点击 PS4 选项，从快捷菜单中选择 **Connect** 连接到 PS4。
+
+    [REGION:lightbox]
+    [![](PSVR_Connect.png)(w:409)](PSVR_Connect.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. PS4 在 **Neighborhood for PlayStations(R) 4** 工具中完成连接后，在 **Target Operations** 部分下寻找 **System Update** 选项并点击。
+
+    [REGION:lightbox]
+    [![](PSVR_UpdateFirmware_00.png)(w:657)](PSVR_UpdateFirmware_00.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+1. 在显示的窗口中，前往 **C:\Program Files (x86)\SCE\ORBIS\System Update Files**，根据开发机类型选择 PS4 更新，然后按下 **Open** 按钮。
+
+    [REGION:lightbox]
+    [![](PSVR_UpdateFirmware_01.png)(w:480)](PSVR_UpdateFirmware_01.png)
+    [/REGION]
+
+    [REGION:caption]
+    点击查看全图。
+    [/REGION]
+
+	* **DevKit**:PS4UPDATE-devkit-[version].PUP
+	* **TestKit**:PS4UPDATE-testkit-[version].PUP
+
+	[region:note]
+	更新过程需要 5 到 10 分钟完成。
+	[/region]
+
+
+从开发电脑连接到 PS4 后，现在即可开始编译并部署内容。下一部分将讲述如何准备 UE4 PlayStation VR 项目，并在 PS4 上运行。
+
+
+[nav]
