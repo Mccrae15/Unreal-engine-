@@ -1,0 +1,59 @@
+﻿INTSourceChangelist:6517938
+Availability:Licensee
+Crumbs: 
+Title: 4.22 Playstation 4版本说明
+Description: 包含虚幻引擎4参考和指南的产品文档
+Type: 
+Version: 4.22
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 22
+Tags: Release Notes
+Tags: PS4
+
+
+**PlayStation 4 SDK更新**
+
+虚幻引擎4.22支持以下PlayStation 4 SDK：  
+
+*   SDK 6.008.061
+    *   固件版本6.200.011
+*   支持IDE:
+    *   Visual Studio 2015
+    *   Visual Studio 2017
+
+## HDR改良
+
+在此版本中，我们用以下功能对PlayStation 4的HDR功能进行了改良：  
+  
+
+*   为HDR UI合成通道添加CMASK优化，其工作原理是跳过非UI写入像素的合成，从而改善GPU时间。
+*   添加HDR scopes API和PS4 SDK工具的使用支持。
+    *   将在项目设置 > PlayStation中将“启用HDRScope支持（Enable HDRScope Support）”设为true。  
+        
+    *  以HDR模式启动游戏时将附加HDR scopes。  
+          
+        
+
+## 简短版本说明：
+
+*   **崩溃修复：** 修复启用LLM后出现的崩溃。
+*   **问题修复：** 修复了大多数容器的PS4调试器显示器，但嵌套容器似乎仍存在一些问题。
+*   **问题修复：** 在PS4上从GPU时间中排除后台缓冲的等待时间，修复GPU统计数据。
+*   **问题修复：** OnlineSubsystemPS4现能正常通过bHasVoiceEnabled配置域禁用语音聊天。
+*   **问题修复：** 使用FGenericPlatformMemory::ReadUnaligned和FGenericPlatformMemory::WriteUnaligned修复PS4Memory中的未定义行为删除器未对齐警告。
+*   **问题修复：** 修复PS4媒体播放器中最终视频帧被解码之前时间可以循环的问题。
+*   **问题修复：** 修复CreateAndLock顶点/顶点缓冲中的轻微泄漏。
+*   **问题修复：** MorpheusFunctionLibrary处于其自身的模块中（在win64和PS4上为运行时），但其在win64上不执行任何操作。
+*   **问题修复：** 在BuildGraph InstalledEngineBuild.xml运行中添加PS4DevKitUtil警告的修复。
+*   **问题修复：** 新版本中GenerateProjectFiles.bat只会记录不匹配的SDK信息一次。
+*   **问题修复：** 解决暂停时PS4媒体播放器无法向后搜寻的问题。
+*   **问题修复：** 修复PS4 GPU调试器已废弃命令存在的问题。
+*   **新增内容：** 已添加在连接后生成符号的支持，不使用.map文件。在编译服务器上使用LTO和PGO时，此方法速度更快。速度差在30秒和1小时之间。
+*   **新增内容：** 新版本中将从项目设置中自动填入应用程序调试器信息。
+    *   将-UsePS4ApplicationDebugger传至GenerateProjectFiles.bat或将以下代码添加到BuildConfiguration.xml即可默认使用应用程序调试器：
+        *   <Configuration> <PS4ProjectGenerator> **<bUseApplicationDebugger>true</bUseApplicationDebugger>** </PS4ProjectGenerator> </Configuration>
+*   **新增内容：** 新版本将确定PSVR摄像机断连消息是否需要更新，如有必要则进行更新。在立体模式中时，PS4Tracker不会弹出摄像机断连对话，因为MorpheusHMD将弹出HMDSetupDialog。
+*   **新增内容：** VideoRecodingSystem已更新。
+*   **新增内容：** 更新PSVR，使摄像机更新同步到摄像机硬件。
+*   **改良：** 改良PS4媒体播放器音频同步，使其在音频开始播放后更新时间。

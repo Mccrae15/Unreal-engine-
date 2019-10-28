@@ -1,0 +1,29 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 11.00
+# Visual Studio 2010
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libpng", "libpng.vcxproj", "{648090CD-25DC-48BE-AA02-D6DD94227B89}"
+	ProjectSection(ProjectDependencies) = postProject
+		{AF1B50DC-D265-4351-BEBE-6135FD6F47C9} = {AF1B50DC-D265-4351-BEBE-6135FD6F47C9}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "zlib", "zlib.vcxproj", "{AF1B50DC-D265-4351-BEBE-6135FD6F47C9}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ORBIS = Debug|ORBIS
+		Release|ORBIS = Release|ORBIS
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{648090CD-25DC-48BE-AA02-D6DD94227B89}.Debug|ORBIS.ActiveCfg = Debug|ORBIS
+		{648090CD-25DC-48BE-AA02-D6DD94227B89}.Debug|ORBIS.Build.0 = Debug|ORBIS
+		{648090CD-25DC-48BE-AA02-D6DD94227B89}.Release|ORBIS.ActiveCfg = Release|ORBIS
+		{648090CD-25DC-48BE-AA02-D6DD94227B89}.Release|ORBIS.Build.0 = Release|ORBIS
+		{AF1B50DC-D265-4351-BEBE-6135FD6F47C9}.Debug|ORBIS.ActiveCfg = Debug|ORBIS
+		{AF1B50DC-D265-4351-BEBE-6135FD6F47C9}.Debug|ORBIS.Build.0 = Debug|ORBIS
+		{AF1B50DC-D265-4351-BEBE-6135FD6F47C9}.Release|ORBIS.ActiveCfg = Release|ORBIS
+		{AF1B50DC-D265-4351-BEBE-6135FD6F47C9}.Release|ORBIS.Build.0 = Release|ORBIS
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

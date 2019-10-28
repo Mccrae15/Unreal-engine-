@@ -1,0 +1,31 @@
+﻿INTSourceChangelist:3782314
+Availability:Licensee
+Title:PlayStation VR 용 개발
+Crumbs:%ROOT%, Platforms
+Description:PlayStation 4 콘솔용 VR 게임 개발 방법 안내입니다.
+Platform:PS4
+Navigation:platform
+type:landing
+parent:Platforms/PS4
+version:4.13
+tags: VR
+tags: PSVR
+
+![](PSVR_Header_Image.png)
+
+Playstation VR 용 콘텐츠 개발은 Playstation 4 용 콘텐츠 개발과 비슷합니다. 하지만 UE4 프로젝트가 PlayStation VR 에서 정상 작동하도록 하기 위해서 해 줘야 하는 작업이 몇 가지 있습니다. 여기서는 UE4 프로젝트를 PlayStation VR HMD 에서 사용할 수 있도록 하기 위해 필요한 셋업 방법을 알아보겠습니다.
+
+## 입문서
+
+[DIR(end:"1" output:"topic" type:"quick start" parent:"Platforms/PS4/PSVR")]
+
+## PlayStation VR 개발
+
+[DIR(end:"1" output:"topic" type:"reference,overview" parent:"Platforms/PS4/PSVR")]
+
+## 안내서
+
+[DIR(output:"fancy" type:"how-to" skilllevel:"Beginner" parent:"Platforms/PS4/PSVR" org:"flat")]
+[DIR(output:"fancy" type:"how-to" skilllevel:"Intermediate" parent:"Platforms/PS4/PSVR" org:"flat")]
+[DIR(output:"fancy" type:"how-to" skilllevel:"Advanced" parent:"Platforms/PS4/PSVR" org:"flat")]
+[DIR(output:"fancy" type:"how-to" skilllevel:"Expert" parent:"Platforms/PS4/PSVR" org:"flat")]

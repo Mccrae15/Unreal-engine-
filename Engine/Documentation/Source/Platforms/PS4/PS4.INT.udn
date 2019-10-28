@@ -1,0 +1,22 @@
+Availability: Licensee
+Title: PlayStation 4
+Description: Developing games for PlayStation 4 consoles.
+Type: landing
+Parent: Platforms
+Tags: Console
+topic-image: PS4Dev_Topic.png
+Platform: PS4
+
+## Starting Out
+
+%Platforms/PS4/PSVR:topic%
+%Platforms/PS4/GettingStarted:topic%
+
+## PS4 Development Topics
+
+%Platforms/PS4/SDKRequirements:topic%
+
+## Build Release Notes
+
+%Platforms/PS4/Builds:topic%
+

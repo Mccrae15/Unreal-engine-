@@ -1,0 +1,101 @@
+Availability:Licensee
+Title:4. PS4 Neighborhood Setup
+Crumbs:%ROOT%, Platforms
+Description:Taking a look at how to setup and use Neighborhood for PlayStation
+Platform:PS4
+version:4.13
+Navigation:platform
+type:quick start
+parent:Platforms/PS4/PSVR/QuickStart
+order: 4
+tags: VR
+tags: PlayStation VR
+
+[nav]
+
+Neighborhood for PlayStation is a tool that allows you to quickly see what your PS4 is doing and will also allow you to install, uninstall or update your PS4 from your development PC. 
+
+## Steps
+
+1. Open up Windows Explorer and on the right-hand side, click on the **Neighborhood for PlayStation(R)4** option to open the PS4 Neighborhood tool.
+
+    [REGION:lightbox]
+    [![](PSVR_Neighborhood_Open.png)(w:504)](PSVR_Neighborhood_Open.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. Right-click in the blank section of the Neighborhood tool and from the menu that is displayed, select the **Add Target** option.
+
+    [REGION:lightbox]
+    [![](PSVR_Neighborhood_Add_New_PS4.png)(w:691)](PSVR_Neighborhood_Add_New_PS4.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. Enter your PS4's IP address in the **Address** box and then press **Finish** to add the IP address.
+
+    ![](PSVR_Add_Your_PS4.png)
+
+    [region:note]
+    You can find the IP address of your PS4 in the small gray box in the top left corner of the main menu.
+
+    ![](PSVR_PS4_IP_Addr.png)
+    [/region]
+
+1. Right-click on the newly added PS4 and from the context menu, select the **Set default** option.
+    
+    [REGION:lightbox]
+    [![](PSVR_Set_Default.png)(w:409)](PSVR_Set_Default.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. Right - click on the PS4 option one more time and from the context menu, select **Connect** to connect to your PS4.
+
+    [REGION:lightbox]
+    [![](PSVR_Connect.png)(w:409)](PSVR_Connect.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. Once your PS4 is connected inside of the **Neighborhood for PlayStations(R) 4** tools under the **Target Operations** section, look for the **System Update** option and click on it.
+
+    [REGION:lightbox]
+    [![](PSVR_UpdateFirmware_00.png)(w:657)](PSVR_UpdateFirmware_00.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+1. From the displayed window go to **C:\Program Files (x86)\SCE\ORBIS\System Update Files** and select the PS4 update based on your kit type and then press the **Open** button.
+
+    [REGION:lightbox]
+    [![](PSVR_UpdateFirmware_01.png)(w:480)](PSVR_UpdateFirmware_01.png)
+    [/REGION]
+
+    [REGION:caption]
+    Click for full image.
+    [/REGION]
+
+	* **DevKit**: PS4UPDATE-devkit-[version].PUP
+	* **TestKit**: PS4UPDATE-testkit-[version].PUP
+
+	[region:note]
+	The update process will take around 5 to 10 minutes to complete.
+	[/region]
+
+
+Now that we are connected to the PS4 from our development PC, we can now start to build and deploy content to it. In the next section, we will take a look at what you will need to do to get your UE4 PlayStation VR projects up and running on the PS4.
+
+
+[nav]

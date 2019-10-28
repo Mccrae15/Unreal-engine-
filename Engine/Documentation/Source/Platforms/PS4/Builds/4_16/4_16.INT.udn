@@ -1,0 +1,101 @@
+Availability: Licensee
+Crumbs: 
+Title: PlayStation 4 Release Notes for 4.16
+Description: PlayStation 4 release notes for Unreal Engine 4.16.
+Type: 
+Version: 4.16
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 16
+Tags: Release Notes
+Tags: PS4
+
+
+**Build Info**: [](https://udn.unrealengine.com/questions/365429/unreal-engine-4160-release.html)
+
+**General Release Notes**: [https://docs.unrealengine.com/en-US/Support/Builds/ReleaseNotes/4_16](Support/Builds/ReleaseNotes/4_16)
+
+SDK:
+
+*   4.508.001
+*   Firmware Version 4.508.021
+
+## PS4 SDK 4.508.001 support
+
+UE4.16 is built against the 4.508.001 SDK. This brings stability some significant stability improvements and a new memory API, which we are expecting to utilise in future releases.
+
+## New: Social Screens for Playstation VR (Early Access Preview)
+
+PSVR Social Screen preview provides support for Social Screen separate mode, where the the Monitor and HMD display different things.
+
+This preview supports 30fps Social Screen output, and switching between several output modes. The following sample modes are implemented:
+
+*   SystemMirror (this is the default mirror mode that has always existed).
+*   SeparateTest (simply alternates between black and white on the social screen).
+*   SeparateTexture (displays a blueprint specified texture, for example a render target beting written to by a scene capture component).
+*   SeparateMirror (displays the full vr render buffer)
+
+Future work will include optimization, a multi-platform interface to these features, possibly support for 60fps mode (which requires system dialogs to resolve conflicts with certain system features).
+
+The new Morpheus project setting bEnableSocialScreenSeparateMode must be set to true to use this feature. When that is true additional screen buffers will be allocated for the social screen. Blueprint functions for controlling the feature can be found by searching for ‘SocialScreen’.
+
+## Release Notes
+### Networking
+
+*   Bugfix: Fixed an issue with OSS PS4 improperly handling search requests in certain cases.
+
+### Platform
+
+*   New: Made some big DeviceProfile changes, particularly for the protected platforms.
+    *   Changed the "type" of some DPs from WindowsNoEditor, etc to Windows. It should be a platform, not a random string.
+    *   With that change, the platform can be used to save out protected platform DP .ini files to subdirectories, maintaining secrecy
+    *   Added Config/PS4/ConfidentialPlatform.ini files so that the DP loading code knows to look in their directories for DPs. See FGenericPlatformMisc::GetConfidentialPlatforms() for more information.
+*   New: PS4 Platform File “Open Write” with append behavior now allows the user to seek and write to any point in the file, consistent with the behavior on other platforms.
+*   Bugfix: Fixed a crash that would occur when initializing the PS4 Leaderboards Online Subsystem (OSS) and the active profile wasn't signed in to PSN.
+*   New: When generating a patch .pkg with orbis-pub-cmd.exe, we now pass the --delete-redundant-file parameter to automatically not include files that are not different from the release the patch is based on.
+*   Bugfix: Fixed an issue in patch generation for PS4 in which having chunks are assigned to layers other than zero would cause the Sony publishing tools to fail. During the patch generation, we now reassign all chunks to layer zero (for the purposes of generating the patch, doesn't affect the original layer assignment).
+*   Bugfix: Fixed a self z-fighting / flickering issue on certain meshes on PS4.
+
+#### VR
+
+*   New: Added support for mapping multiple motion controller components to a single controller on PS4.
+*   New: Added support for WorldScale to PS4 motion controllers.
+*   Bugfix: Fixed post processing bug which resulted in tinted/broken bloom on PS VR.
+*   Bugfix: Fixed threading issue with motion controller tracking that caused controller motion pops. This problem manifested intermittently on PS4, but in theory could have affected other platforms as well.
+*   PS VR controller tracking limit management system.
+    *   PS VR can track the HMD and two controllers, but many more devices can be connected. With this system you can manage which controllers are tracked to stay under the limit.
+*   PS4 DualShock4 controller no longer jumps back to 0,0,0 when it loses tracking (making it consistent with all other controllers).
+*   PSVR SDK 4.5 tracking improvements implemented.
+    *   Improved quality and reduced CPU usage. See Sony SDK 4.5 documentation for details.
+*   PS4 PS VR Prediction Time Dynamic Adjustment
+*   Reprojection prediction time is now calculated based on flip times so that it is nearly perfect as long as framerate is met rather than set to a constant value based on expected timings. This is necessary because the time during the frame at which the prediction is made can vary depending on cpu and gpu frame time.
+
+## Programming Release Notes
+
+### Core
+
+*   Abstracted the IO tracker and handle manager for other platforms and applied it to the PS4.
+
+### Platform
+
+*   Bugfix: Fixed NpToolkit2 initialization failure when using 6CPU mode.
+    *   The default thread affinity was set to 7CPU, so would prevent NpToolkit2 and the PS4 Online Subsystem module from initializing correctly.
+    *   The thread affinity is now selected based on what CPU mode the title is running in.
+*   Bugfix: Fixed UObjectBase debug visualizer not showing the object name on PS4, in Visual Studio.
+*   Bugfix: Fixed an issue where a user's service privileges were not updating without rebooting the game.
+*   Made the InstallVisualizers.bat script install the PS4 visualizer automatically if the PS4 SDK is installed.
+*   Changed the behavior of FOnlineIdentityPS4::GetUserPrivilege so it always pulls the latest privileges from Sony's servers, rather than returning cached ones.
+
+#### VR
+
+*   PS4 PS VR tracking timeout when activating stereo reduced from 5 seconds to 30 milliseconds. The long timeout was a source of SubmitDone errors in some circumstances, and is unnecessary. What we want is to wait somewhat longer than a single frame to get fresh data if tracking is already active. If it isn't we will use default values or older data, but that is better than waiting a long time here.
+
+## Upgrade Notes
+
+### C++ API Breaking Changes
+
+*   Made some big Device Profile changes, particularly for the protected platforms. You may need to modify your Device Profiles in similar ways if you are a heavy user of them.
+    *   Changed the "type" of some DPs from WindowsNoEditor, etc to Windows. It should be a platform, not a random string.
+    *   With that change, the platform can be used to save out protected platform DP .ini files to subdirectories, maintaining secrecy.
+    *   When saving DeviceProfiles, you may need to look in a platform subdirectory for the DeviceProfiles.ini file.
+    *   Added Config/PS4/ConfidentialPlatform.ini files so that the DP loading code knows to look in their directories for DPs. See the Get Confidential Platforms function in Generic Platform Misc for more information.

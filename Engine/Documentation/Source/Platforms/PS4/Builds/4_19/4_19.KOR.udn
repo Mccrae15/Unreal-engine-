@@ -1,0 +1,104 @@
+﻿INTSourceChangelist:6517938
+Availability: Licensee
+Crumbs: 
+Title: PlayStation 4 Release Notes for 4.19
+Description: PlayStation 4 release notes for Unreal Engine 4.19.
+Type: 
+Version: 4.19
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 19
+Tags: Release Notes
+Tags: PS4
+
+
+**Build Info**: [](https://udn.unrealengine.com/questions/421446/unreal-engine-4190-release.html)
+
+**General Release Notes**: [https://docs.unrealengine.com/en-US/Support/Builds/ReleaseNotes/4_19](Support/Builds/ReleaseNotes/4_19)
+
+PS4:
+
+*   5.008.071
+*   Firmware Version 4.730.001
+*   Supported IDE: Visual Studio 2015, Visual Studio 2013
+
+## Major Features
+
+### Profile Guided Optimization support on PlayStation 4
+
+Preliminary support for instrumented profile guided optimization (PGO) has been added to the engine, build, and automation tools. PGO provides the the compiler and linker with additional data gathered from an actual playthrough of the title.This enables a range of optimizations beyond what regular compile and link time optimizations can offer. A properly implemented profile guided optimization can save several milliseconds of frame time on the CPU!
+
+For additional information about setting this up, see the [Profile Guided Optimization](https://udn.unrealengine.com/storage/temp/312576-profile-guided-optimization.pdf) pdf.
+
+### New Memory System for PlayStation 4 Enabled By Default
+
+We’re enabling the new PS4 memory system by default. This system completely deprecates the GPU defragger and eliminates the need to set fixed-size Garlic, Onion, and CPU memory pools. It also uses memory more efficiently and can reduce out-of-memory crashes seen due to limitations of the old system.
+
+For those upgrading their titles to Unreal Engine 4.19 who have previously been using the GPU defrag allocator will need to adjust their **r.Streaming.PoolSize** console variable. The defrag allocator streaming pool size had to be made much larger to accommodate all defrag resources, not just streaming textures. Now, the streaming pool size console variable directly drives the budget available for texture streaming, so that value can be reduced as it no longer needs to fit all "defrag" resources.
+
+Lowering the streaming pool size is title dependent, but a general practice is to lower it as small as possible without introducing blurriness or causing excessive amounts of streaming I/O work. We also recommend to set **r.PS4UseLegacyTexturePool** to **0** while adjusting the streaming pool size. This console variable changes the way texture resources are counted towards the texture streamer’s budget. In Legacy Mode, all texture resources without a render target view, or depth stencil view would count towards texture memory. This wrongly includes textures with unordered access views, like ones used by the Distance Field system. When it’s set to **1**, only resources that are explicitly marked as streamable will count towards the streaming budget. This will be the default value in future engine versions.
+
+### MSAA Support for PlayStation 4 and PlayStation VR
+
+**MSAA is now supported on the PlayStation 4 (PS4)** enabling all PS4 content using the Forward Rendering path to use MSAA (if desired). This should be especially useful for PSVR titles, where MSAA allows for a cleaner appearance to many types of content.
+
+To enable MSAA on your project, go to your Project Settings, and find the "Antialiasing Method" field, and select "MSAA." You can further tune the quality using the console variable r.MSAACount, where 1 is no MSAA, 2 is 2x MSAA, 4x is 4x MSAA, and 8 is 8x MSAA. Note that the higher the MSAA count, the greater the quality, but it comes at a performance cost.
+
+## Release Notes
+
+### Audio
+
+*   New: Added Plugin drop down menus for PlayStation 4 platform settings.
+
+### Networking
+
+*   Bug Fix: Fixed a connection timeout when sending large messages with TCP sockets on Playstation 4.
+*   Bug Fix: Fixed a crash on Playstation 4 when trying to send data with an unconnected TCP socket.
+
+### Platforms
+
+#### Playstation 4
+
+*   Crash Fix: Fixed a crash with the command line parameter -noloadingscreen.
+*   Crash Fix: Fixed some crashes caused by GPU page faults.  
+    
+    *   Modified FMemBlock allocators to use GPU fences to verify the GPu is done with a page before freeing it.
+    
+    *   This will avoid situations where the render or RHI threads call Process Delayed Frees function multiple times in a frame, which would cycle the queues too fast, causing memory to be freed from underneath the GPU.
+    
+*   Bug Fix: Fixed a bug with clearing volume textures.
+*   Bug Fix: Fixed an issue with motion blur. Velocity Flatten compute shader was outputting NaNs, caused by zero-length velocities. NaNs are zeroed out when computing the velocity polar coordinates now.
+*   Bug Fix: Fixed an issue that could cause a compiler error for users with the Morpheus module enabled but without the PS4 SDK installed.
+*   Bug Fix: Fixed a GPU page fault in Niagara when using the new PS4 memory system. Niagara was using volatile buffers but was not locking them every frame, leading to GPU page faults.
+*   Bug Fix: Fixed a race condition in the new PS4 memory system which caused memory allocations with sceKernalMemoryPoolCommit to fail with error code SCE\_KERNEL\_ERROR_EBUSY.
+*   Bug Fix: Fixed an issues which caused the PS4 Save Game system to interpret the "save game not found" condition as an “unknown error.”
+*   New: Added MSAA support for Forward Renderer on PS4.  
+    
+    *   Has the same limitations as MSAA for Desktop; atmospherics do not work and separate translucency can be expensive.
+    
+    *   8x MSAA has also been implemented.
+    
+*   New: Enabled Present Threshold support for PS4 Pro.
+*   New: Added specific critical section implementation to improve performance:  
+    
+    *   Uses adaptive PThread mutex. These maintain a spin count to avoid syscall when the lock is not held for long.
+    
+    *   Spin count is adaptive, according to measured spin duration on previous locks.
+    
+*   New: Added Prefetch Block function. This has a small performance improvement seen in the garbage collector for ~3ms.
+*   New: The Gnm multi buffer class has been refactored to address some GPU page faults caused by misuse of "volatile" buffers in the renderer.
+*   This change removes the concept of "volatile" buffers in the PS4 RHI.
+*   Buffers can now be locked/unlocked multiple times per frame without consequence, regardless of whether we allow this at the higher level RHI API.
+*   The new buffer implementation is both faster and saves small amounts of memory.
+
+### Rendering
+
+#### Optimizations
+
+*	New: Added Begin/End UpdateTexture3D to remove a large temporary allocation for very large uploads on PS4
+
+### VR
+
+*   Bug Fix: Fixed PSVR camera connection issues by re-applying the camera configuration when a new camera is detected.
+*   Bug Fix: Fixed graphical corruption on PSVR during first two frames after a screen percentage change.
+*   New: Moved PSVR on PC final fallback window position to (0, 0) rather than (1280, 0).

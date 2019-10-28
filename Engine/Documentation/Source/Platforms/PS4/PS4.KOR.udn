@@ -1,0 +1,23 @@
+﻿INTSourceChangelist:6397678
+Availability: Licensee
+Title: PlayStation 4
+Description: PlayStation 4 콘솔 게임 개발 안내입니다.
+Type: landing
+Parent: Platforms
+Tags: Console
+topic-image: PS4Dev_Topic.png
+Platform: PS4
+
+## 시작하기
+
+%Platforms/PS4/PSVR:topic%
+%Platforms/PS4/GettingStarted:topic%
+
+## PS4 개발 토픽
+
+%Platforms/PS4/SDKRequirements:topic%
+
+## 빌드 릴리즈 노트
+
+%Platforms/PS4/Builds:topic%
+

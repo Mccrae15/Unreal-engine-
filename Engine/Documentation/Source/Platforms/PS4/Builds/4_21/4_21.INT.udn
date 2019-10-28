@@ -1,0 +1,109 @@
+Availability:Licensee
+Crumbs: 
+Title: PlayStation 4 Release Notes for 4.21
+Description: Product documentation including reference and guides for Unreal Engine 4
+Type: 
+Version: 4.21
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 21
+Tags: Release Notes
+Tags: PS4
+
+
+## PlayStation 4 SDK Update  
+
+Unreal Engine 4.21 supports the following PlayStation 4 SDK:  
+
+*   SDK 6.008.001  
+    *   Firmware 6.008.021
+*   Supported IDE:
+    *   Visual Studio 2015
+    *   Visual Studio 2017
+
+## New: Address Sanitizer (ASan) and Undefined Behavior Sanitizer (UBSan) support
+
+We’ve added support for Clang’s ASan and UBSan systems. These can be enabled via the PS4 target settings dialog in the editor, or by setting the bEnableAddressSanitizer and bEnableUndefinedBehaviorSanitizer in the \[/Script/PS4PlatformEditor.PS4TargetSettings\] section of PS4Engine.ini.
+
+Note, compiling with either the address or undefined behavior sanitizers enabled can increase the size of the compiled binary. For large titles, this increased binary size may exceed the available flexible memory on base PS4 kits. If you experience issues launching a binary with either ASan or UBSan enabled, try launching it on a PS4 Neo kit in “LARGE” memory mode. In addition, development config binaries are much larger than test or shipping config binaries. If you are unable to launch a development config binary with ASan or UBSan enabled, and you do not have a Neo kit available, try test or shipping configs instead.
+
+## New: Improved PS4 Shader Debug Binary support
+
+To improve the debugging experience with with Razor GPU, Shader Debug Binary (SDB) files enable Razor to provide source-level debugging, shader source file names, extra data about shader resource layouts, and many other useful features.
+
+Previously, SDBs for use with Razor GPU was an entirely manual process, which often involved a lengthy recompile of all the shaders in the game title during cook. Improvements in this release allow SDB file data to be sorted alongside the compiled shader binary in the derived data cache (DDC) so that it can be retrieved during a cook without having to force a full recompile of all shaders. By doing this, it’s possible for a developer to extract all the SDB files included in a given cooked build to a folder and use them to enable the advanced debugging features in Razor GPU with much less overhead.
+
+### Enabling SDB Modes
+
+Use the console variable **r.PS4ShaderSDBMode** to set how SDB files are generated. Add the following to your PS4Engine.ini configuration file:  
+
+\[ShaderCompiler\]  
+r.PS4ShaderSDBMode=1
+
+There are two modes available for how SDB files are generated.
+
+*   In **Mode 1**, the source file hash is ignored. All compiled shaders generate SDB files but while exporting SDBs during cook, only SDBs with unique compiled shader binary hashes are kept. Differences in the source HLSL are ignored unless those differences produce a different compiled binary. The reason being is that trivial changes in the HLSL source can produce the same binary output (for example, renaming a variable or adding whitespace). Ignoring the source file hash significantly reduces the total number of SDB files the cook will export. 
+*   In **Mode 2**,  SDB files are generated according to the hash of the compiled shader binary output from the compiler and the hash of the HLSL source input to the computer. It will generate all possible SDB files for all cooked shaders for all unique pre-processed source input.
+
+Mode 1 is recommended in most cases. Note that in either mode, every compiled shader will store SDB data in the DDC. Deduplication only happens during the cook export. As sufficiently sized DDC is required to use it. Enabling either mode will force full shader recompile the first time but once the DDC is populated, SDBs can be exported without recompiling.
+
+### Exporting SDBs during the cook
+
+With a SDB mode enabled, they can be exported from the cook by passing the command line argument **-PS4SDBExport=\%FolderFilePath%** to the cook process.  
+
+Additionally, the command line switch **-PS4SDBZip** can be used to output them to a single, uncompressed .zip file. It makes it easier to move SDB data between machines and removes the file system overhead of dealing with thousands of small files. It can be useful to let build machines produce the SDB.zip files for each build allowing for developers to retrieve the data for any build and use them to debug Razor GPU captures from internal QA or from retail post-mortem GPU crashes. Note that Razor cannot read inside .zip files, so the files must be extracted locally.
+
+You also have the option to add both these command line switches to your PS4Engine.ini file using **r.PS4DumpShaderSDB** and **r.PS4SDBZip**.
+
+## New: PS4 Device Output Log Support (Experimental)
+
+We now support the **Device Output Log** window to send console commands to the game and for capturing the output log. Enable it from the Editor Preferences under **Experimental > Device Output Log** and open it from the editor’s **Window** menu.
+
+![PS4_2](PS4_2.png "PS4_2")
+
+[REGION:note]
+Note that the list of auto-complete commands come from the Editor and not from the game that is currently running.
+[/REGION]
+
+## Release Notes
+
+*   **Crash Fix:** Fixed a crash running ShooterGame in HDR mode on PS4.
+*   **Bug Fix:** Mouse input no longer requires a controller to be connected.
+*   **Bug Fix:** Fixed a bug with PS4 critical section recursive locking. Previously, if you Lock and then TryLock on the same thread, the TryLock would fail, despite the calling thread owning the lock. This now works as expected.
+*   **Bug Fix:** Fixed a 32 bit overflow bug in GPU stats.
+*   **Bug Fix:** Corrected support for PSN rate-limiting.
+*   **Bug Fix:** Fixed an update issue with cook on the fly if the asset name length was 128 or greater.
+*   **Bug Fix:** Fixed inconsistent timing functions on PS4. This could cause hitches to be reported when the app is suspended.
+*   **Bug Fix:** Set Lock mouse cursor to screen to be enabled by default.
+*   **Bug Fix:** Fixed GetMovieName and IsLastMovieInPlaylist.
+*   **Bug Fix:** Fixed companion app server compilation errors.
+*   **Bug Fix**: FMallocBinned2 is no longer statically initialized in user_malloc, preventing recursions during static init due to atexit/malloc calls.
+*   **Bug Fix:** We now use GetNoInit function for FGameThreadHitchHeartBeat to prevent initializing during a crash.
+*   **Bug Fix:** Fixed the RHI thread unit stat on PS4. The RHI thread gets blocked by a scope lock waiting for the async submission thread, which in turn is blocked by the GPU wait for frame completion. We now measure the time spent blocked on this scope lock and subtract it from the total RHI busy time.
+*   **Bug Fix:** Fixed a hitch which occurs the first time a video is played on PS4 using the media framework.
+    *   Playing a video the first time loads two additional system libraries on the game thread, which can hitch for up to 200ms. We're now pre-loading these system modules when the PS4 media player plugin is loaded at boot time.
+*   **Bug Fix:** Fixed a broken compute-to-graphics cache flush on the GPU which could cause graphics batches following a compute batch to read stale data, resulting in graphics corruption. It would manifest as blocky artifacts and flashes of bright lights in Volumetric Fog.
+*   **Bug Fix:** Addressed missing Morpheus Function Library Blueprint functions. Previously they were in the Morpheus module which is Editor whitelisted on Win64 and PS4 intentionally because it would cause builds to break. Now, the Morpheus Function Library is in its own module which is runtime on Win64 and PS4, however, the functions will not do anything on Win64.
+*   **Bug Fix:** Added a speculative fix for net driver freeze when pulling PS4 LAN cable.
+*   **Bug Fix:** The PSVR now displays  HMDSetupDialog instead of CameraDisconnectedDialog when the camera is disconnected in VR as desired by Sony.
+*   **Bug Fix:** The PSVR Camera updates are now synced to camera hardware:
+    *   The Camera thread syncs to vblank directly after discussions about a variety of titles and vrtrace captures, meaning that we no longer miss a full camera update with a new frame of camera data every 10 frames or so. Sony also found that this avoids trying to do camera update work during reprojection processing which could sometimes cause us to miss a timely reprojection.
+*   **Bug Fix:** Addressed issues with FP precision that LateUpdate has on PSVR.
+    *   In LateUpdate, the RanslatedViewMatrix and its inverse were being calculated from the ViewMatric by subtracting the PreViewTranslation which doesn’t work because the translation numerical inaccuracy is already in the ViewMatric. The precision error was only noticeable when very far from 0,0,0 and the bug looks like small FOV changes as the camera moved around the scene causing brief blurriness with temporal anti-aliasing.
+    *   Also, the UpdateViewMatrix code has been rearranged to look more like FViewMatrix constructor code that sets all this up to make it easier to spot the difference.
+*   **Bug Fix:** Adding a warning when importing replay files into the save game streamer on PS4 if they are not the correct case.
+*   **New:** Upgrade to PS4 SDK 6.008.001.
+    *   Includes fixes for PGO profile generation. SDK 6.00 switched "-fprofile-instr-generate" to use front-end instrumentation. The old behavior (back-end instrumentation) has a lower performance overhead, generates a smaller instrumented binary, has no effect on the resulting data quality vs front-end, and is still supported by Sony, so we're using the "-fprofile-generate" option to stay using back-end instrumentation.
+    *   Also removed old, unsupported PGO code from the engine and UBT.
+*   **New:** PS4 SDK 6 sceVrTrackerInit now requires that it's onion memory be non-pooled. If the “PSVR Morpheus” plugin is enabled, we allocate 8MB of direct onion memory for this purpose at startup.
+*   **New:** Added support for PlayStation Tournaments in the PS4 OnlineSubsystem.
+*   **New:** Added mouse double click support.
+*   **New:** Added support for R32F and RG32F render target clear colors.
+*   **New:** Added support for fast Razor CPU user markers when event names are compile-time string literals. Use one of the SCOPED\_NAMED\_EVENT* macros to achieve the most optimal behavior for your given scenario.
+*   **New:** Added support for pinning certificates for HTTP (Android, Linux, Windows) and Websocket (Android, iOS, Linux, Mac, PS4, Windows) connections.
+*   **New:** Added support for SourcePitch in UpdateTexture2D.
+*   **New:** Added support for BO_ReverseSubtract.
+*   **New:** Added Unreal Build Tool support for Clang's address and undefined behavior sanitizers on PS4.
+*   **Improvement:** Optimized PS4's page allocator structure by moving some members to be compile-time constants, allowing the compiler to optimize division and modulo to bit shifts and masks. This makes TMipFieldPageAllocator::AllocatePages 19% faster.
+*   **Improvement:** PS4 media player improvements related to audio sync, looping, and fast forwarding.
+*   **Improvement:** PSVR reprojection timing has been improved slightly for reprojection correctness by changing SCE\_HMD\_REPROJECTION\_REPROJECTION\_TIMING\_4000USEC to SCE\_HMD\_REPROJECTION\_REPROJECTION\_TIMING\_3000USEC per Sony’s recommendation.

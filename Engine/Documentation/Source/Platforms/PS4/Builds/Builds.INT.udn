@@ -1,0 +1,14 @@
+Availability:Licensee
+Crumbs: 
+Title: PlayStation 4 Release Notes
+Description: PlayStation 4 release notes for Unreal Engine builds.
+Type: 
+Version: 
+Parent: Platforms/PS4
+Platform:PS4
+Order: 
+Tags: PS4
+Tags: Builds
+
+
+[DIR(output:"listbutton" parent:"Platforms/PS4/Builds" order:"Descend" end:"1")]

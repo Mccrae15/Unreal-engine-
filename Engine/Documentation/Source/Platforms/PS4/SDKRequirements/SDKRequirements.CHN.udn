@@ -1,0 +1,88 @@
+﻿INTSourceChangelist:6054384
+Availability: Licensee
+Title: PlayStation 4开发要求
+Description: PlayStation 4开发要求，包括硬件、软件和SDK信息。 
+Type: reference
+Version: 4.21
+Parent: Platforms/PS4
+Tags: Specifications
+Tags: PS4
+Tags: Development
+Platform: PS4
+Order: 7
+
+
+[TOC (start:2 end:2)]
+
+在本页中，您将了解开始为[PlayStation 4](Platforms/PS4)平台开发所需的硬件和软件开发工具包(SDK)要求。   
+
+  
+
+## 虚幻引擎4.21
+
+| 硬件要求 ||
+| --- | --- |
+| **推荐桌面硬件** | 请参阅[硬件和软件规格](GettingStarted/RecommendedSpecifications)。|
+| **支持的设备硬件** | PlayStation 4、PlayStation 4 Pro和PlayStation VR |
+| [REGION:tablesection]软件要求[/REGION] ||
+| **桌面操作系统** | Windows 7或Windows 10和更高版本。|
+| **SDK版本** | 6.008.01 |
+| **固件版本** | 6.008.021 |
+| **支持的IDE版本** | [INCLUDE:#excerpt_0] |
+
+<!--
+[EXCERPT:excerpt_0]
+Visual Studio 2017 15.6版或更高版本。  
+Visual Studio Update 3
+[/EXCERPT:excerpt_0]
+-->
+
+[REGION:note]
+当前支持的SDK版本可在“UEBuildPS4.cs”中找到。您可以在“[UE4根目录]/Engine/Source/Programs/UnrealBuildTool/Platforms/PS4”文件夹中找到它。
+[/REGION]
+
+## 虚幻引擎4.20
+
+| 硬件要求 ||
+| --- | --- |
+| **推荐桌面硬件** | 请参阅[硬件和软件规格](GettingStarted/RecommendedSpecifications)。|
+| **支持的设备硬件** | PlayStation 4、PlayStation 4 Pro和PlayStation VR |
+| [REGION:tablesection]软件要求[/REGION] ||
+| **桌面操作系统** | Windows 7或Windows 10和更高版本。|
+| **SDK版本** | 5.508.031 |
+| **固件版本** | 5.530.011 |
+| **支持的IDE版本** | [INCLUDE:#excerpt_1] |
+
+<!--
+[EXCERPT:excerpt_1]
+Visual Studio 2017 15.6版或更高版本。  
+Visual Studio Update 3
+[/EXCERPT:excerpt_1]
+-->
+
+[REGION:note]
+当前支持的SDK版本可在“UEBuildPS4.cs”中找到。您可以在“[UE4根目录]/Engine/Source/Programs/UnrealBuildTool/Platforms/PS4”文件夹中找到它。
+[/REGION]
+
+## 虚幻引擎4.19
+
+| 硬件要求 ||
+| --- | --- |
+| **推荐桌面硬件** | 请参阅[硬件和软件规格](GettingStarted/RecommendedSpecifications)。|
+| **支持的设备硬件** | PlayStation 4、PlayStation 4 Pro和PlayStation VR |
+| [REGION:tablesection]软件要求[/REGION] ||
+| **桌面操作系统** | Windows 7或Windows 10和更高版本。|
+| **SDK版本** | 5.008.071 |
+| **固件版本** | 4.730.001 |
+| **支持的IDE版本** | [INCLUDE:#excerpt_2] |
+
+<!--
+[EXCERPT:excerpt_2]
+Visual Studio Update 3  
+Visual Studio 2013
+[/EXCERPT:excerpt_2]
+-->
+
+[REGION:note]
+当前支持的SDK版本可在“UEBuildPS4.cs”中找到。您可以在“[UE4根目录]/Engine/Source/Programs/UnrealBuildTool/Platforms/PS4”文件夹中找到它。
+[/REGION]

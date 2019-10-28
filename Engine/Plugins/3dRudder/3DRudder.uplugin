@@ -1,0 +1,35 @@
+{
+    "CanContainContent": true,
+    "Category": "Input Devices",
+    "CreatedBy": "3dRudder",
+    "CreatedByURL": "http://www.3drudder.com",
+    "Description": "3dRudder plugin base on the 3dRudderSDK for Unreal Engine",
+    "DocsURL": "https://3drudder-dev.com/docs/3drudder-documentations/3drudder-sdk-unreal-engine/",
+    "EngineVersion": "4.23.0",
+    "FileVersion": 3,
+    "FriendlyName": "3dRudder Plugin",
+    "Installed": true,
+    "MarketplaceURL": "com.epicgames.launcher://ue/marketplace/content/8224f641f1854345a1c10d32e66218d0",
+    "Modules": [
+        {
+            "LoadingPhase": "PostConfigInit",
+            "Name": "_3dRudder",
+            "Type": "RuntimeNoCommandlet",
+            "WhitelistPlatforms": [
+                "Win64",
+                "PS4"
+            ]
+        },
+        {
+            "LoadingPhase": "PostEngineInit",
+            "Name": "_3dRudderEditor",
+            "Type": "Editor",
+            "WhitelistPlatforms": [
+                "Win64"
+            ]
+        }
+    ],
+    "SupportURL": "https://www.3drudder.com/contact/",
+    "Version": 3,
+    "VersionName": "3.3"
+}

@@ -1,0 +1,107 @@
+﻿INTSourceChangelist:6517938
+Availability: Licensee
+Crumbs: 
+Title: PlayStation 4 Release Notes for 4.17
+Description: PlayStation 4 release notes for Unreal Engine 4.17.
+Type: 
+Version: 4.17
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 17
+Tags: Release Notes
+Tags: PS4
+
+
+**Build Info**: [](https://udn.unrealengine.com/questions/385647/unreal-engine-4170-release.html)
+
+**General Release Notes**: [https://docs.unrealengine.com/en-US/Support/Builds/ReleaseNotes/4_17](Support/Builds/ReleaseNotes/4_17)
+
+SDK:
+
+*   4.508.001
+*   Firmware Version 4.508.021
+*   Supported IDE: Visual Studio 2015, Visual Studio 2013
+
+## Major Features
+
+### New Memory system (Early Access Preview)
+
+We have added a new memory management system on PlayStation 4. This is an experimental, opt-in replacement for the existing system, which solves multiple issues related to virtual and physical memory management on PlayStation 4. The new system uses the sceKernelMemoryPool* APIs introduced in SDK 4.500 to allow fast, dynamic virtual memory allocations.
+
+*   Removal of the fixed pool sizes for Garlic, Onion and CPU memory.
+    *   Previously, titles were required to manually adjust the sizes of these pools in configuration files to match typical usage of the title.
+    *   The new system allows these pools to grow dynamically based on actual usage, preventing artificial “out-of-memory” crashes where a single pool has been exhausted.
+*   Removal of the GPU defrag allocator.
+    *   The new system uses virtual memory to combat heap fragmentation by remapping physical pages as required. As such, the GPU defragmenter is no longer required.
+
+The new system can be enabled via the “bEnableNewMemorySystem” target setting, in PS4Engine.ini, or via the project target settings in the editor. In non-shipping builds, the GPIO LEDs on the front of the PlayStation 4 development kit show an indication of current memory usage.
+
+## Release Notes
+
+### Animation
+
+*   DR - Faster MorpthTarget implementation. Changed the previous Gather aproach to a scatter based one. Reaching about 110GB/s on PS4 which is up to 4x faster than the previous implementation. On PC DX11 the impact is lower due to unecessary UAV barriers but still 2x faster on AMD and up to 6x faster on NVIDIA Hardware.
+
+#### Audio
+
+*   Implemented first pass PS4 backend for audio mixer.
+*   Adding support for PS4 panning for omni-radius spatialization in old Ngs2 module.
+*   Made audio render thread higher priority on PS4 to eliminate buffer underruns.
+
+#### Networking
+
+*   Added the ability for dedicated servers to properly forward voice chat packets from PS4 clients.
+
+#### Online
+
+*   Fixed PS4 Log message using an incorrect format when accepting session invites.
+
+#### Platform
+
+*   CopyToResolveTarget now supports rectangle resolves.
+*   The PS4 Online Subsystem (OSS) contains a new "WebApiTimeoutInSeconds" config value that will set the default timeout value for SceNpWebApi HTTP requests. The default value is 15 seconds.
+*   Added log message for when PS4's SSL Buffer is Out-Of-Memory
+*   PS4 compiler now uses response files to get around the length limitation of windows CreateProcess argument.
+*   Fix unsafe RHIUpdateTexture3D implementation on PS4.
+    *   Old implementation always ran on the calling thread, so was not safe in parallel rendering.
+    *   New function enqueues an RHI thread command with a copy of the data, the same as the 2D texture path.
+*   PS4 GPU Time Stat now shows correct value with VSync on.
+*   Fix "launch on" for Blueprint projects on PS4.
+*   Fix PS4 Save Game Error dialogs not showing.
+*   Fix missing includes in non-unity PS4 shipping builds.
+*   Fix HTTP 304 messages incorrectly warning about missing payloads on PS4; there are no payloads for 304 messages.
+*   Fix crash bug in PS4 media player.
+    *   Playing a file with zero video tracks resulted in an array index out of bounds.
+    *   Skip initializing video sink when an invalid video track is selected.
+*   Fix pre-pass/base-pass Z fighting/flickering on various meshes on PS4.
+    *   Vertex position output on the depth, position only depth, and base pass shaders were not invariant on PS4, causing self Z fighting between passes.
+*   Fix certain videos not playing on PS4.
+    *   Video decoding buffer was too small to play certain videos.
+    *   Increased the default video buffer size to 8MB (from 1MB).
+*   Stopped splash screen showing over the top of PS4 system message boxes if you get a message before the game loads.
+*   Fixed a rendering bug on PS4 caused by a missing K$ flush
+    *   Constant index reads of UAV buffer types are compiled to scalar loads. Scalar loads go via the K$.
+    *   Without a K$ flush, shaders can read stale cached data.
+*   Playstation Texture lookup code now same as other platform as the PS4 shader compiler now supports switch statements.
+*   Fix flickering font rendering bug on PlayStation 4 caused by incorrect buffer type (BUF\_Static rather than BUF\_Volatile)
+*   Fixed potential buffer overflow in FWebApiPS4Task::DoWork()
+*   After retrieving the friends list, session IDs of any sessions that friends are in are now added to their corresponding presence information.
+*   Added visualization support the CMask using the vis command in the console. (This also adds support for all other UINT8 textures)
+*   Fix crash in RHIUpdateTexture3D when updating textures with more than 8MB of data.
+    *   The graphics temporary allocator can only handle up to 8MB.
+    *   If more than 8MB is passed, RHIUpdateTexture3D will fall back to the standard FMemBlock allocator.
+*   Fix crash when running games on dev/test kits in release-check mode.
+    *   Failure to create a dev directory on the kit emits a warning UE_LOG, which causes a stack overflow attempting to create the directory again.
+    *   Switched that log message to a low-level printf instead.
+*   Fixed DBuffer-Normal Decals so that they are drawn correctly.
+*   Fixed Dualshock 4 and Move disconnection issues.
+*   Fixed DBuffer decals when "r.ScreenPercentage" is bigger than 100.
+*   Fixed DBuffer decals optimization is on PSVR.
+*   Mesh particle systems now bind the previous transform of the particles.
+*   Fixed an ensure which fires when the -norhithread flag is used.
+
+### Rendering
+
+*   Fixed an issue with mip UAV creation on PS4.
+*   GatherShadowPrimitives optimized, went from 2.3ms -> 1.3ms on PS4 in a heavy test scene.
+*   Fixed r.ParallelShadows on PS4 and enabled by default engine-wide (saves 5ms RT with CSM)

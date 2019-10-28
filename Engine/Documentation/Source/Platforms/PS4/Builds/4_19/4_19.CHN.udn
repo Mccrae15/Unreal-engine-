@@ -1,0 +1,104 @@
+﻿INTSourceChangelist:6517938
+Availability:Licensee
+Crumbs: 
+Title:面向4.19的PlayStation 4版本说明
+Description:面向虚幻引擎4.19的PlayStation 4版本说明。
+Type: 
+Version: 4.19
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 19
+Tags: Release Notes
+Tags: PS4
+
+
+**构建信息**：[](https://udn.unrealengine.com/questions/421446/unreal-engine-4190-release.html)
+
+**一般发行声明**：[https://docs.unrealengine.com/en-US/Support/Builds/ReleaseNotes/4_19](Support/Builds/ReleaseNotes/4_19)
+
+PS4：
+
+*   5.008.071
+*   固件版本4.730.001
+*   支持的IDE：Visual Studio 2015和Visual Studio 2013
+
+## 主要功能
+
+### PlayStation 4上的Profile Guided Optimization支持
+
+对于经检测Profile Guided Optimization（PGO）的初期支持已经添加到引擎、构建和动画工具中。PGO为编译器和链接器提供了从作品实际通关收集的额外数据。这样就能提供超过常规编译和链接时优化能够提供的一系列额外优化。正确实现的Profile Guided Optimization能在CPU上节省几毫秒的帧时间！
+
+有关更多设置信息，亲参阅[Profile Guided Optimization](https://udn.unrealengine.com/storage/temp/312576-profile-guided-optimization.pdf) pdf。
+
+### 默认启用针对PlayStation 4的新内存系统
+
+我们现在默认启用新的PS4内存系统。该系统完全可以压制GPU碎片整理器，不再需要设置固定大小的Garlic、Onion和CPU内存池。它还更高效地使用内存，减少由于旧系统局限性而导致的内存不足崩溃。
+
+对于这些将作品升级到虚幻引擎4.19并且之前使用过GPU碎片整理分配器的用户，将需要调整他们的 **r.Streaming.PoolSize** 控制台变量。碎片整理分配器流送池大小必须增大，才能容纳所有碎片整理资源，而不仅仅是流送纹理。现在，流送池大小控制台变量直接驱动可用于纹理流送的预算，因此该值可以减小，因为它不再需要容纳所有“碎片整理”资源。
+
+降低流送池大小与作品有关，但一般做法是在不会导致模糊强度，或者导致额外的流送I/O工作的情况下，尽可能减小。我们还建议在调整流送池大小时，将 **r.PS4UseLegacyTexturePool** 设置为 **0**。该控制台变量会改变流送资源计入纹理流送器预算的方式。在传统模式下，没有渲染目标视图的所有纹理资源，或者深度模板视图将计入纹理内存。这样就会错误地将具有无序访问视图的纹理包含在内，例如距离场系统使用的纹理。当设置为 **1** 时，只有显式标记为可流送的资源将计入流送预算。这是未来引擎版本中的默认值。
+
+### 面向PlayStation 4和PlayStation VR的MSAA支持
+
+**MSAA现在在PlayStation 4（PS4）上受支持**，因此所有使用向前渲染路径的所有PS4内容都可以使用MSAA（如果需要）。这对于PSVR作品应当尤其有用，因为MSAA会让许多类型的内容看起来更清楚。
+
+要在项目中启用MSAA，前往“项目设置（Project Settings）”，找到“抗锯齿方法（Antialiasing Method）”字段并选择“MSAA”。您可以使用控制台变量r.MSAACount进一步调整质量，1表示无MSAA，2表示两倍MSAA，4表示四倍MSAA，8表示八倍MSAA。请注意，MSAA数值越大，质量越好，但代价是影响性能。
+
+## 版本说明
+
+### 音频
+
+*   新增内容：为PlayStation 4平台设置添加了插件（Plugin）下拉菜单。
+
+### 联网
+
+*   错误修复：修复了在Playstation 4上通过TCP套接字发送大量消息时的连接超时问题。
+*   错误修复：修复了尝试使用未连接TCP套接字发送数据时Playstation 4上的崩溃问题。
+
+### 平台
+
+#### Playstation 4
+
+*   崩溃修复：修复了命令行参数-noloadingscreen的崩溃问题。
+*   崩溃修复：修复了GPU页面错误导致的一些崩溃。  
+    
+    *   将FMemBlock分配器修改为使用GPU栅栏以验证是否对页面完成了GPu，然后再将其释放。
+    
+    *   这样将会避免渲染或RHI线程在一帧内多次调用Process Delayed Frees函数，因为这样会过于频繁地循环队列，导致从GPU底层释放内存。
+    
+*   错误修复：修复了清理体积纹理的错误。
+*   错误修复：修复了动态模糊问题。速度平整计算着色器之前会因为零长度速度而输出NaNs。现在，在计算速度极坐标时，NaNs将会归零。
+*   错误修复：修复了对于启用Morpheus模块但没有安装PS4 SDK的用户会导致编译器错误的问题。
+*   错误修复：修复了在使用新PS4内存系统时Niagara中的GPU页面错误。Niagara之前使用不稳定缓存区，但不会在每一帧锁定它们，因此导致GPU页面错误。
+*   错误修复：修复了新PS4内存系统中的竞争条件，这个条件导致sceKernalMemoryPoolCommit的内存分配失败并产生错误代码SCE\_KERNEL\_ERROR_EBUSY。
+*   错误修复：修复了导致PS4保存游戏系统将“未找到保存游戏”条件解译为“未知错误”的问题。
+*   新增内容：为PS4上的向前渲染器添加了MSAA支持。  
+    
+    *   与桌面版MSAA拥有相同的限制；大气不起作用，单独的半透明可能开销很大。
+    
+    *   还实现了八倍MSAA。
+    
+*   新增内容：为PS4 Pro启用了当前阈值支持。
+*   新增内容：添加了特定关键分段实现以改善性能。  
+    
+    *   使用自适应PThread互斥。这些维护自旋计数，以避免短期保持锁定时的系统调用。
+    
+    *   自旋计数是自适应的，取决于之前锁定的测得自旋持续时间。
+    
+*   新增内容：添加了预取块函数。这会在约3毫秒内看到垃圾回收有小幅性能改进。
+*   新增内容：Gnm多缓冲类已经重构，解决了因为在渲染器中误用“不稳定”缓冲区而引起的一些GPU页面错误。
+*   这一更改移除了PS4 RHI中的“不稳定”缓冲区概念。
+*   缓冲区现在可以在按帧多次锁定/解锁，而不会产生任何后果，无论是否在更高级别的RHI API允许这一行为。
+*   新缓冲区实现不仅速度更快，还可以节省少量内存。
+
+### 渲染
+
+#### 优化
+
+*	新增内容：添加了开始/结束UpdateTexture3D以移除PS4上用于非常大量上载的大量临时分配费。
+
+### VR
+
+*   错误修复：修复了在检测到新摄像机时重新应用摄像机配置的PSVR摄像机连接问题。
+*   错误修复：修复了屏幕百分比变化后，前两帧中PSVR上的图形损坏。
+*   新增内容：将PC最终退却窗口位置上的PSVR移到了(0, 0)，而不是(1280, 0)。

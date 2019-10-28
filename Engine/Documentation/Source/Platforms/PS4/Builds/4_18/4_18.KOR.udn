@@ -1,0 +1,293 @@
+﻿INTSourceChangelist:6517938
+Availability: Licensee
+Crumbs: 
+Title: PlayStation 4 Release Notes for 4.18
+Description: PlayStation 4 release notes for Unreal Engine 4.18.
+Type: 
+Version: 4.18
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 18
+Tags: Release Notes
+Tags: PS4
+
+
+**Build Info**: [](https://udn.unrealengine.com/questions/398207/unreal-engine-4180-release.html)
+
+**General Release Notes**: [https://docs.unrealengine.com/en-US/Support/Builds/ReleaseNotes/4_18](Support/Builds/ReleaseNotes/4_18)
+
+SDK:
+
+*   4.508.111
+*   Firmware Version 4.730.001
+*   Supported IDE: Visual Studio 2015, Visual Studio 2013
+
+## Major Features
+
+### PS4 SDK 4.508.111 support
+
+This SDK enables an additional 128MB of memory on base PS4 and an additional 256MB on PS4 Pro. Currently all this additional memory goes to the CPU. However, more memory can be allocated to other pools if necessary. For example, to give more memory to Garlic, titles can modify r.GarlicHeapSizeMB and r.GarlicHeapSizeMB_Neo accordingly.
+
+### PS4 Memory Improvements (requires config changes)
+
+#### Physical Memory Stats
+
+The platform physical memory stat has been reworked to account for garlic and onion allocations. Titles will therefore see an increase in this number, however the number is accurate.
+
+#### Texture Streaming Pool
+
+We have also reworked the way streaming texture memory is allocated on PS4, in order to make it more predictable. However, licensees wanting to take advantage of this will need to change r.PS4UseLegacyTexturePool to 0.
+
+In legacy mode, and when the GPU defrag allocator is enabled, the texture streamer’s budgeting is driven by the total number of bytes allocated by the GPU defrag allocator. This includes all defraggable resources which are not streamable textures. As a result, the r.Streaming.PoolSize CVar had to be made larger to account for this.
+
+With the new behavior, the texture pool is a fixed size, and only counts streamable texture resources which are managed by the texture streamer. This allows for greater control over the actual texture streaming budget. When enabling the new behavior, the texture streaming pool size will likely need to be made smaller.
+
+### Neo-specific Garlic and Onion pool sizes
+
+It is now possible to specify a different Garlic and Onion pool size for Neo. Neo kits have more memory than Base kits, so it can be advantageous to allocate more graphics memory on Neo, particularly to the Garlic pool, if your title is using Neo specific scalability settings which affect graphics resources (e.g. larger shadow map resolution, 4k output or larger bit depth render targets).
+
+The Neo specific pool sizes can be set using the following config file settings in PS4Engine.ini (where ‘n’ is a number of megabytes):
+
+*   \[SystemSettings\]
+*   r.GarlicHeapSizeMB_Neo=n
+*   r.OnionHeapSizeMB_Neo=n
+
+The default value of 0 means that Neo kits will use the same pool sizes as Base kits.
+
+### New: LLM Low Level Memory Tracker
+
+The new LLM Low Level Memory Tracker enables you to **track all memory once and only once**, with nothing missed and nothing counted twice!
+
+![](48_2-1.png "48_2-1.png")
+
+Every allocation made by the engine or game is assigned a tag value identifying the category to which it belongs. The total of all of the categories will add up to the total amount of memory used for the game. The tags are applied using tag scope macros. Any allocation made within that scope will be given the specified tag.
+
+LLM stats can be viewed in game using ‘stat LLM’ or ‘stat LLMFULL’. The current total for each tag will be shown in MB. LLM also writes out the stat values to a csv allowing the values to be graphed over time.
+
+Due to its nature, LLM requires support to be added for each platform. Currently LLM supports PS4. Windows is supported as an experimental release.
+
+### New: Media Framework Improvements
+
+Media Framework in 4.18 has been significantly updated and extended to support upcoming advanced use cases, such as **real-time video compositing**, time synchronization, simplified workflows, capture hardware & video-over-IP support, online media streaming, integration with Unreal Editor, and improved stability and performance!
+
+[OBJECT:EmbeddedVideo]
+    [PARAMLITERAL:videoid]
+    sVXRyzoppD0
+    [/PARAMLITERAL]
+    [PARAMLITERAL:width]
+    78
+    [/PARAMLITERAL]
+    [PARAMLITERAL:height]
+    56.25
+    [/PARAMLITERAL]
+    [PARAMLITERAL:units]
+    %
+    [/PARAMLITERAL]
+    [PARAMLITERAL:type]
+    simple
+    [/PARAMLITERAL]
+[/OBJECT]
+
+The Media Framework API has been streamlined to improve compile times and updated to make use of modern features in C++11. In addition, high-level media player logic has been refactored from a push-based paradigm to a pull-based methodology and moved into reusable Engine-agnostic classes that enables better separation of concerns in media player interfaces.  
+
+Latency and Performance is improved due to a timecode-based sample processing pipeline with high-frequency ticking for time-sensitive samples - such as audio, camera tracking, and face tracking - and multi-stage ticking that can be used by any object for better frame utilization and predictable timing.
+
+Audio playback is now integrated with new Audio Mixer API and makes use of new Media Sound Components (replaces Media Sound Waves) that are built on top of Synth Components which can be attached to level actors and used in UMG widgets. Media sample rate converter (previously supported only 16-bit @ 44.1kHz) now supports int8, int16, int32, float, double input samples and any sample rate (including variable rates) with up to 8 audio input channels and 1 and 2 output channels (surround sound is scheduled for 4.19). Spatial audio is also supported via Media Sound Components on Actors
+
+On the video side, Media Framework now uses an external texture sampler API which enables video frame rendering without memory copies. This is currently only implemented for Android, but we plan to expand it to other platforms. We replaced problematic triple-buffering mechanism with sample queues and added better support for exotic video and pixel formats, and faulty encoders.
+
+The Media Player Editor has been updated with a new Track format selector menu, audio/video capture device selector, cache state visualization (for player plug-ins that support it), Playlist controls, and the ability to save playlists. In addition, scrubbing is now more responsive and information overlays have been improved. There is also experimental support for text overlay visualization and 360 video viewport controls. Per-platform media player overrides for Media Source assets are also now functional.
+
+Blueprint functionality has been added for querying media player tracks and track formats, enumerating audio, video and webcam capture devices, and adding files and URLs to media playlists.
+
+All media player plugins have been updated to enable support for all of the dramatic new features available in the Media Framework in Unreal Engine 4.18.
+
+[REGION:note]
+Some of this work, such as Sequencer integration, stereoscopic & 360 video support, and hardware accelerated 4K playback is still under active development.
+[/REGION]
+
+### Upgrade Notes (Media Framework)
+
+*   BREAKING: MediaSoundWave assets were replaced with MediaSoundComponents
+    *   There is no automatic conversion (components require different workflow & user decisions)
+    *   Attach new MediaSoundComponents to Actors or UMG widgets
+    *   Existing MediaSoundWave assets must be deleted from Content directory on disk
+*   BREAKING: MediaPlayer output settings were removed. Media assets now reference a MediaPlayer instead
+*   NEW: MediaTexture and MediaSoundComponent have a setting for the Media Player to pull data from
+*   NEW: Optional audio playback via OS mixer has been removed on PS4
+    *   Playback is now handled via the Engine on most platforms
+    *   May be added back when Startup Movies are replaced with MF in 4.19
+*   NEW: MediaAssets module is now always loaded to prevent server-side BP problems
+*   NEW: Material texture samplers now require the new Sampler Type “External”
+*   NOTE: MediaOverlay assets were removed as a concept
+    *   We are currently reworking caption and subtitle support in UE4
+
+### New Features & Improvements (Media Framework)
+
+#### General
+
+##### API
+
+*   NEW: Moved high-level media player logic into reusable Engine-agnostic classes
+    *   Low-level interfaces exposed via facade (see FMediaPlayerFacade)
+    *   Reusable helper objects for creating, caching and consuming samples
+*   NEW: Support for multiple output formats per media track (see IMediaTracks)
+*   NEW: API for querying player’s caching state (IMediaCache)
+*   NEW: API for enumerating A/V capture devices (IMediaCaptureSupport)
+*   NEW: Time source API (for internal and external clocks / timecode generators)
+*   NEW: Exposed buffering and connecting states
+*   NEW: Separation of media overlays into caption, subtitle and custom text tracks
+*   NEW: Added extensive verbose logging in most player plug-ins
+    *   To enable, add the following to your project’s \\Config\\DefaultEngine.ini file - add the below to the \[Core.Log\] section:
+    *   LogMediaAssets=VeryVerbose
+    *   LogMediaUtils=VeryVerbose
+    *   LogAndroidMedia=VeryVerbose
+    *   LogAvfMedia=VeryVerbose
+    *   LogImgMedia=VeryVerbose
+    *   LogPS4Media=VeryVerbose
+    *   LogWmfMedia=VeryVerbose
+*   Better separation of concerns in media player interfaces
+*   Delegates were replaced with thread-safe interfaces
+*   Refactored push-based into pull-based API (see IMediaSamples)
+*   Most operations are now asynchronous to eliminate hitches
+*   Multiple media assets can now use the same MediaPlayer
+*   Modernized all Media related modules (IWYU, C++11, documentation)
+
+##### Latency and Performance
+
+*   NEW: multi-stage ticking API
+    *   Can be used by any object, not just media players (see IMediaClockSink)
+    *   Better frame utilization and predictable timing
+*   NEW: timecode based sample processing pipeline
+*   NEW: high-frequency (200 Hz) ticker for time sensitive samples, such as audio, camera tracking, and face tracking (see IMediaTicker and IMediaTickable)
+*   NEW: Sample queues and pooling for better memory usage
+*   NEW: Generic C++ template for media object pooling (see TMediaObjectPool)
+*   NEW: String conversion functions for media enums (see MediaHelpers.h)
+*   Media Framework is now mostly lock-free to eliminate thread stalls
+*   Removed all render thread flushes & render thread dependencies
+*   Fixed media texture crash when recreating render device, i.e. when changing resolutions
+*   Fixed all known multi-threading and concurrency issues
+
+##### Audio
+
+*	Audio playback via the Engine
+*   NEW: Integrated with new Audio Mixer API
+*   NEW: Media Sound Components (replaces Media Sound Waves)
+    *   Built on top of synth components
+    *   Can be attached to level actors
+    *   Can be used in UMG widgets
+*   NEW: Media sample rate converter (previously supported only 16-bit @ 44.1kHz)
+    *   Supports int8, int16, int32, float, double input samples
+    *   Supports any sample rate, including variable rates
+    *   Supports up to 8 audio input channels
+    *   Supports 1 and 2 output channels (surround sound is scheduled for 4.19)
+*   NEW: Spatial audio supported via media sound components on Actors
+
+##### Video
+
+##### API
+
+*   NEW: External texture sampler API
+    
+    *   Enables video frame rendering without memory copies
+    
+    *   Currently only implemented for Android
+*   NEW: API for 360 and stereoscopic video players (see IMediaView)  
+    *   Currently not implemented in any player plug-ins
+
+*   Latency and Performance
+
+*   Replaced problematic triple-buffering mechanism with sample queues
+*   Better support for exotic video and pixel formats, and faulty encoders
+
+##### Editor
+
+*   Media Player Editor
+    *   NEW: Track format selector menu
+    *   NEW: Audio/video capture device selector
+    *   NEW: Cache state visualization (for player plug-ins that support it)
+    *   NEW: Playlist controls & ability to save playlists (playlist editing is still WIP)
+    *   EXPERIMENTAL: Text overlay visualization (currently not used)
+    *   EXPERIMENTAL: 360 video viewport controls (currently not used)
+    *   Scrubbing is now more responsive
+    *   Improved information overlays
+
+##### Blueprints
+
+*   NEW: BP functions for querying media player tracks and track formats
+*   NEW: BP function library for enumerating audio, video and webcam capture devices
+*   NEW: BP events for SeekCompleted and TracksChanged
+*   NEW: BP functions for adding files and URLs to media play lists
+
+##### Media Player Plug-ins
+
+##### PS4Media
+
+*   Features
+    *   Completely rewritten from scratch
+    *   NEW: Support for streaming media (SDK is currently limited to one stream)
+    *   NEW: Support for M3D, M4A, M4V, MOV containers
+    *   NEW: Track switching support
+
+##### Performance
+
+*   NEW: Asynchronous file loading
+*   NEW: Using SDK 3.50 asynchronous AvPlayer API
+*   NEW: Configurable video buffer settings
+*   Removed render thread flushes to prevent hitches
+
+## Release Notes
+
+### Audio
+
+*   New: Spatialization, Reverb, and Occlusion plugin support has been rebuilt. It now supports per platform mix and match of plugins. Audio plugins can now also be swapped out without closing the editor.
+*   Audio3D Spatialization Plugin is now available in engine plugins. To use, set your Spatialization Plugin for PS4 to "Sony Audio3D".
+*   Bug Fix: Fixed potential memory leak when sound sources are started and stopped on the same frame on PS4.
+*   Bug Fix: Several fixes for PS4 audio from Fortnite integrated to Dev-AnimPhys
+
+### Platform 
+
+*   Integrate new Begin/End UpdateTexture3D interface to reduce memory spikes on PS4 by removing temporary copies. Saved 200MB+ from peak memory when using DFAO.
+*   Increased the maximum bound resource count for shaders to 48 on PS4.
+    *   Added additional logging of PS4 Store product information
+    *   Add option to specify which bottom position to display the PS4 Store Icon, defaulted to previous hard-coded value of Left
+*   The call rates for the presence web API functions are now respected. While the rate limit is exceeded, attempts to use the presence API are ignored and a warning is logged.
+    *   Added initialization logging for PSN at startup.
+*   Added r.GarlicHeapSizeMB\_Neo and r.OnionHeapSizeMB\_Neo to allow different memory heap sizes to be specified on both Base and Neo PS4.
+*   Bug Fix: Added a missing K$ flush in RHITransitionResources for UAVs. - Constant index reads of UAV buffer types are compiled to scalar loads. Scalar loads go via the K$. - Without a K$ flush, shaders can read stale cached data.
+*   Bug Fix: Fix motion blur bug. - VelocityFlatten compute shader was outputting NaNs, caused by zero-length velocities. - NaNs are zeroed out when computing the velocity polar coordinates now.
+*   Bug Fix: Fixed PS4 save game icons. The save game system now grabs a relative path from the extended save game info callback, e.g. "../../../GameName/Content/Icons/savicon.png". The icon files should be included in your game's content directory and packaged as Non UFS files.
+*   Bug Fix: PSVR HMD now calls sceUserServiceInitialize.
+*   Bug Fix: Editor crashes when launching onto PS4 with Morpheus enabled due to shader compilation failure
+    *   Fixed shader includes with the new power to put them in platform specific sub directories.
+*   Bug Fix: Fixed PS4 memory stats - Physical memory stat now includes garlic and onion allocations. CPU out-of-memory crashes will result in "AvailablePhysical" being close to 0. - Added garlic, onion and defrag stats to the platform memory stats struct. - Added fixed pool sizes to platform memory stats.
+*   Bug Fix: Fixed 4 GB CPU memory limit on PS4 memory system. This affects Neo development kits in "LARGE" memory mode where more than 4 GB of memory is available to the CPU.
+*   Bug Fix: Fixed out-of-memory crash on PS4 by allowing the libc allocators to use the engine malloc when mspace heaps have been exhausted.
+*   Bug Fix: Unified the PS4 media player memory allocators to fix out-of-memory crashes in the startup movie player.
+*   Bug Fix: PS4 now properly clears volume textures.
+*   OnlineSubsystemPS4 (OSS)
+    *   Bug Fix: Fixed crash when you queried a user twice in PS4 OSS Message Interface
+    *   Bug Fix: Process text in PS4 friends presence status as UTF-8 instead of ANSI
+    *   Bug Fix: The GetUserPrivilege function in the PS4 OSS identity interface will now properly report the case of a user not being logged in as such, instead of as a generic failure.
+    *   Bug Fix: Parse html break tags and ignore literal newline/carriage return characters in PS4 offer descriptions
+    *   Bug Fix: Fixed a crash in the PS4 OSS when user signs out, then back in.
+    *   Bug Fix: Fix session joinability across compatible titleids
+    *   Bug Fix: Fixed a PS4 party crash when sending friends session invites.
+*   Bug Fix: Fixed PS4 texture pool behavior to decrease wasted Garlic memory. Licensees need to adjust their texture pool budgets when enabling the new behavior. See PS4 4.18 release notes.
+*   Bug Fix: Fix broken automated tests due to compiler optimizations.
+*	Bug Fix: Fix apostrophe key being misreported as "Quote" which was breaking the gameplay debugger, since it listens for the "apostrophe" key to activate.  
+
+### Rendering  
+
+### Lighting
+
+*   Lowered default r.Shadow.RadiusThreshold for Epic shadow settings as it was causing a lot of visible artifacts from small objects popping out. This will increase shadowmap cost slightly (13.5ms RT -> 14.3ms RT in Fortnite on PS4, no measurable GPU difference). Bug Fix: Fixed landscape in the Global Distance field on PS4
+
+### VR 
+
+*   Bug Fix: Fixed a potential crash on Windows in combination with PS4 VR remote client code accidentally being polled when the Morpheus plugin was disabled.
+
+## Upgrade Notes  
+
+*   Bug Fix: Fix crash when sending a friend invite in FOnlineSessionPS4::SendSessionInviteToFriends when a named session is null. It seems like this can occur when the party leaders' network connection drops for a bit and another party member becomes the party leader. There may be other cases as well. 
+*   Bug Fix: Ensure all PS4 store offers properly use html BR tags instead of newlines, or they may not be displayed properly.

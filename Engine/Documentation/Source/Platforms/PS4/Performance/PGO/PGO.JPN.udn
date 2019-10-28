@@ -1,0 +1,25 @@
+﻿INTSourceChangelist:4369158
+Availability:Licensee
+Crumbs: 
+Title: プロファイルに基づく最適化 (PGO)
+Description: Unreal Engine 4 の使い方を学ぶための完全なリソース
+Type: overview
+Version: 
+Parent: Platforms/Performance
+Platform:PS4
+Order: 1
+Tags: PlayStation 4
+Tags: Additional
+PLatform:PS4
+
+[REGION:note]本コンテンツは、早期の利用を可能にするため、草稿段階でアーリーアクセスとして公開しています。時間を空けずに再度アクセスして、更新状態を確認するようにしてください！[/REGION]
+
+インストルメント化された PGO (プロファイルに基づく最適化) の予備的なサポートをエンジンに追加します。PGO によって、コンパイラーとリンカーに、タイトルを実際に通してプレイすることにより得られる付加的データがもたらされます。そのデータにより、通常のコンパイルおよびリンクによる処理時間の最適化を超えるレベルの最適化が得られます。適切に実装された PGO を使えば、CPU でミリ秒単位のフレーム時間が節約できます。
+
+インストルメント化されたビルドとともに PGO をサポートする場合は、タイトル固有の作業が一定量必要となります。これは、タイトルに典型的なゲームプレイを自動的に実行させることによって、Automation Script に必要に応じて新たな PGO データを生成させるために必要となるものです。PGO のプロファイリングには、インストルメント化されたバイナリも必要となります。それらのバイナリは、Build Configuration において **bPGOProfile** を true にセットすることによって、 [Unreal Build Tool](https://docs.unrealengine.com/en-us/Programming/BuildTools#unrealbuildtool) (UBT) により生成されます。
+
+Automation Script は、PGO の実行のためにゲームが起動する際に、コマンドラインに **-pgoprofile** を渡します。このトリガーは、たとえば、AI に限定したレベルのプレイスルーや、カメラによるワールドのフライスルー、録画されたリプレイの起動などに使えます。タイトルが終了すると、PGO データが収集されて、ディスクに自動的に保存されます。これは Automation Script によってコピーされてソースコントロールにチェックインされます。
+
+PGO データが生成されると、最適化されたビルドが作成可能になります。その場合、Build Configuration において **bPGOOptimize** を true にセットします。PGO によるパフォーマンスの向上は、そのデータが可能な限り最新のものである場合に最高のものとなります。また、インストルメント化されたバイナリが Shipping のバイナリとできるだけ合致している必要もあります。
+
+PGO のプロファイリング セッションを使う場合は、 **Shipping** という Configuration のビルドを利用することをおすすめします。Shipping のビルドは通常、コンパイラーの定義により自動化およびデバッグ機能がすべて除去されるので、ビルドツールによって  **ENABLE_PGO_PROFILE** マクロが定義されることになります。自動化コードは、特に PGO のプロファイリングのために、Shipping のバイナリで再有効化することも可能です。

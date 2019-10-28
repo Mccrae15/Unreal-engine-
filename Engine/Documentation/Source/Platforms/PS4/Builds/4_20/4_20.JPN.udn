@@ -1,0 +1,55 @@
+﻿INTSourceChangelist:6517938
+Availability:Licensee
+Crumbs: 
+Title: PlayStation 4 Release Notes for 4.20
+Description: Product documentation including reference and guides for Unreal Engine 4
+Type: 
+Version: 4.20
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 20
+Tags: Release Notes
+Tags: PS4
+
+
+## PlayStation 4 SDK Update
+
+Unreal Engine 4.20 supports the following SDK:
+
+*   PS4 SDK 5.508.031 (Firmware Version:5.530.011)
+*   Supported IDE:
+    *   Visual Studio 2015
+    *   Visual Studio 2017
+
+[REGION:note]
+Note that The previously supported PS4 SDK (5.00) will expire on June 30, 2018. Any new titles being released after this date will need to upgrade. Check with Sony on DevNet for the latest information on SDK versions and their expiry dates.
+[/REGION]
+
+## New: Memory Analyzer Tool Support
+
+We’ve added support for Sony’s Memory Analyzer Tool (MAT) in the PS4 SDK so you can quickly analyze memory usage and track down leaks!
+
+![ps41](ps41.jpg "ps41")
+
+You can enable the memory analyzer by using **bEnableMemoryAnalyzer** in the PS4 Target settings or from the **Project Settings > Platforms > PlayStation 4** under the **Compile Time** tab. Support for the Memory Analyzer Tool depends on Low Level Memory Tracker (LLM), so you must run with LLM compiled in (e.g in a development build).
+
+Once a target setting has been enabled, rebuild and deploy your project to a PS4 devkit, run it, and then connect the Memory Analyzer Tool. Note that the project will freeze during early boot up until MAT has been attached. Enable Memory Analyzer should only be enabled when using MAT.  
+
+## Release Notes  
+
+*   **Crash Fix:** Fixed GPU page fault crashes on PS4 caused by freeing memory the GPU was using.
+*   **Crash Fix:** Fixed crash on PS4 when shader libraries are enabled.
+*   **Crash Fix:** Fixed a crash on PS4 when receiving SIGPIPE while using TCP sockets.
+*   **Bug Fix:** PS4 Write Achievements only calls the completion delegate once if there are multiple write operations.
+*   **Bug Fix:** Socket timeouts are no longer treated as errors on PS4.
+*   **Bug Fix:** Stage the .self file as NonUFS to prevent case issues.
+*   **New:** Changed PS4 achievements to use NP Toolkit to utilize async operations.
+*   **New:** Implemented peak memory stats for PS4 in new memory system.
+*   **New:** Added minimal hang detector mode in FThreadHeartBeat so that we can generate crash dumps when hangs are detected. Additionally, these crash dumps can be gathered in retail shipped titles.
+*   **New:** Implemented ability to delete saved games.
+*   **Improvement:** Refactored Gnm multi-buffer class on PS4, completely removing "volatile" buffers in PS4 RHI, greatly simplifying buffer management.
+*   **Improvement:** Made .lock files optional in PS4 symbol server storage tasks.
+*   **Improvement:** Upgraded PS4 to Freetype 2.6.
+*   **Improvement:** Make reset base position work by default for PSVR. If existing delegate is not bound by anything, fire different delegate, which Morpheus HMD catches, and recenter VR.
+*   **Improvement:** Increased size of PS4 HTTP pool memory to 1 MiB from 256 kiB.
+*   **Improvement:** We now combine PS4 PSN friends list queries, to prevent multiple simultaneous requests for a single user. Subsequent calls' delegates will be called when the first succeeds.

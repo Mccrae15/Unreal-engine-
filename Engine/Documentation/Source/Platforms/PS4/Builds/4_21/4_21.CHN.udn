@@ -1,0 +1,124 @@
+﻿INTSourceChangelist:6517938
+Availability:Licensee
+Crumbs: 
+Title:面向4.21的PlayStation 4版本说明
+Description:产品文档，包含虚幻引擎4的参考和指南
+Type: 
+Version: 4.21
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 21
+Tags: Release Notes
+Tags: PS4
+
+
+## PlayStation 4 SDK更新  
+
+虚幻引擎4.21支持以下PlayStation 4 SDK：  
+
+*   SDK 6.008.001  
+    *   固件6.008.021
+*   支持的IDE：
+    *   Visual Studio 2015
+    *   Visual Studio 2017
+
+## 新增内容：Address Sanitizer（ASan）和Undefined Behavior Sanitizer（UBSan）支持
+
+我们为Clang的ASan和UBSan系统添加了支持。这些支持可以在编辑器中通过PS4目标设置对话框启用，或者在PS4Engine.ini的\[/Script/PS4PlatformEditor.PS4TargetSettings\]分段中设置bEnableAddressSanitizer和bEnableUndefinedBehaviorSanitizer。
+
+请注意，在启用了Address Sanitizer或Undefined Behavior Sanitizer的情况下进行编译都会增大已编译二进制文件的大小。对于大型作品，该增大的二进制大小可能会超过基本PS4装备上的可用灵活内存。如果您在启用ASan或UBSan的情况下启动二进制文件时遇到问题，尝试在PS4 Neo装备上以“大”内存模式启动它。此外，开发配置二进制文件要大于测试或发行配置二进制。如果您无法在启用了ASan或UBSan的情况下启动开发配置二进制，并且没有Neo装备，尝试使用测试或发行配置。
+
+## 新增内容：改进了PS4着色器调试二进制支持
+
+为改进Razor GPU的调试体验，着色器调试二进制（SDB）文件允许Razor提供源级别调试、着色器源文件名、关于着色器资源布局的额外数据以及许多其他有用的功能。
+
+之前，用于Razor GPU的SDB完全是手动过程，通常在烘焙期间，需要较长时间来重新编译游戏作品中的所有着色器。本版本中的改进允许SDB文件数据与已编译着色器二进制一起存储在衍生数据缓存（DDC）中，这样在烘焙期间可以进行检索，而不必强制重新编译所有着色器。这样，开发者就可以将指定烘焙构建中包含的所有SDB文件抽取到文件夹，然后使用它们在Razor GPU中启用高级调试功能，而且大幅降低了开销。
+
+### 启用SDB模式
+
+使用控制台变量 **r.PS4ShaderSDBMode** 设置SDB文件的生成方式。将以下内容添加到PS4Engine.ini配置文件：  
+
+\[ShaderCompiler\]  
+r.PS4ShaderSDBMode=1
+
+SDB文件的生成方式有两种模式。
+
+*   在 **模式1** 中，源文件散列会被忽视。所有编译的着色器都会生成SDB文件，但在烘焙期间导出SDB，仅保留具有唯一编译的着色器二进制散列的SDB。源HLSL中的差异将被忽略，除非这些差异会产生不同的编译二进制。原因是HLSL源中的细微变化会产生相同的二进制输出（例如，重命名变量或添加空格）。忽略源文件散列会显著减少烘焙将会导出的SDB文件的总数。 
+*   在 **模式2** 中，SDB文件根据编译器的已编译着色器二进制输出散列以及输入到计算机的HLSL源散列而生成。它将针对所有唯一的预处理源输入为所有烘焙的着色器生成所有可能的SDB文件。
+
+在大多数情况下建议使用模式1。请注意，在任一模式下，每个编译的着色器都将SDB数据存储在DDC中。去重操作仅在烘焙导出期间进行。需要大小足够大的DDC才能使用它。启用任一模式将强制首次进行完整的着色器重新编译，但填充了DDC之后，可以导出SDB而不进行重新编译。
+
+### 烘焙期间导出SDB
+
+启用SDB模式后，可以将命令行参数 **-PS4SDBExport=\%FolderFilePath%** 传递给烘焙进程，从烘焙将它们导出。  
+
+此外，可以使用命令行开关 **-PS4SDBZip** 将它们输出为一个未压缩的.zip文件。这样可以更方便地在机器之间移动SDB数据，消除了文件系统处理数千个小文件的开销。可以用于让构建机器为每个构建产生SDB.zip文件，允许开发者检索任意构建的数据，并使用它们调试来自内部QA或者来自零售项目总结GPU崩溃的Razor GPU采集信息。请注意，Razor不能读取.zip文件内部，因此文件必须解压到本地。
+
+您还可以选择使用 **r.PS4DumpShaderSDB** 和 **r.PS4SDBZip** 将这些命令行开关添加到PS4Engine.ini文件。
+
+## 新增内容：PS4设备输出日志支持（试验性）
+
+我们现在支持 **设备输出日志（Device Output Log）** 窗口向游戏发送控制台命令和捕捉输出日志。从“编辑器首选项”（Editor Preferences）中的 **试验性（Experimental）>设备输出日志（ Device Output Log）** 中启用，并从编辑器的 **窗口（Window）** 菜单中打开。
+
+![PS4_2](PS4_2.png "PS4_2")
+
+[REGION:note]
+请注意，自动完成命令列表来自于编辑器，而不是当前正在运行的游戏。
+[/REGION]
+
+## 版本说明
+
+*   **崩溃修复：**修复了PS4上以HDR模式运行ShooterGame时的崩溃。
+*   **错误修复：**鼠标输入不再需要连接控制器。
+*   **错误修复：**修复了PS4关键分段递归锁定的错误。在过去，如果在同一线程上先Lock后TryLock，则TryLock将会失败，尽管调用线程拥有该锁定也是如此。现在能够按预期工作。
+*   **错误修复：**修复了GPU统计信息中的32位溢出错误。
+*   **错误修复：**更正了PSN速率限制的支持。
+*   **错误修复：**修复了资源名称长度为128或更长时动态烘焙的更新问题。
+*   **错误修复：**修复了PS4上的不一致时间函数。这会导致应用被暂挂时报告卡顿。
+*   **错误修复：**将“将鼠标光标锁定到屏幕”设置为默认启用。
+*   **错误修复：**修复了GetMovieName和IsLastMovieInPlaylist。
+*   **错误修复：**修复了同类应用服务器编译错误。
+*   **错误修复**：FMallocBinned2不再在user_malloc中进行静态初始化，防止在静态初始化期间由于atexit/malloc调用而导致的递归。
+*   **错误修复：**我们现在使用FGameThreadHitchHeartBeat的GetNoInit function来防止崩溃期间的初始化。
+*   **错误修复：**修复了PS4上的RHI线程单元统计。RHI线程会被等待异步提交线程的范围锁定阻止，该线程继而被等待帧完成的GPU阻止。我们现在衡量该范围锁定上的阻止时间，并从总RHI繁忙时间中减去该时间。
+*   **错误修复：**修复了在PS4上使用Media Framework首次播放视频时发生的卡顿。
+    *   首次播放视频会在游戏线程上加载两个额外的系统库，卡段高达200毫秒。现在，在引导时加载PS4媒体播放器插件时，我们会提前加载这些系统模块。
+*   **错误修复：**修复了GPU上损坏的计算机到图形缓存清空，这可能会导致计算机批处理读取过期数据后发生图形批处理，从而导致图形损坏。这样可能会在体积雾中显示为块状的明亮光线瑕疵和闪光。
+*   **错误修复：**解决了缺少Morpheus函数库蓝图函数。之前它们位于Morpheus模块中，编辑器在Win64和PS4有意将该模块加入白名单，因为它会导致构建中断。现在，Morpheus函数库在它自己的模块中，该模块在Win64和PS4上为运行时，但函数在Win64上不会做任何操作。
+*   **错误修复：**针对拉取PS4 LAN线缆时的网络驱动器冻结添加了推测修复。
+*   **错误修复：**现在，根据Sony的需求，在VR下断开摄像头连接时，PSVR显示HMDSetupDialog而不是CameraDisconnectedDialog。
+*   **错误修复：**PSVR摄像头更新现在同步到摄像头硬件：
+    *   在讨论过各种作品和vrtrace捕捉后，摄像头线程直接同步到vblank，表示通过每10帧左右的一帧新摄像头数据，我们不会再错过完整的摄像头更新。Sony还发现这样可以避免尝试在二次投影处理期间进行摄像头更新工作，这样有时会导致我们错过及时二次投影。
+*   **错误修复：**解决了LateUpdate在PSVR上遇到的FP精度问题。
+    *   在LateUpdate中，RanslatedViewMatrix及其逆矩阵是通过减去reViewTranslation根据ViewMatric计算的，这样不起作用，因为ViewMatric已经存在平移数字不准确性。离0,0,0非常远时才会注意到精度错误，随着摄像头在场景中移动，错误看起来像是微小的FOV变化，导致时间刚锯齿出现简短的模糊。
+    *   此外，UpdateViewMatrix代码已经重新排列，看起来更像是FViewMatrix构造函数代码，该代码进行所有设置以便于发现区别。
+*   **错误修复：**添加了在PS4上的保存游戏流送器上导入重放文件时如果情况不正确的警告。
+*   **新增内容：**升级到PS4 SDK 6.008.001。
+    *   包含PGO配置文件生成修复。SDK 6.00切换为“-fprofile-instr-generate”以使用前端设备。与前端相比，原行为（后端设备）具有较低的性能开销，生成少量经检测库，不影响所产生的数据质量，仍受Sony支持，因此我们使用“-fprofile-generate”选项来保持使用后端设备。
+    *   此外从引擎和UBT中移除了旧的不受支持的PGO代码。
+*   **新增内容：**PS4 SDK 6 sceVrTrackerInit现在要求其onion内存非池化。如果启用了“PSVR Morpheus”插件，我们将分配8MB直接onion内存用于在启动时达到该目的。
+*   **新增内容：**在PS4 OnlineSubsystem添加了对PlayStation Tournaments的支持。
+*   **新增内容：**添加了鼠标双击支持。
+*   **新增内容：**为R32F和RG32F渲染目标清晰颜色添加了支持。
+*   **新增内容：**为快速Razor CPU用户标记添加了支持，其中事件名称是编译时字符串文字。使用其中一个SCOPED\_NAMED\_EVENT* 宏来达到给定场景的最优行为。
+*   **新增内容：**添加了对HTTP（Android、Linux、Windows）和Websocket（Android、iOS、Linux、Mac、PS4、Windows）连接的固定证书支持。
+*   **新增内容：**添加了对UpdateTexture2D中的SourcePitch的支持。
+*   **新增内容：**添加了对BO_ReverseSubtract的支持。
+*   **新增内容：**添加了对PS4上的Clang Address Sanitizer或Undefined Behavior Sanitizer的虚幻构建工具支持。
+*   **改进：**优化了PS4页面分配器结构，将部分成员设为编译时常量，允许编译器将除法和取模优化为位移和掩码。这会将TMipFieldPageAllocator::AllocatePages速度提高19%。
+*   **改进：**与音频同步、循环和快进有关的PS4媒体播放器改进。
+*   **改进：**根据Sony的建议，通过将SCE\_HMD\_REPROJECTION\_REPROJECTION\_TIMING\_4000USEC更改为SCE\_HMD\_REPROJECTION\_REPROJECTION\_TIMING\_3000USEC，稍微改进了PSVR二次投影时间，以确保二次投影正确性。
+    *   包含PGO配置文件生成修复。SDK 6.00切换为“-fprofile-instr-generate”以使用前端设备。与前端相比，原行为（后端设备）具有较低的性能开销，生成少量经检测库，不影响所产生的数据质量，仍受Sony支持，因此我们使用“-fprofile-generate”选项来保持使用后端设备。
+    *   此外从引擎和UBT中移除了旧的不受支持的PGO代码。
+*   **新增内容：**PS4 SDK 6 sceVrTrackerInit现在要求其onion内存非池化。如果启用了“PSVR Morpheus”插件，我们将分配8MB直接onion内存用于在启动时达到该目的。
+*   **新增内容：**在PS4 OnlineSubsystem添加了对PlayStation Tournaments的支持。
+*   **新增内容：**添加了鼠标双击支持。
+*   **新增内容：**为R32F和RG32F渲染目标清晰颜色添加了支持。
+*   **新增内容：**为快速Razor CPU用户标记添加了支持，其中事件名称是编译时字符串文字。使用其中一个SCOPED\_NAMED\_EVENT* 宏来达到给定场景的最优行为。
+*   **新增内容：**添加了对HTTP（Android、Linux、Windows）和Websocket（Android、iOS、Linux、Mac、PS4、Windows）连接的固定证书支持。
+*   **新增内容：**添加了对UpdateTexture2D中的SourcePitch的支持。
+*   **新增内容：**添加了对BO_ReverseSubtract的支持。
+*   **新增内容：**添加了对PS4上的Clang Address Sanitizer或Undefined Behavior Sanitizer的虚幻构建工具支持。
+*   **改进：**优化了PS4页面分配器结构，将部分成员设为编译时常量，允许编译器将除法和取模优化为位移和掩码。这会将TMipFieldPageAllocator::AllocatePages速度提高19%。
+*   **改进：**与音频同步、循环和快进有关的PS4媒体播放器改进。
+*   **改进：**根据Sony的建议，通过将SCE\_HMD\_REPROJECTION\_REPROJECTION\_TIMING\_4000USEC更改为SCE\_HMD\_REPROJECTION\_REPROJECTION\_TIMING\_3000USEC，稍微改进了PSVR二次投影时间，以确保二次投影正确性。

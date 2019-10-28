@@ -1,0 +1,107 @@
+﻿INTSourceChangelist:6517938
+Availability:Licensee
+Crumbs: 
+Title:面向PlayStation 4的4.17版本说明
+Description:面向PlayStation 4的虚幻引擎4.17版本说明
+Type: 
+Version: 4.17
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 17
+Tags: Release Notes
+Tags: PS4
+
+
+**构建版本信息**：[](https://udn.unrealengine.com/questions/385647/unreal-engine-4170-release.html)
+
+**一般发行说明**：[https://docs.unrealengine.com/en-US/Support/Builds/ReleaseNotes/4_17](Support/Builds/ReleaseNotes/4_17)
+
+SDK：
+
+*   4.508.001
+*   固件版本4.508.021
+*   受支持的IDE：Visual Studio 2015、Visual Studio 2013
+
+## 主要功能
+
+### 全新的内存系统（预览版抢先体验）
+
+我们在PlayStation 4上增加了新的内存管理系统。该系统目前尚在实验阶段，用户可以自由选择是否替代现有系统。它可以解决PlayStation 4上与虚拟和物理内存管理相关的多个问题。新系统使用SDK 4.500中引入的sceKernelMemoryPool* API来实现快速、动态的虚拟内存分配。
+
+*   删除了Garlic、Onion和CPU内存的固定池大小。
+    *   以前，游戏作品需要在配置文件中手动调整这些池的大小，以匹配作品的常规用法。
+    *   新系统允许这些池根据实际使用情况动态增长，防止单个池耗尽时出现人为的“内存不足”崩溃。
+*   删除了GPU碎片整理分配器。
+    *   新系统使用虚拟内存通过根据需要重新映射物理页面来解决堆碎片问题。因此，不再需要GPU碎片整理程序。
+
+新系统可以通过PS4Engine.ini中的“bEnableNewMemorySystem”目标设置或编辑器中的项目目标设置启用。在非发布构建版本中，PlayStation 4开发套件前端的GPIO LED显示当前内存使用情况。
+
+## 版本说明
+
+### 动画
+
+*   DR - 更快的变形目标实现。已将之前的“采集（Gather）”方法改为基于散点的方法。在PS4上达到约110GB/秒，比之前的实现速度快3倍。在PC DX11上，由于不必要的无序访问视图（UAV）障碍，其影响较小，但在AMD上的速度仍然快1倍，而在NVIDIA硬件上的影响则高达6倍。
+
+#### 音频
+
+*   为混音器实现了第一个PS4后端。
+*   在旧Ngs2模块中增加了对平整衰减半径空间化PS4平移的支持。
+*   使音频渲染线程在PS4上具有更高的优先级，以消除缓冲区不足的问题。
+
+#### 联网
+
+*   增加了专用服务器正确转发来自PS4客户端的语音聊天包的功能。
+
+#### 在线
+
+*   修复了接受会话邀请时使用错误格式的PS4日志消息。
+
+#### 平台
+
+*   CopyToResolveTarget现在支持矩形解析。
+*   PS4在线子系统（OSS）包含新的“WebApiTimeoutInSeconds”配置值，该值将为SceNpWebApi HTTP请求设置默认超时值。默认值为15秒。
+*   添加了PS4的SSL缓冲区内存不足时的日志消息
+*   PS4编译器现在使用响应文件来绕过Windows CreateProcess参数的长度限制。
+*   修复PS4上不安全的RHIUpdateTexture3D实现。
+    *   旧实现始终是在调用线程上运行，因此在并行渲染中是不安全的。
+    *   新函数使用数据副本将RHI线程命令排入队列，这与2D纹理路径相同。
+*   现在，PS4 GPU时间统计在VSync打开时显示正确的值。
+*   修复了PS4上蓝图项目的“启动”。
+*   修复PS4保存游戏错误对话框不显示的问题。
+*   修复了非unity的PS4发布版本中的缺失。
+*   修复了HTTP 304消息错误警告PS4上缺少有效负载的问题；304消息没有有效负载。
+*   修复了PS4媒体播放器中的崩溃错误。
+    *   播放没有视频轨道的文件会导致数组索引越界。
+    *   当选择无效的视频轨道时，会跳过初始化视频接收器。
+*   修复了PS4中各种模型上的pre-pass/base-pass阶段发生深度冲突（z-fighting）/闪烁的问题。
+    *   在depth、position only depth和base pass着色器上的顶点位置输出会在PS4上改变，从而导致不同阶段的自我深度冲突。
+*   修复了某些视频不能在PS4上播放的问题。
+    *   视频解码缓冲区太小，无法播放某些视频。
+    *   将默认的视频缓冲区大小从1MB增加到了8MB。
+*   如果在游戏加载前收到消息，PS4系统消息框顶部将停止显示启动画面。
+*   修复了PS4上由于缺少k$刷出而导致的渲染错误
+    *   UAV缓冲区类型的常量索引读数被编译为标量负载。标量负载通过K$表示。
+    *   如果没有K$刷出，着色器可能会读取过期的缓存数据。
+*   Playstation纹理查找代码现在与其他平台相同，因为PS4着色器编译器现在支持switch语句。
+*   修复了PlayStation 4上由于缓冲区类型不正确（BUF\_Static rather than BUF\_Volatile）导致的闪烁字体渲染错误
+*   修复了FWebApiPS4Task::DoWork()中的潜在缓冲区溢出
+*   在检索好友列表之后，好友所在的任何会话的会话ID现在都会添加到其相应的在线状态信息中。
+*   使用控制台中的vis命令添加了对CMask的可视化支持。（这也增加了对所有其他UINT8纹理的支持）
+*   修复了使用超过8MB数据更新纹理时RHIUpdateTexture3D会发生崩溃的问题。
+    *   图形临时分配器最多只能处理8MB。
+    *   如果传输的内存超过8MB，RHIUpdateTexture3D将回退到标准的FMemBlock分配器。
+*   修复了在版本检查模式下运行开发/测试套件上的游戏时会发生崩溃的问题。
+    *   在套件上创建开发录失败将发出警告UE_LOG，这会导致堆栈溢出尝试再次创建目录。
+    *   将该日志消息切换到了低级别的printf。
+*   修复了DBuffer法线贴花，以便正确绘制法线贴花。
+*   修复了Dualshock 4和移动断开连接的问题。
+*   修复了当"r.ScreenPercentage"大于100时的DBuffer贴花。
+*   修复了PSVR上的DBuffer贴花优化。
+*   网格体粒子系统现在会绑定粒子的上一个变换。
+*   修复了使用-norhithread标志时触发的问题。
+
+### 渲染
+
+*   修复了在PS4上创建mip UAV的问题。
+*   在PS4上优化了GatherShadowPrimitives，在使用频率较高的测试场景中，从2.3毫秒缩短至1.3毫秒。
+*   修复了PS4上的r.ParallelShadows，并使之在整个引擎中默认启用（使用CSM，RT时间缩短5毫秒）

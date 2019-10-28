@@ -1,0 +1,102 @@
+﻿INTSourceChangelist:6517938
+Availability:Licensee
+Crumbs: 
+Title:面向PlayStation 4的4.16版本说明
+Description:面向PlayStation 4的虚幻引擎4.16版本说明
+Type: 
+Version: 4.16
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 16
+Tags: Release Notes
+Tags: PS4
+
+
+**构建版本信息**：[](https://udn.unrealengine.com/questions/365429/unreal-engine-4160-release.html)
+
+**一般发行说明**：[https://docs.unrealengine.com/en-US/Support/Builds/ReleaseNotes/4_16](Support/Builds/ReleaseNotes/4_16)
+
+SDK：
+
+*   4.508.001
+*   固件版本4.508.021
+
+## PS4 SDK 4.508.001支持
+
+UE4.16是根据4.508.001 SDK构建的。这极大地改进了稳定性，并带来了新的内存API，该内存API有望应用到未来的版本中。
+
+## 新功能：Playstation VR社交屏幕（预览版抢先体验）
+
+PSVR社交屏幕预览版支持社交屏幕分离模式，其中监视器和HMD显示不同的内容。
+
+此预览版支持30fps社交屏幕输出，还支持切换几种不同的输出模式。实现了以下样本模式：
+
+*   SystemMirror（这是始终存在的默认镜像模式）。
+*   SeparateTest（仅在社交屏幕上进行黑白切换）。
+*   SeparateTexture（显示蓝图指定的纹理，例如，场景捕获组件写入的渲染目标）。
+*   SeparateMirror（显示完整的VR渲染缓冲）
+
+尚待完成的工作包括优化、针对这些功能的多平台接口、可能支持60fps模式（这要求系统对话框解决与某些系统功能的冲突）。
+
+新的Morpheus项目设置bEnableSocialScreenSeparateMode必须设置为true才能使用此功能。当它设置为true时，会为社交屏幕分配额外的屏幕缓冲。搜索“SocialScreen”可以找到用于控制此功能的蓝图函数。
+
+## 版本说明
+### 联网
+
+*   错误修复：修复了OSS PS4在某些情况下会不正确地处理搜索请求的问题。
+
+### 平台
+
+*   新功能：针对设备描述进行了一些重大更改，尤其是对受保护的平台。
+    *   将某些DP的“类型”从WindowsNoEditor等更改为了Windows。它应该是一个平台，而不是随机字符串。
+    *   通过这种更改，可以使用平台将受保护的平台DP .ini文件保存到子目录中，从而保持机密性
+    *   增加了Config/PS4/ConfidentialPlatform.ini文件，以便DP加载代码知道在其目录中查找DP。有关更多信息，请参阅FGenericPlatformMisc::GetConfidentialPlatforms()。
+*   新功能：PS4平台文件“打开写入（Open Write）”具有向尾部添加内容的行为，现在允许用户查找和写入文件中的任意点，这与其他平台上的行为一致。
+*   错误修复：修复了初始化PS4排行榜在线子系统（OSS）时会发生崩溃且活动配置文件没有登录到PSN的问题。
+*   新功能：使用orbis-pub-cmd.exe生成补丁.pkg时，我们现在会传递--delete-redundant-file参数，从而自动不包含与补丁所基于的版本相同的文件。
+*   错误修复：修复了PS4补丁生成中的问题，在这个问题中，将文件块分配给第0层以外的层会导致索尼发布工具失败。现在，我们会在生成补丁期间将所有文件块重新分配给第0层（为了生成补丁，不影响原始的层分配）。
+*   错误修复：修复了PS4中某些模型上的自我深度冲突（z-fighting）/闪烁的问题。
+
+#### VR
+
+*   新功能：增加了将多个运动控制器组件映射到PS4上的单个控制器的支持。
+*   新功能：增加了PS4运动控制器实现WorldScale的支持。
+*   错误修复：修复了导致PS VR中显示有色/破碎泛光的后处理错误。
+*   错误修复：修复了运动控制器跟踪由于线程问题而导致控制器运动弹出的情况。此问题间歇性地在PS4上出现，但理论上也可能影响到其他平台。
+*   PS VR控制器跟踪限制管理系统。
+    *   PS VR可以跟踪HMD和两个控制器，但是能连接更多的设备。使用此系统，你可以管理跟踪哪些控制器以保持在限制之下。
+*   PS4 DualShock4控制器失去跟踪时不再跳转回0,0,0，从而与所有其他控制器保持一致。
+*   实现了PSVR SDK 4.5跟踪改进。
+    *   提高了质量并降低CPU使用率。有关详细信息，请参阅索尼SDK 4.5文档。
+*   PS4 PS VR预测时间动态调整
+*   现在，二次投影预测时间是根据翻转时间计算，因此只要满足帧速率，它就几乎是完全准确的，而不是根据预期时间设置为一个常量。这很有必要，因为在进行预测的帧期间，时间可能会随cpu和gpu帧时间的不同而变化。
+
+## 编程版本说明
+
+### 核心
+
+*   已将其他平台的IO跟踪器和句柄管理器抽象，并将其应用于PS4。
+
+### 平台
+
+*   错误修复：修复了使用6CPU模式时NpToolkit2初始化失败的问题。
+    *   默认线程亲和性以前设置为7CPU，因此会阻止NpToolkit2和PS4在线子系统模块正确初始化。
+    *   现在，线程亲和性根据运行游戏的CPU模式进行选择。
+*   错误修复：修复了Visual Studio中UobjectBase调试可视化工具在PS4上不显示对象名的问题。
+*   错误修复：修复了必须重启游戏才能更新用户服务权限的问题。
+*   已使InstallVisualizers.bat脚本在安装PS4 SDK的情况下自动安装PS4可视化工具。
+*   更改了FOnlineIdentityPS4::GetUserPrivilege的行为，让它始终从索尼的服务器获取最新的权限，而不是返回缓存的权限。
+
+#### VR
+
+*   激活立体声时PS4 PS VR跟踪超时从5秒减少到30毫秒。在某些情况下，长超时是导致SubmitDone错误的原因之一，并且是不必要的。如果跟踪已经激活，我们希望等待获取新数据的时间比单帧更长。如果不能实现，我们将使用默认值或旧数据，但这比在此等待很长时间要好。
+
+## 升级说明
+
+### C++ API重大更改
+
+*   针对设备描述进行了一些重大更改，尤其是对受保护的平台。如果你频繁使用此类平台，可能需要相应地修改你的设备描述。
+    *   将某些DP的“类型”从WindowsNoEditor等更改为了Windows。它应该是一个平台，而不是随机字符串。
+    *   通过这种更改，可以使用平台将受保护的平台DP .ini文件保存到子目录中，从而保持机密性。
+    *   保存设备描述时，可能需要在平台子目录中查找DeviceProfiles.ini文件。
+    *   增加了Config/PS4/ConfidentialPlatform.ini文件，以便DP加载代码知道在其目录中查找DP。有关更多信息，请参阅“通用平台详情（Generic Platform Misc）”中的“获取机密平台（Get Confidential Platforms）”函数。

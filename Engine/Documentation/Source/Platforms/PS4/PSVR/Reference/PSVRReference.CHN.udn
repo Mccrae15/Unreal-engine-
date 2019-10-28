@@ -1,0 +1,77 @@
+﻿INTSourceChangelist:3261961
+Availability:Licensee
+Title:PlayStation VR 开发参考
+Crumbs:%ROOT%, Platforms
+Description:PSVR 设置参考。
+Platform:PS4
+Navigation:platform
+type:reference
+parent:Platforms/PS4/PSVR
+version:4.14
+order:3
+tags:VR
+tags:PlayStation VR
+topic-image:PSVR_Header.png
+
+此页面包含 UE4 中所有 PlayStation VR 设置的参考信息。此页面包含 UE4 中所有 PlayStation VR 设置的参考信息。前往 **Edit** > **Project Settings** > **Plugins** > **Morpheus** 即可访问 PlayStation VR 设置。
+
+![](PSVR_Settings.png)
+
+## 设置
+
+|项目|描述|
+|-------|-----------------|
+|Enable Morpheus|为此项目启用 Morpheus 插件。|
+|Screen Percentage|标准渲染尺寸的百分比。默认为 100。设置 bOverrideScreenPercentage 后才启用。|
+|Override Screen Percentage| 启用 Screen Percentage 设置。| 
+|IPD| 瞳孔间距。|
+|Reprojection Sampler Wrap Mode| 渲染区域之外像素的填充方法。镜像适用于多数内容。非常黑的场景感应调试可能从 ClampBorder 获益。可在索尼的 sceHmdReprojectionInitialize 文档中了解给更多信息。|
+|Position Tracking| 启用/禁用头部位置追踪。|
+|Disable HMDOrientation Until HMDHas Been Tracked | 禁用头戴显示器追踪，直到摄像机已追踪到 HMD。在这种情况发生之前无法进行二次投影！|
+|HMD Setup Dialog Canceled Behavior| 用户取消 HmdSetupDialog（头戴显示器断开连接后弹出）后应用程序的行为。|
+|Desktop Offset| 在 PC 上运行时游戏窗口在桌面上的初始位置。用于将游戏窗口自动移至 Morpheus 头戴显示器。|
+|Enable Controller Pitch| 使摄像机进行绕用户头部 X 轴的旋转。|
+|Enable Controller Roll| 使摄像机进行绕用户头部 Z 轴的旋转。|
+|Change Player View| 使摄像机应用用户头部的朝向。|
+|HMDServer Address| 头戴显示器服务器的 IP 地址。|
+
+## 实验性功能
+	
+实验性功能 PSVR Frame Sequence 支持在 PSVR 上进行原生 90Hz 到 90Hz 和 120Hz 到 120Hz 的二次投影。这意味着可选择更高的帧率运行，将延迟和投影穿帮最小化。引擎将把帧率锁定为选择的帧率，但使用者仍需努力保证帧率的稳定！
+
+|项目|描述|
+|-------|-----------------|
+|PSVR Frame Sequence| 定义渲染、二次投影和头戴显示器位置/朝向采样的帧率。请查看索尼“VRTracker Library Overview”文档中的“Usage”部分。除 Render60Scanout120 外，所有模式均为实验性功能。|
+|PSVR Frame Sequence - Render 60Scanout 120| 虚幻引擎以 60Hz 渲染，PlayStation VR 头戴显示器以 120Hz 进行二次投影。|
+|PSVR Frame Sequence - Render 90Scanout 90| 虚幻引擎以 90Hz 渲染，PlayStation VR 头戴显示器以 90Hz 进行二次投影。|
+|PSVR Frame Sequence - Render 120Scanout 120| 虚幻引擎以 120Hz 渲染，PlayStation VR 头戴显示器以 120Hz 进行二次投影。|
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

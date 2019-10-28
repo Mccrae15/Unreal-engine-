@@ -1,0 +1,55 @@
+﻿INTSourceChangelist:6517938
+Availability:Licensee
+Crumbs: 
+Title:面向4.20的PlayStation 4版本说明
+Description:Product documentation including reference and guides for Unreal Engine 4
+Type: 
+Version: 4.20
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 20
+Tags: Release Notes
+Tags: PS4
+
+
+## PlayStation 4 SDK更新
+
+虚幻引擎4.20支持以下SDK：
+
+*   PS4 SDK 5.508.031（固件版本：5.530.011）
+*   支持的IDE：
+    *   Visual Studio 2015
+    *   Visual Studio 2017
+
+[REGION:note]
+请注意，之前支持的PS4 SDK（5.00）将于2018年6月30日到期。该日期之后发布的任何新作品都需要升级。请在DevNet上向索尼确认，以了解有关SDK版本及其到期日期的最新信息。
+[/REGION]
+
+## 新增内容：Memory Analyzer Tool支持
+
+我们在PS4 SDK中添加了对Sony的Memory Analyzer Tool（MAT）的支持，便于您快速分析内存使用和跟踪泄漏！
+
+![ps41](ps41.jpg "ps41")
+
+要启用该内存分析工具，可以使用PS4目标设置中的 **bEnableMemoryAnalyzer**，也可以从 **项目设置（Project Settings）>平台（Platforms）>PlayStation 4** 的 **编译时（Compile Time）** 选项卡中启用。对Memory Analyzer Tool的支持取决于Low Level Memory Tracker（LLM），因此运行时必须编译LLM（例如，在开发构建中）。
+
+目标设置一经启用，需要重新构建和部署项目到PS4开发套件，然后连接Memory Analyzer Tool。请注意，项目会在早期启动时冻结，直到连接了MAT为止。应仅在使用MAT时启用Memory Analyzer Tool。  
+
+## 版本说明  
+
+*   **崩溃修复：**修复了PS4上因为释放GPU所用内存而引起的GPU页面错误崩溃。
+*   **崩溃修复：**修复了启用着色器库时PS4上的崩溃。
+*   **崩溃修复：**修复了使用TCP套接字期间接收SIGPIPE时PS4上发生的崩溃。
+*   **错误修复：**如果有多个写操作，PS4 Write Achievements仅调用一次完成委托。
+*   **错误修复：**套接字超时在PS4上不再被视为错误。
+*   **错误修复：**将.self文件暂存为NonUFS以防止大小写问题。
+*   **新增内容：**将PS4成就更改为使用NP Toolkit以利用异步操作。
+*   **新增内容：**在新内存系统中针对PS4实现了峰值内存统计信息。
+*   **新增内容：**在FThreadHeartBeat中添加了最小挂起检测器模式，这样我们可以在检测到挂起时生成崩溃转储。此外，可以在零售作品中收集这些崩溃转储。
+*   **新增内容：**实现了删除已保存游戏的功能。
+*   **改进：**重构PS4上的Gnm多缓冲类，完全移除了PS4 RHI中的“不稳定”缓冲区，极大简化了缓冲管理。
+*   **改进：**在PS4符号服务器存储任务中将.lock文件设为可选。
+*   **改进：**将PS4升级到了Freetype 2.6。
+*   **改进：**将重设基本位置设为默认可用于PSVR。如果现有委托没有受到任何约束，则触发不同委托，供Morpheus HMD 捕捉，并重新确定VR中心。
+*   **改进：**将PS4 HTTP池内存大小从256 kiB增加到1 MiB。
+*   **改进：**我们现在结合了PS4 PSN好友列表查询，以防止针对单个用户发起多个同时请求。后续调用委托将在第一个成功时被调用。

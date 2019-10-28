@@ -1,0 +1,34 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Audio3D",
+	"Description": "Audio spatialization plugin using Sony's Audio3D HRTF renderer.",
+	"Category": "Audio",
+	"CreatedBy": "Epic Games",
+	"CreatedByURL": "epicgames.com",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"Installed": false,
+	"SupportedTargetPlatforms": [
+		"Win32",
+		"Win64",
+		"PS4"
+	],
+	"Modules": [
+		{
+			"Name": "Audio3D",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault",
+			"WhitelistPlatforms" :
+			[
+				"Win32",
+				"Win64",
+				"PS4"
+			]
+		}
+	]
+}

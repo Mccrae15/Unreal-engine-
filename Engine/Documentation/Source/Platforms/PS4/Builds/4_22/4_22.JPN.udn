@@ -1,0 +1,59 @@
+﻿INTSourceChangelist:0
+Availability:Licensee
+Crumbs: 
+Title: Playstation 4 Release Notes for 4.22
+Description: Product documentation including reference and guides for Unreal Engine 4
+Type: 
+Version: 4.22
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 22
+Tags: Release Notes
+Tags: PS4
+
+
+**PlayStation 4 SDK Update**
+
+Unreal Engine 4.22 supports the following PlayStation 4 SDK:  
+
+*   SDK 6.008.061
+    *   Firmware 6.200.011
+*   Supported IDE:
+    *   Visual Studio 2015
+    *   Visual Studio 2017
+
+## HDR Improvements
+
+With this release, we’ve improved PlayStation 4’s HDR capabilities with the following:  
+  
+
+*   Added CMASK optimizations to the HDR UI composite pass, which can improve GPUtime by skipping compositing pixels that were not written to by the UI.
+*   Added support for using HDR scopes API and tool provided in the PS4 SDK.
+    *   Enable it from the Project Settings > PlayStation by setting **Enable HDRScope Support** to true.  
+        
+    *   When you launch your game in HDR attach the HDR scopes.  
+          
+        
+
+## Minor Release Notes:
+
+*   **Crash Fix:** Fixed a crash that was occurring when LLM was enabled.
+*   **Bug Fix:** Fixed PS4 debugger visualizers for most containers, though there still seems to be problems with nested containers.
+*   **Bug Fix:** Fixed GPU stats by excluding time waiting for backbuffer from GPU time on PS4.
+*   **Bug Fix:** OnlineSubsystemPS4 now honors disabling of Voice Chat by the bHasVoiceEnabled config field.
+*   **Bug Fix:** Fixed undefined behavior sanitizer unalignment warning in PS4Memory by using FGenericPlatformMemory::ReadUnaligned and FGenericPlatformMemory::WriteUnaligned.
+*   **Bug Fix:** Fixed an issue with the PS4 Media Player where time could loop before final video frame(s) could be decoded.
+*   **Bug Fix:** Fixed a small leak in CreateAndLock Vertex/Index buffer.
+*   **Bug Fix:** MorpheusFunctionLibrary is in its own module which is runtime on win64 and PS4, but it functions do nothing on win64.
+*   **Bug Fix:** A fix was added for PS4DevKitUtil warning during BuildGraph InstalledEngineBuild.xml run.
+*   **Bug Fix:** GenerateProjectFiles.bat will now only log out mismatching SDK information once.
+*   **Bug Fix:** Resolved an issue preventing PS4 Media Player from being able to seek backward while paused.
+*   **Bug Fix:** Fixed an issue with PS4 GPU debugger deprecated commands.
+*   **New:** Added support for generating symbols after linking instead of using the .map file. This is faster when using LTO and PGO on the build servers. This can mean 30 seconds versus an hour.
+*   **New:** The Application Debugger information will now be filled in automatically from the Project Settings.
+    *   To use the application debugger by default, either pass -UsePS4ApplicationDebugger to GenerateProjectFiles.bat or add the following to BuildConfiguration.xml:
+        *   **true**
+*   **New:** We now determine if PSVR camera disconnect message needs updating and update if necessary. If we are in stereo the PS4Tracker does not pop the camera disconnected dialog because the MorpheusHMD will pop the HMDSetupDialog instead.
+*   **New:** The VideoRecodingSystem has been updated.
+*   **New:** Updated PSVR so that camera updates are now synced to the camera hardware.
+*   **Improvement:** Improved PS4 Media Player audio sync so that it updates time after the audio starts playing.

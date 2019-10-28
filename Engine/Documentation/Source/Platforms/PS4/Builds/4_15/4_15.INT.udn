@@ -1,0 +1,77 @@
+Availability:Licensee
+Crumbs: 
+Title: PlayStation 4 Release Notes for 4.15
+Description: PlayStation 4 release notes for Unreal Engine 4.15.
+Type: 
+Version: 4.15
+Parent: Platforms/PS4/Builds
+Platform:PS4
+Order: 15
+Tags: Release Notes
+Tags: PS4
+
+
+**Build Info**: [](https://udn.unrealengine.com/questions/336275/qa-build-201702-unreal-engine-415.html)
+
+**General Release Notes**: [https://docs.unrealengine.com/en-US/Support/Builds/ReleaseNotes/4_15](Support/Builds/ReleaseNotes/4_15)
+
+SDK:
+
+*   4.000.061
+*   Firmware Version: 4.008.071
+
+**Platform**
+
+*   New: Added support for running in-game console commands from Sony's "Console Output" window, in debug and development builds
+*   New: When an audio asset fails to cook for PS4, display more information about the cause of the failure in the console log.
+*   BugFix: Fixed audio thread starvation crash when the application had been suspended by pressing the PS button.
+*   BugFix: Fixed a bug in PS4 AT9 cooking which prevented mono sound waves with a 100% quality from cooking successfully.
+*   BugFix: The PS4 media player now correctly handles the video cropping rectangle, so videos render with the correct resolution etc.
+*   Enabled MediaFramework plugins by default.
+*   Made multiple stability and bug fixes in the PS4 media framework code.
+    *   Calling SetRate multiple times within a single frame will no longer break playback.
+        *   Fixed a bug with videos playing with a black screen.
+        *   Fixed restarting playback once the end of stream has been reached.
+        *   Improved stability by fixing two thread deadlock and race condition bugs.
+*   Improved the reliability of playing multi-track audio/video files on PS4.
+    *   The new PS4 media player prohibits changing tracks once playback has been started. If you are using multi-track audio/video files, ensure you enable the required tracks before calling "SetRate" for the first time.
+        *   Attempting to change tracks after "SetRate" has been called will emit an error to the log: "Changing media tracks after playback has started is not supported."
+
+**Audio**
+
+*   BugFix: Fixed an issue where audio did not play on PS4 if the PS4 Movie Player plugin was disabled.
+
+**Editor and Tools**
+
+*   Patching for PS4 now searches for pkg files as well as pak files when looking for a release.
+
+**Other**
+
+*   New: PS4 Media: Video buffer sizes for a file and HLS sources are now configurable.
+*   BugFix: PS4 Media: Fixed log spam when setting play rate to current rate.
+*   BugFix: PS4 Media: Fixed array out of bounds assertions.
+*   BugFix: PS4 Media: Fixed audio track dropping the first frame.
+*   PS4 Media: Enforcing minimum 8 byte alignment for media allocations.
+
+**Programming Release Notes**
+
+*   Bugfix: Fixed a crash bug in the PS4 Online Subsystem. NpToolkit2 was failing to initialize in games running in 6CPU mode (as set in param.sfo), due to incorrect thread affinity.
+
+**PSVR**
+
+*   Adjustments to motion tracker compute timing may be beneficial. FPS4Tracker::SetPredictionTiming is the function which sets these values.
+*   New: Exposed “Is HMD Connected” to blueprint. This means that HMD hardware is ready to use. UE4 may or may not be using the HMD now.
+    *   On PSVR this previously returned whether we were using the HMD now. This was wrong and inconsistent with other platforms.
+        *   If this function was being used in C++ for PSVR that use would need to be reviewed.
+*   New: PSVR camera disconnection/dysfunction handling.
+    *   PS4 Tracker now monitors the camera state and pops the camera setup dialog when appropriate.
+        *   Added a timeout to PS4 Tracker’s Synchronize function so it does not hang forever if the camera fails to initialize.
+*   PSVR frame sequence changes to fix problems where reprojection would become desynced from rendering with very short render times.
+    *   This was one source of 'stuttering' and 'double image' issues, particularly during loading.
+        *   Added various events to visualize parts of the reprojection system in Razor CPU captures.
+        *   We now do a game-thread HMD position/orientation sample rather than re-using the previous render frame's sample.
+        *   Improved error reporting from API calls.
+*   PSVR HMD Setup Dialog now checks if other dialogs are up before putting itself up and waits for them to go away.
+    *   Notably this prevents fighting with the camera setup dialog, but it should also handle other cases like Playstation Store dialogs.
+*   PSVR Aim Controller Support
+    *   New: Support modification of build.xml and add post import additions to GameActivity.

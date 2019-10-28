@@ -1,0 +1,31 @@
+﻿INTSourceChangelist:3782314
+Availability:Licensee
+Title:PlayStation VR 向けの開発
+Crumbs:%ROOT%, Platforms
+Description:PlayStation 4 コンソール向け VR ゲームの開発
+Platform:PS4
+Navigation:platform
+type:landing
+parent:Platforms/PS4
+version:4.13
+tags:VR
+tags:PSVR
+
+![](PSVR_Header_Image.png)
+
+Playstation Virtual Reality もしくは Playstation VR 向けコンテンツの開発は、Playstation 4 向けコンテンツの開発と似ています。ただし、Playstation VR が確実に使えるようにするために、UE4 プロジェクトにいくつか設定が必要になります。次のセクションでは、Playstation VR 用 HMD が使えるように UD4 を設定する方法を説明します。
+
+## はじめよう 
+
+[DIR(end:"1" output:"topic" type:"quick start" parent:"Platforms/PS4/PSVR")]
+
+## Samsung Gear VR の開発
+
+[DIR(end:"1" output:"topic" type:"reference,overview" parent:"Platforms/PS4/PSVR")]
+
+## ガイド
+
+[DIR(output:"fancy" type:"how-to" skilllevel:"Beginner" parent:"Platforms/PS4/PSVR" org:"flat")]
+[DIR(output:"fancy" type:"how-to" skilllevel:"Intermediate" parent:"Platforms/PS4/PSVR" org:"flat")]
+[DIR(output:"fancy" type:"how-to" skilllevel:"Advanced" parent:"Platforms/PS4/PSVR" org:"flat")]
+[DIR(output:"fancy" type:"how-to" skilllevel:"Expert" parent:"Platforms/PS4/PSVR" org:"flat")]

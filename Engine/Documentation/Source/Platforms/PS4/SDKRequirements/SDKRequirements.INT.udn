@@ -1,0 +1,87 @@
+Availability: Licensee
+Title: PlayStation 4 Development Requirements
+Description: PlayStation 4 development requirements including hardware, software, and SDK information. 
+Type: reference
+Version: 4.21
+Parent: Platforms/PS4
+Tags: Specifications
+Tags: PS4
+Tags: Development
+Platform: PS4
+Order: 7
+
+
+[TOC (start:2 end:2)]
+
+In this page you'll find hardware and software development kit (SDK) requirements needed to start developing for the [PlayStation 4](Platforms/PS4) platform.   
+
+  
+
+## Unreal Engine 4.21
+
+| Hardware Requirements ||
+| --- | --- |
+| **Recommended Desktop Hardware** | See [Hardware and Software Specifications](GettingStarted/RecommendedSpecifications). |
+| **Supported Device Hardware** | PlayStation 4, PlayStation 4 Pro, and PlayStation VR |
+| [REGION:tablesection]Software Requirements[/REGION] ||
+| **Desktop Operating System** | Windows 7 or Windows 10 and later. |
+| **SDK Version** | 6.008.01 |
+| **Firmware Version** | 6.008.021 |
+| **Supported IDE Versions** | [INCLUDE:#excerpt_0] |
+
+<!--
+[EXCERPT:excerpt_0]
+Visual Studio 2017 version 15.6 or later.  
+Visual Studio Update 3
+[/EXCERPT:excerpt_0]
+-->
+
+[REGION:note]
+The currently supported SDK version(s) can be found in `UEBuildPS4.cs`. You can find it in your `[UE4 Root Director]/Engine/Source/Programs/UnrealBuildTool/Platforms/PS4` folder.
+[/REGION]
+
+## Unreal Engine 4.20
+
+| Hardware Requirements ||
+| --- | --- |
+| **Recommended Desktop Hardware** | See [Hardware and Software Specifications](GettingStarted/RecommendedSpecifications). |
+| **Supported Device Hardware** | PlayStation 4, PlayStation 4 Pro, and PlayStation VR |
+| [REGION:tablesection]Software Requirements[/REGION] ||
+| **Desktop Operating System** | Windows 7 or Windows 10 and later. |
+| **SDK Version** | 5.508.031 |
+| **Firmware Version** | 5.530.011 |
+| **Supported IDE Versions** | [INCLUDE:#excerpt_1] |
+
+<!--
+[EXCERPT:excerpt_1]
+Visual Studio 2017 version 15.6 or later.  
+Visual Studio Update 3
+[/EXCERPT:excerpt_1]
+-->
+
+[REGION:note]
+The currently supported SDK version(s) can be found in `UEBuildPS4.cs`. You can find it in your `[UE4 Root Director]/Engine/Source/Programs/UnrealBuildTool/Platforms/PS4` folder.
+[/REGION]
+
+## Unreal Engine 4.19
+
+| Hardware Requirements ||
+| --- | --- |
+| **Recommended Desktop Hardware** | See [Hardware and Software Specifications](GettingStarted/RecommendedSpecifications). |
+| **Supported Device Hardware** | PlayStation 4, PlayStation 4 Pro, and PlayStation VR |
+| [REGION:tablesection]Software Requirements[/REGION] ||
+| **Desktop Operating System** | Windows 7 or Windows 10 and later. |
+| **SDK Version** | 5.008.071 |
+| **Firmware Version** | 4.730.001 |
+| **Supported IDE Versions** | [INCLUDE:#excerpt_2] |
+
+<!--
+[EXCERPT:excerpt_2]
+Visual Studio Update 3  
+Visual Studio 2013
+[/EXCERPT:excerpt_2]
+-->
+
+[REGION:note]
+The currently supported SDK version(s) can be found in `UEBuildPS4.cs`. You can find it in your `[UE4 Root Director]/Engine/Source/Programs/UnrealBuildTool/Platforms/PS4` folder.
+[/REGION]
