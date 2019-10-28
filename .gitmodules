@@ -1,0 +1,4 @@
+[submodule "oldengine"]
+	path = oldengine
+	url = https://github.com/truejelly/UnrealEngine.git
+	branch = 4.21_EE
