@@ -154,11 +154,11 @@ protected:
 	FNavAgentSelector SupportedAgents;
 
 	/** start point, relative to owner */
-	UPROPERTY(EditAnywhere, Category=SmartLink)
+	UPROPERTY(EditAnywhere, BLueprintReadWrite, Category=SmartLink)
 	FVector LinkRelativeStart;
 
 	/** end point, relative to owner */
-	UPROPERTY(EditAnywhere, Category=SmartLink)
+	UPROPERTY(EditAnywhere, BLueprintReadWrite, Category=SmartLink)
 	FVector LinkRelativeEnd;
 
 	/** direction of link */
