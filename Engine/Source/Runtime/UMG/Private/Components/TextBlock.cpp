@@ -145,6 +145,15 @@ void UTextBlock::SetTextTransformPolicy(ETextTransformPolicy InTransformPolicy)
 	}
 }
 
+void UTextBlock::SetWrapTextAt(float InWrapTextAt)
+{
+	WrapTextAt = InWrapTextAt;
+	if (MyTextBlock.IsValid())
+	{
+		MyTextBlock->SetWrapTextAt(InWrapTextAt);
+	}
+}
+
 UMaterialInstanceDynamic* UTextBlock::GetDynamicFontMaterial()
 {
 	if (Font.FontMaterial)

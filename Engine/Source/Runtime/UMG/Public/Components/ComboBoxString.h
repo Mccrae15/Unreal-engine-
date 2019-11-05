@@ -27,15 +27,20 @@ class UMG_API UComboBoxString : public UWidget
 
 private:
 
+public:
+
 	/** The default list of items to be displayed on the combobox. */
-	UPROPERTY(EditAnywhere, Category=Content)
-	TArray<FString> DefaultOptions;
+	UPROPERTY(EditAnywhere, Category = Content)
+		TArray<FString> DefaultOptions;
 
 	/** The item in the combobox to select by default */
-	UPROPERTY(EditAnywhere, Category=Content)
-	FString SelectedOption;
+	UPROPERTY(EditAnywhere, Category = Content)
+		FString SelectedOption;
 
-public:
+	void ClearDefaultOptions() { DefaultOptions.Empty(); }
+	void SetDefaultOptions(TArray<FString> NewOptionsIn) { DefaultOptions = NewOptionsIn; }
+
+	virtual void SetSelectedOptions(FString NewOptionIn) { SelectedOption = NewOptionIn; }
 
 	/** The style. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Style, meta=( DisplayName="Style" ))
@@ -100,35 +105,35 @@ public:
 	void AddOption(const FString& Option);
 
 	UFUNCTION(BlueprintCallable, Category="ComboBox")
-	bool RemoveOption(const FString& Option);
+	virtual bool RemoveOption(const FString& Option);
 
 	UFUNCTION(BlueprintCallable, Category="ComboBox")
-	int32 FindOptionIndex(const FString& Option) const;
+	virtual int32 FindOptionIndex(const FString& Option) const;
 
 	UFUNCTION(BlueprintCallable, Category="ComboBox")
-	FString GetOptionAtIndex(int32 Index) const;
+	virtual FString GetOptionAtIndex(int32 Index) const;
 
 	UFUNCTION(BlueprintCallable, Category="ComboBox")
-	void ClearOptions();
+	virtual void ClearOptions();
 
 	UFUNCTION(BlueprintCallable, Category="ComboBox")
-	void ClearSelection();
+	virtual void ClearSelection();
 
 	/**
 	 * Refreshes the list of options.  If you added new ones, and want to update the list even if it's
 	 * currently being displayed use this.
 	 */
 	UFUNCTION(BlueprintCallable, Category="ComboBox")
-	void RefreshOptions();
+	virtual void RefreshOptions();
 
 	UFUNCTION(BlueprintCallable, Category="ComboBox")
-	void SetSelectedOption(FString Option);
+	virtual void SetSelectedOption(FString Option);
 
 	UFUNCTION(BlueprintCallable, Category = "ComboBox")
-	void SetSelectedIndex(const int32 Index);
+	virtual void SetSelectedIndex(const int32 Index);
 
 	UFUNCTION(BlueprintCallable, Category="ComboBox")
-	FString GetSelectedOption() const;
+	virtual FString GetSelectedOption() const;
 
 	UFUNCTION(BlueprintCallable, Category="ComboBox")
 	int32 GetSelectedIndex() const;
