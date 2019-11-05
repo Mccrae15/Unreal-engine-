@@ -12,6 +12,7 @@
 //CarbonEdit 10.04 Start
 #include "Misc/ScopeLock.h"
 //CarbonEdit 10.04 End
+#include <kernel.h>
 
 DEFINE_LOG_CATEGORY_STATIC(LogPS4SaveGame, Log, All);
 
