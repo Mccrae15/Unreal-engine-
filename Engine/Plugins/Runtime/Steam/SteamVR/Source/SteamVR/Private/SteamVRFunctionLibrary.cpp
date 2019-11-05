@@ -36,6 +36,32 @@ IMotionController* GetSteamMotionController()
 }
 #endif // STEAMVR_SUPPORTED_PLATFORMS
 
+FString USteamVRFunctionLibrary::GetVersionString_2()
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetVersionString();
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FString();
+}
+
+FString USteamVRFunctionLibrary::GetControllerName(int32 DeviceIndex)
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetControllerName(DeviceIndex);
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FString();
+}
+
 void USteamVRFunctionLibrary::GetValidTrackedDeviceIds(ESteamVRTrackedDeviceType DeviceType, TArray<int32>& OutTrackedDeviceIds)
 {
 #if STEAMVR_SUPPORTED_PLATFORMS
