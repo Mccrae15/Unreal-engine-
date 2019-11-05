@@ -97,6 +97,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Appearance")
 	void SetTextTransformPolicy(ETextTransformPolicy InTransformPolicy);
 
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetWrapTextAt(float InWrapTextAt);
+
 	/**  */
 	UFUNCTION(BlueprintCallable, Category="Appearance")
 	UMaterialInstanceDynamic* GetDynamicFontMaterial();
