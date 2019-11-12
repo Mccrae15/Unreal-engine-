@@ -44,12 +44,6 @@
 #include "Async/Async.h"
 #include "Engine/SceneCapture2D.h"
 #include "Components/SceneCaptureComponent2D.h"
-//CarbonEdit 10.04 start
-#if PLATFORM_PS4 
-#include <kernel.h>
-#include "HAL/RunnableThread.h" 
-#endif
-//CarbonEdit 10.04 end
 
 #define LOCTEXT_NAMESPACE "GameplayStatics"
 
@@ -1878,16 +1872,21 @@ USaveGame* UGameplayStatics::CreateSaveGameObject(TSubclassOf<USaveGame> SaveGam
 
 bool UGameplayStatics::SaveGameToMemory(USaveGame* SaveGameObject, TArray<uint8>& OutSaveData )
 {
-	FMemoryWriter MemoryWriter(OutSaveData, true);
+	if (SaveGameObject)
+	{
+		FMemoryWriter MemoryWriter(OutSaveData, true);
 
-	FSaveGameHeader SaveHeader(SaveGameObject->GetClass());
-	SaveHeader.Write(MemoryWriter);
+		FSaveGameHeader SaveHeader(SaveGameObject->GetClass());
+		SaveHeader.Write(MemoryWriter);
 
-	// Then save the object state, replacing object refs and names with strings
-	FObjectAndNameAsStringProxyArchive Ar(MemoryWriter, false);
-	SaveGameObject->Serialize(Ar);
+		// Then save the object state, replacing object refs and names with strings
+		FObjectAndNameAsStringProxyArchive Ar(MemoryWriter, false);
+		SaveGameObject->Serialize(Ar);
 
-	return true; // Not sure if there's a failure case here.
+		return true; // Not sure if there's a failure case here.
+	}
+
+	return false;
 }
 
 bool UGameplayStatics::SaveDataToSlot(const TArray<uint8>& InSaveData, const FString& SlotName, const int32 UserIndex)
@@ -1903,40 +1902,31 @@ bool UGameplayStatics::SaveDataToSlot(const TArray<uint8>& InSaveData, const FSt
 	return false;
 }
 
-//CarbonEdit 10.04 Start
-#if PLATFORM_PS4 
-class FSaveGameRunnable : public FRunnable
-{
-public: FSaveGameRunnable(const TCHAR* _SlotName, uint32 _UserIndex, const TArray<uint8>& _ObjectBytes) : SlotName(_SlotName), UserIndex(_UserIndex), ObjectBytes(_ObjectBytes) { } virtual uint32 Run(void) {
-	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
-	bool bSuccess = SaveSystem && SaveSystem->SaveGame(false, *SlotName, UserIndex, ObjectBytes);
-	return bSuccess ? 0 : 1;
-} private: FString SlotName; uint32 UserIndex; TArray<uint8> ObjectBytes;
-};
-#endif // PLATFORM_PS4
-//CarbonEdit 10.04 End
-
 void UGameplayStatics::AsyncSaveGameToSlot(USaveGame* SaveGameObject, const FString& SlotName, const int32 UserIndex, FAsyncSaveGameToSlotDelegate SavedDelegate)
+{
+	TArray<uint8> ObjectBytes;
+	if (SaveGameToMemory(SaveGameObject, ObjectBytes))
 	{
-		TArray<uint8> ObjectBytes;
-	SaveGameToMemory(SaveGameObject, ObjectBytes);
-
-	AsyncTask(ENamedThreads::AnyHiPriThreadNormalTask, [SlotName, UserIndex, SavedDelegate, ObjectBytes]()
-	{
-		bool bSuccess = SaveDataToSlot(ObjectBytes, SlotName, UserIndex);
-
-		// Now schedule the callback on the game thread, but only if it was bound to anything
-		if (SavedDelegate.IsBound())
+		AsyncTask(ENamedThreads::AnyHiPriThreadNormalTask, [SlotName, UserIndex, SavedDelegate, ObjectBytes]()
 		{
-			AsyncTask(ENamedThreads::GameThread, [SlotName, UserIndex, SavedDelegate, bSuccess]()
+			bool bSuccess = SaveDataToSlot(ObjectBytes, SlotName, UserIndex);
+
+			// Now schedule the callback on the game thread, but only if it was bound to anything
+			if (SavedDelegate.IsBound())
 			{
-				SavedDelegate.ExecuteIfBound(SlotName, UserIndex, bSuccess);
-			});
-		}
-	});
+				AsyncTask(ENamedThreads::GameThread, [SlotName, UserIndex, SavedDelegate, bSuccess]()
+				{
+					SavedDelegate.ExecuteIfBound(SlotName, UserIndex, bSuccess);
+				});
+			}
+		});
+	}
+	else if (SavedDelegate.IsBound())
+	{
+		SavedDelegate.ExecuteIfBound(SlotName, UserIndex, false);
+	}
 }
 
-/* Oryginalny SaveGameToSlot z 4.23
 bool UGameplayStatics::SaveGameToSlot(USaveGame* SaveGameObject, const FString& SlotName, const int32 UserIndex)
 {
 	// This is a wrapper around the functions reading to/from a byte array
@@ -1944,42 +1934,6 @@ bool UGameplayStatics::SaveGameToSlot(USaveGame* SaveGameObject, const FString& 
 	if (SaveGameToMemory(SaveGameObject, ObjectBytes))
 	{
 		return SaveDataToSlot(ObjectBytes, SlotName, UserIndex);
-	}
-	return false;
-}
-*/
-//Carbonowy SaveGameToSlot z 4.21
-bool UGameplayStatics::SaveGameToSlot(USaveGame* SaveGameObject, const FString& SlotName, const int32 UserIndex)
-{
-	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
-	//CarbonEdit 10.04 Start
-	bool bSuccess = false;
-	//CarbonEdit 10.04 End
-	// If we have a system and an object to save and a save name...
-	if(SaveSystem && SaveGameObject && (SlotName.Len() > 0))
-	{
-		TArray<uint8> ObjectBytes;
-		FMemoryWriter MemoryWriter(ObjectBytes, true);
-
-		FSaveGameHeader SaveHeader(SaveGameObject->GetClass());
-		SaveHeader.Write(MemoryWriter);
-
-		// Then save the object state, replacing object refs and names with strings
-		FObjectAndNameAsStringProxyArchive Ar(MemoryWriter, false);
-		SaveGameObject->Serialize(Ar);
-
-		//CarbonEdit 10.04 Start
-		//// Stuff that data into the save system with the desired file name
-		//return SaveSystem->SaveGame(false, *SlotName, UserIndex, ObjectBytes);
-#if PLATFORM_PS4 // Asynchronous save game: create a save game thread, letting it auto-delete itself
-		FSaveGameRunnable* SaveGameRunnable = new FSaveGameRunnable(*SlotName, UserIndex, ObjectBytes);
-		FRunnableThread* SaveGameThread = FRunnableThread::Create(SaveGameRunnable, TEXT("SaveGamePS4Thread"));
-		bSuccess = true; return bSuccess;
-#else // Stuff that data into the save system with the desired file name 
-		bSuccess = SaveSystem->SaveGame(false, *SlotName, UserIndex, ObjectBytes);
-		return bSuccess;
-#endif 
-		//CarbonEdit 10.04 End
 	}
 	return false;
 }
@@ -2863,81 +2817,3 @@ bool UGameplayStatics::HasLaunchOption(const FString& OptionToCheck)
 static void GetProjectionMatricesFromViewTarget(AActor* InViewTarget, FMatrix& OutViewProjectionMatrix, FMatrix& OutInvViewProjectionMatrix);
 
 #undef LOCTEXT_NAMESPACE
-
-//UAsyncGameSave class metods declarations
-UAsyncGameSave::UAsyncGameSave(const FObjectInitializer& ObjectInitializer) : UBlueprintAsyncActionBase(ObjectInitializer)
-{
-
-}
-
-UAsyncGameSave * UAsyncGameSave::LoadGameAsync(const FString & SlotName, const int32 UserIndex)
-{
-	UAsyncGameSave* Node = NewObject<UAsyncGameSave>(); 
-	Node->SlotNameTemp = SlotName;
-	Node->UserIndexTemp = UserIndex;
-	return Node;
-}
-
-void UAsyncGameSave::Activate()
-{
-#if PLATFORM_PS4 
-	int32 Result;
-	Result = scePthreadCreate(&SaveThread, NULL, SaveThreadHelper, this, "Save_Thread");
-#else
-	LoadGameFromSlotAsync(*SlotNameTemp, UserIndexTemp);
-#endif
-}
-
-void UAsyncGameSave::LoadGameFromSlotAsync(const FString & SlotName, const int32 UserIndex)
-{
-	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
-	// If we have a save system and a valid name..
-	if (SaveSystem && (SlotName.Len() > 0))
-	{
-		// Load raw data from slot
-		TArray<uint8> ObjectBytes;
-		bool bSuccess = SaveSystem->LoadGame(false, *SlotName, UserIndex, ObjectBytes);
-		if (bSuccess)
-		{
-			Finish.Broadcast(LoadGameFromMemoryAsync(ObjectBytes));
-			return;
-		}
-	}
-	Finish.Broadcast(nullptr);
-	return;
-}
-
-USaveGame * UAsyncGameSave::LoadGameFromMemoryAsync(const TArray<uint8>& InSaveData)
-{
-	USaveGame* OutSaveGameObject = nullptr;
-
-	FMemoryReader MemoryReader(InSaveData, true);
-
-	FSaveGameHeader SaveHeader;
-	SaveHeader.Read(MemoryReader);
-
-	// Try and find it, and failing that, load it
-	UClass* SaveGameClass = FindObject<UClass>(ANY_PACKAGE, *SaveHeader.SaveGameClassName);
-	if (SaveGameClass == nullptr)
-	{
-		SaveGameClass = LoadObject<UClass>(nullptr, *SaveHeader.SaveGameClassName);
-	}
-
-	// If we have a class, try and load it.
-	if (SaveGameClass != nullptr)
-	{
-		OutSaveGameObject = NewObject<USaveGame>(GetTransientPackage(), SaveGameClass);
-
-		FObjectAndNameAsStringProxyArchive Ar(MemoryReader, true);
-		OutSaveGameObject->Serialize(Ar);
-	}
-
-	return OutSaveGameObject;
-}
-
-void* UAsyncGameSave::SaveThreadHelper(void* Arg)
-{
-	UAsyncGameSave* temp = (UAsyncGameSave*) Arg;
-	temp->LoadGameFromSlotAsync(*temp->SlotNameTemp, temp->UserIndexTemp);
-	return nullptr;
-}

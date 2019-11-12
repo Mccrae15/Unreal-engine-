@@ -229,19 +229,19 @@ void FEditorSessionSummaryWriter::InitializeRecords(bool bFirstAttempt)
 			bInitializedRecords = true;
 
 			UE_LOG(LogEditorSessionSummary, Log, TEXT("EditorSessionSummaryWriter initialized"));
-		}
 
-		// update session list string
-		FString SessionListString;
-		FPlatformMisc::GetStoredValue(SessionSummaryDefs::StoreId, SessionSummaryDefs::SessionSummarySection, SessionSummaryDefs::SessionListStoreKey, SessionListString);
-		
-		if (!SessionListString.IsEmpty())
-		{
-			SessionListString.Append(TEXT(","));
-		}
-		SessionListString.Append(CurrentSession->SessionId);
+			// update session list string
+			FString SessionListString;
+			FPlatformMisc::GetStoredValue(SessionSummaryDefs::StoreId, SessionSummaryDefs::SessionSummarySection, SessionSummaryDefs::SessionListStoreKey, SessionListString);
 
-		FPlatformMisc::SetStoredValue(SessionSummaryDefs::StoreId, SessionSummaryDefs::SessionSummarySection, SessionSummaryDefs::SessionListStoreKey, SessionListString);
+			if (!SessionListString.IsEmpty())
+			{
+				SessionListString.Append(TEXT(","));
+			}
+			SessionListString.Append(CurrentSession->SessionId);
+
+			FPlatformMisc::SetStoredValue(SessionSummaryDefs::StoreId, SessionSummaryDefs::SessionSummarySection, SessionSummaryDefs::SessionListStoreKey, SessionListString);
+		}
 	}
 }
 
@@ -538,7 +538,7 @@ void FEditorSessionSummarySender::SendStoredRecords(FTimespan Timeout) const
 			// Check each stored session to see if they should be sent or not 
 			for (FEditorSessionRecord& Record : ExistingRecords)
 			{
-				if (IsSessionProcessRunning(Record))
+				if (FPlatformProcess::IsApplicationRunning(Record.PlatformProcessID))
 				{
 					// Skip processes that are still running
 					continue;

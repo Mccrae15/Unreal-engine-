@@ -1,6 +1,7 @@
 // Copyright 2016-2017 Hunter Delattre. All Rights Reserved.
 
 using UnrealBuildTool;
+using System.IO;
 
 public class GestureTrackerVR : ModuleRules
 {
@@ -11,14 +12,14 @@ public class GestureTrackerVR : ModuleRules
 
         PublicIncludePaths.AddRange(
             new string[] {
-                "GestureTrackerVR/Public"
+                Path.Combine(ModuleDirectory, "Public")
             }
             );
 
 
         PrivateIncludePaths.AddRange(
             new string[] {
-                "GestureTrackerVR/Private"
+                Path.Combine(ModuleDirectory, "Private")
             }
             );
 

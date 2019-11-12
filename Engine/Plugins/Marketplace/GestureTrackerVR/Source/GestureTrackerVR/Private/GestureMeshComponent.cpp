@@ -56,47 +56,47 @@ void UGestureMeshComponent::DestroyComponent(bool bPromoteChildren)
     Super::DestroyComponent(bPromoteChildren);
 }
 
-void UGestureMeshComponent::UpdateMaterials(UStaticMesh *mesh, UMaterialInterface *baseMaterial, UMaterialInterface *successMaterial)
+void UGestureMeshComponent::UpdateMaterials(UStaticMesh *_mesh, UMaterialInterface *_baseMaterial, UMaterialInterface *_successMaterial)
 {
     for (int ii = 0; ii < pathMeshes.Num(); ii++) {
         if (pathMeshes[ii]) {
             UMaterial *currentMaterial = pathMeshes[ii]->GetMaterial(0)->GetMaterial();
 
             // new mesh, reapply all materials
-            if (mesh) {
-                pathMeshes[ii]->SetStaticMesh(mesh);
+            if (_mesh) {
+                pathMeshes[ii]->SetStaticMesh(_mesh);
 
                 if (currentMaterial == this->successMaterial) {
-                    if (successMaterial) {
-                        pathMeshes[ii]->SetMaterial(0, successMaterial);
+                    if (_successMaterial) {
+                        pathMeshes[ii]->SetMaterial(0, _successMaterial);
                     }
                     else {
                         pathMeshes[ii]->SetMaterial(0, this->successMaterial);
                     }
                 }
-                else if (baseMaterial) {
-                    pathMeshes[ii]->SetMaterial(0, baseMaterial);
+                else if (_baseMaterial) {
+                    pathMeshes[ii]->SetMaterial(0, _baseMaterial);
                 }
             }
             // same mesh, only update necessary materials
             else {
-                if (successMaterial && currentMaterial == this->successMaterial) {
-                        pathMeshes[ii]->SetMaterial(0, successMaterial);
+                if (_successMaterial && currentMaterial == this->successMaterial) {
+                        pathMeshes[ii]->SetMaterial(0, _successMaterial);
                 }
-                else if (baseMaterial) {
-                    pathMeshes[ii]->SetMaterial(0, baseMaterial);
+                else if (_baseMaterial) {
+                    pathMeshes[ii]->SetMaterial(0, _baseMaterial);
                 }
             }
         }
     }
-    if (mesh) {
-        this->mesh = mesh;
+    if (_mesh) {
+        this->mesh = _mesh;
     }
-    if (baseMaterial) {
-        this->baseMaterial = baseMaterial;
+    if (_baseMaterial) {
+        this->baseMaterial = _baseMaterial;
     }
-    if (successMaterial) {
-        this->successMaterial = successMaterial;
+    if (_successMaterial) {
+        this->successMaterial = _successMaterial;
     }
 }
 
@@ -120,15 +120,15 @@ void UGestureMeshComponent::Success()
 * Setup Functions
 ************************************/
 
-void UGestureMeshComponent::Setup(UStaticMesh *mesh, UMaterialInterface *baseMaterial, UMaterialInterface *successMaterial, int maxLength)
+void UGestureMeshComponent::Setup(UStaticMesh *_mesh, UMaterialInterface *_baseMaterial, UMaterialInterface *_successMaterial, int _maxLength)
 {
-    this->mesh = mesh;
-    this->baseMaterial = baseMaterial;
-    this->successMaterial = successMaterial;
-    this->maxLength = maxLength;
+    this->mesh = _mesh;
+    this->baseMaterial = _baseMaterial;
+    this->successMaterial = _successMaterial;
+    this->maxLength = _maxLength;
 
-    if (maxLength > 0) {
-        this->pathMeshes.Init(NULL, maxLength);
+    if (_maxLength > 0) {
+        this->pathMeshes.Init(NULL, _maxLength);
     }
     else {
         this->pathMeshes.Reserve(64);

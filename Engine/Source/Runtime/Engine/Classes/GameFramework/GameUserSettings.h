@@ -69,8 +69,8 @@ public:
 	static FString GetConfigDir();
 
 	/** Applies all current user settings to the game and saves to permanent storage (e.g. file), optionally checking for command line overrides. */
-	UFUNCTION(BlueprintCallable, Category = Settings, meta = (bCheckForCommandLineOverrides = true))
-		virtual void ApplySettings(bool bCheckForCommandLineOverrides);
+	UFUNCTION(BlueprintCallable, Category=Settings, meta=(bCheckForCommandLineOverrides=true))
+	virtual void ApplySettings(bool bCheckForCommandLineOverrides);
 	
 	UFUNCTION(BlueprintCallable, Category=Settings)
 	virtual void ApplyNonResolutionSettings();
@@ -477,7 +477,7 @@ public:
 
 	// Skubert Edit End
 
-	protected:
+protected:
 	/** Game screen resolution width, in pixels. */
 	UPROPERTY(config)
 	uint32 ResolutionSizeX;
@@ -640,7 +640,6 @@ public:
 	UPROPERTY(config)
 		int32 WizardsVersion;
 	//Skubert Edit End
-
 public:
 	/** Returns the last CPU benchmark result (set by RunHardwareBenchmark) */
 	float GetLastCPUBenchmarkResult() const

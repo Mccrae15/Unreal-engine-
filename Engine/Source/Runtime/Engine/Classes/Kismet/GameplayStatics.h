@@ -17,11 +17,6 @@
 #include "Sound/DialogueTypes.h"
 #include "GameplayStaticsTypes.h"
 #include "Particles/WorldPSCPool.h"
-#include "Kismet/BlueprintAsyncActionBase.h"
-#include "UObject/ObjectMacros.h"
-#if PLATFORM_PS4 
-#include <kernel.h>
-#endif
 #include "GameplayStatics.generated.h"
 
 class UAudioComponent;
