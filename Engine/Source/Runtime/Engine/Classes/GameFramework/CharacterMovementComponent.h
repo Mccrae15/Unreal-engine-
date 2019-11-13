@@ -251,6 +251,14 @@ public:
 	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0"))
 	float MaxWalkSpeed;
 
+	/** The maximum ground speed when running.  */
+	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	float MaxRunSpeed;
+
+	/** Whether the character is running or waking.  */
+	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite)
+	bool bIsRunning;
+
 	/** The maximum ground speed when walking and crouched. */
 	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0"))
 	float MaxWalkSpeedCrouched;
