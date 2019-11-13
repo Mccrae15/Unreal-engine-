@@ -1,0 +1,36 @@
+﻿# OnlineSubsystemPS4 Spanish translation.
+# Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
+# 
+msgid ""
+msgstr ""
+"Project-Id-Version: OnlineSubsystemPS4\n"
+"POT-Creation-Date: 2018-10-30 16:47\n"
+"PO-Revision-Date: 2018-10-30 16:47\n"
+"Language-Team: \n"
+"Language: es\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Key:	FailedToRetrievePurchasesWithCode
+#. SourceLocation:	Plugins/Online/PS4/OnlineSubsystemPS4/Source/Private/OnlinePurchasePS4.cpp:152
+#: Plugins/Online/PS4/OnlineSubsystemPS4/Source/Private/OnlinePurchasePS4.cpp:152
+msgctxt "OnlineSubsystem,FailedToRetrievePurchasesWithCode"
+msgid "Unable to verify purchase with {ServiceName} services; purchased content may be temporarily unavailable. {ServiceName} Error Code: {ErrorCode}"
+msgstr "Unable to verify purchase with {ServiceName} services; purchased content may be temporarily unavailable. {ServiceName} Error Code: {ErrorCode}"
+
+#. Key:	RequestRateLimited
+#. SourceLocation:	Plugins/Online/PS4/OnlineSubsystemPS4/Source/Private/WebApiPS4Task.cpp:58
+#: Plugins/Online/PS4/OnlineSubsystemPS4/Source/Private/WebApiPS4Task.cpp:58
+msgctxt "OnlineSubsystem,RequestRateLimited"
+msgid "Your request would exceed the rate-limit, and has been cancelled. Please try again later."
+msgstr ""
+
+#. Key:	OnlineServiceName
+#. SourceLocation:	Plugins/Online/PS4/OnlineSubsystemPS4/Source/Private/OnlineSubsystemPS4.cpp:1058
+#: Plugins/Online/PS4/OnlineSubsystemPS4/Source/Private/OnlineSubsystemPS4.cpp:1058
+msgctxt "OnlineSubsystemPS4,OnlineServiceName"
+msgid "PlayStation{0}Network"
+msgstr "PlayStation{0} Network"
+

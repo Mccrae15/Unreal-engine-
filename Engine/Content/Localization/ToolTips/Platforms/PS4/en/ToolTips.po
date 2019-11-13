@@ -1,0 +1,50 @@
+﻿# ToolTips English translation.
+# Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+# 
+msgid ""
+msgstr ""
+"Project-Id-Version: ToolTips\n"
+"POT-Creation-Date: 2019-01-31 16:56\n"
+"PO-Revision-Date: 2019-01-31 16:56\n"
+"Language-Team: \n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Key:	PS4FileMediaSourceFactory
+#. SourceLocation:	From metadata for key ToolTip of member PS4FileMediaSourceFactory in None
+#: From metadata for key ToolTip of member PS4FileMediaSourceFactory in None
+msgctxt "UObjectToolTips,PS4FileMediaSourceFactory"
+msgid "Implements a factory for UFileMediaSource objects."
+msgstr "Implements a factory for UFileMediaSource objects."
+
+#. Key:	PS4MediaSettings
+#. SourceLocation:	From metadata for key ToolTip of member PS4MediaSettings in None
+#: From metadata for key ToolTip of member PS4MediaSettings in None
+msgctxt "UObjectToolTips,PS4MediaSettings"
+msgid "Settings for the PS4Media plug-in."
+msgstr "Settings for the PS4Media plug-in."
+
+#. Key:	PS4MediaSettings:FileVideoBufferSizeMB
+#. SourceLocation:	From metadata for key ToolTip of member FileVideoBufferSizeMB in PS4MediaSettings
+#: From metadata for key ToolTip of member FileVideoBufferSizeMB in PS4MediaSettings
+msgctxt "UObjectToolTips,PS4MediaSettings:FileVideoBufferSizeMB"
+msgid "The video buffer size for local file media sources (in MB, default = 1)."
+msgstr "The video buffer size for local file media sources (in MB, default = 1)."
+
+#. Key:	PS4MediaSettings:HlsVideoBufferSizeMB
+#. SourceLocation:	From metadata for key ToolTip of member HlsVideoBufferSizeMB in PS4MediaSettings
+#: From metadata for key ToolTip of member HlsVideoBufferSizeMB in PS4MediaSettings
+msgctxt "UObjectToolTips,PS4MediaSettings:HlsVideoBufferSizeMB"
+msgid "The video buffer size for HLS media sources (in MB, default = 8)."
+msgstr "The video buffer size for HLS media sources (in MB, default = 8)."
+
+#. Key:	PS4MediaSettings:OutputVideoFrameBuffers
+#. SourceLocation:	From metadata for key ToolTip of member OutputVideoFrameBuffers in PS4MediaSettings
+#: From metadata for key ToolTip of member OutputVideoFrameBuffers in PS4MediaSettings
+msgctxt "UObjectToolTips,PS4MediaSettings:OutputVideoFrameBuffers"
+msgid "The number of output video frame buffers (default = 6)."
+msgstr "The number of output video frame buffers (default = 6)."
+
