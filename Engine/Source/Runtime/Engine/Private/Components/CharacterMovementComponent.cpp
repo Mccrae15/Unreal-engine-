@@ -425,6 +425,8 @@ UCharacterMovementComponent::UCharacterMovementComponent(const FObjectInitialize
 
 	MaxFlySpeed = 600.0f;
 	MaxWalkSpeed = 600.0f;
+	MaxRunSpeed = MaxWalkSpeed * 1.5f;
+
 	MaxSwimSpeed = 300.0f;
 	MaxCustomMovementSpeed = MaxWalkSpeed;
 	
@@ -2937,7 +2939,9 @@ float UCharacterMovementComponent::GetMaxSpeed() const
 	{
 	case MOVE_Walking:
 	case MOVE_NavWalking:
-		return IsCrouching() ? MaxWalkSpeedCrouched : MaxWalkSpeed;
+		
+			return bIsRunning ? MaxRunSpeed : IsCrouching() ? MaxWalkSpeedCrouched : MaxWalkSpeed;
+		
 	case MOVE_Falling:
 		return MaxWalkSpeed;
 	case MOVE_Swimming:
