@@ -1,0 +1,36 @@
+﻿# Category Japanese translation.
+# Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+# 
+msgid ""
+msgstr ""
+"Project-Id-Version: Category\n"
+"POT-Creation-Date: 2019-03-09 07:28\n"
+"PO-Revision-Date: 2019-03-09 07:28\n"
+"Language-Team: \n"
+"Language: ja\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#. Key:	PS4MediaSettings:FileVideoBufferSizeMB
+#. SourceLocation:	From metadata for key Category of member FileVideoBufferSizeMB in PS4MediaSettings
+#: From metadata for key Category of member FileVideoBufferSizeMB in PS4MediaSettings
+msgctxt "UObjectCategory,PS4MediaSettings:FileVideoBufferSizeMB"
+msgid "Memory"
+msgstr "メモリ"
+
+#. Key:	PS4MediaSettings:HlsVideoBufferSizeMB
+#. SourceLocation:	From metadata for key Category of member HlsVideoBufferSizeMB in PS4MediaSettings
+#: From metadata for key Category of member HlsVideoBufferSizeMB in PS4MediaSettings
+msgctxt "UObjectCategory,PS4MediaSettings:HlsVideoBufferSizeMB"
+msgid "Memory"
+msgstr "メモリ"
+
+#. Key:	PS4MediaSettings:OutputVideoFrameBuffers
+#. SourceLocation:	From metadata for key Category of member OutputVideoFrameBuffers in PS4MediaSettings
+#: From metadata for key Category of member OutputVideoFrameBuffers in PS4MediaSettings
+msgctxt "UObjectCategory,PS4MediaSettings:OutputVideoFrameBuffers"
+msgid "Memory"
+msgstr "メモリ"
+

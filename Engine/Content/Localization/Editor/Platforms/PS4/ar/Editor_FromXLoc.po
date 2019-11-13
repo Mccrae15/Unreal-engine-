@@ -1,0 +1,29 @@
+﻿# Editor English translation.
+# Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+# 
+msgid ""
+msgstr ""
+"Project-Id-Version: Editor\n"
+"POT-Creation-Date: 2019-02-26 20:11\n"
+"PO-Revision-Date: 2019-02-26 20:11\n"
+"Language-Team: \n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Key:	RuntimeSettingsDescription
+#. SourceLocation:	Plugins/Runtime/PS4/Morpheus/Source/MorpheusEditor/Private/MorpheusEditorModule.cpp:40
+#: Plugins/Runtime/PS4/Morpheus/Source/MorpheusEditor/Private/MorpheusEditorModule.cpp:40
+msgctxt "MorpheusEditor,RuntimeSettingsDescription"
+msgid "Configure the Morpheus plugin"
+msgstr "Configure the Morpheus plugin"
+
+#. Key:	RuntimeSettingsName
+#. SourceLocation:	Plugins/Runtime/PS4/Morpheus/Source/MorpheusEditor/Private/MorpheusEditorModule.cpp:39
+#: Plugins/Runtime/PS4/Morpheus/Source/MorpheusEditor/Private/MorpheusEditorModule.cpp:39
+msgctxt "MorpheusEditor,RuntimeSettingsName"
+msgid "Morpheus"
+msgstr "Morpheus"
+
