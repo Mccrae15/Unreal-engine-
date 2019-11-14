@@ -3198,7 +3198,7 @@ void FSceneRenderer::PreVisibilityFrameSetup(FRHICommandListImmediate& RHICmdLis
 
 			// we don't use DeltaTime as it can be 0 (in editor) and is computed by subtracting floats (loses precision over time)
 			// Clamp DeltaWorldTime to reasonable values for the purposes of motion blur, things like TimeDilation can make it very small
-			if (View.bViewStateIsReadOnly)
+			if (!View.bViewStateIsReadOnly)
 			{
 				const bool bEnableTimeScale = !ViewState->bSequencerIsPaused;
 				const float FixedBlurTimeScale = 2.0f;// 1 / (30 * 1 / 60)
