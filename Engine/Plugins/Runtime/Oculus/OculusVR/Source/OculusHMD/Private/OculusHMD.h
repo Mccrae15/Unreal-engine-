@@ -196,7 +196,6 @@ public:
 #endif
 	virtual void UpdateViewportWidget(bool bUseSeparateRenderTarget, const class FViewport& Viewport, class SViewport* ViewportWidget) override;
 	virtual FXRRenderBridge* GetActiveRenderBridge_GameThread(bool bUseSeparateRenderTarget);
-	void AllocateEyeBuffer();
 
 	void AllocateEyeBuffer();
 	// IStereoLayers interface
