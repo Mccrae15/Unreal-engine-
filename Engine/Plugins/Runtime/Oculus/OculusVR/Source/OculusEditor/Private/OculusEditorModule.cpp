@@ -71,6 +71,8 @@ void FOculusEditorModule::StartupModule()
 		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(OculusPlatToolTabName, FOnSpawnTab::CreateRaw(this, &FOculusEditorModule::OnSpawnPlatToolTab))
 			.SetDisplayName(LOCTEXT("FOculusPlatfToolTabTitle", "Oculus Platform Tool"))
 			.SetMenuType(ETabSpawnerMenuType::Hidden);
+
+		FCoreDelegates::OnFEngineLoopInitComplete.AddRaw(this, &FOculusEditorModule::OnEngineLoopInitComplete);
 	 }
 }
 
@@ -82,6 +84,7 @@ void FOculusEditorModule::ShutdownModule()
 		FOculusToolCommands::Unregister();
 		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(OculusPerfTabName);
 		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(OculusPlatToolTabName);
+		FOculusBuildAnalytics::Shutdown();
 	}
 
 	FOculusAssetDirectory::ReleaseAll();
@@ -161,6 +164,11 @@ void FOculusEditorModule::AddMenuExtension(FMenuBuilder& Builder)
 void FOculusEditorModule::AddToolbarExtension(FToolBarBuilder& Builder)
 {
 	Builder.AddToolBarButton(FOculusToolCommands::Get().OpenPluginWindow);
+}
+
+void FOculusEditorModule::OnEngineLoopInitComplete()
+{
+	BuildAnalytics = FOculusBuildAnalytics::GetInstance();
 }
 
 TSharedRef<IDetailCustomization> FOculusHMDSettingsDetailsCustomization::MakeInstance()

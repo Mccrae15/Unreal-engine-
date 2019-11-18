@@ -457,8 +457,8 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 		// Compare the data before the property block to see if something else in the object has changed
 		if (!OutDeltaChange.bHasNonPropertyChanges)
 		{
-			const int32 OldHeaderSize = StartOfOldPropertyBlock;
-			const int32 CurrentHeaderSize = StartOfNewPropertyBlock;
+			const int32 OldHeaderSize = FMath::Min(StartOfOldPropertyBlock, OldSerializedObject.Data.Num());
+			const int32 CurrentHeaderSize = FMath::Min(StartOfNewPropertyBlock, NewSerializedObject.Data.Num());
 
 			bool bIsHeaderIdentical = OldHeaderSize == CurrentHeaderSize;
 			if (bIsHeaderIdentical && CurrentHeaderSize > 0)
@@ -475,8 +475,8 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 		// Compare the data after the property block to see if something else in the object has changed
 		if (!OutDeltaChange.bHasNonPropertyChanges)
 		{
-			const int32 OldFooterSize = OldSerializedObject.Data.Num() - EndOfOldPropertyBlock;
-			const int32 CurrentFooterSize = NewSerializedObject.Data.Num() - EndOfNewPropertyBlock;
+			const int32 OldFooterSize = OldSerializedObject.Data.Num() - FMath::Max(EndOfOldPropertyBlock, 0);
+			const int32 CurrentFooterSize = NewSerializedObject.Data.Num() - FMath::Max(EndOfNewPropertyBlock, 0);
 
 			bool bIsFooterIdentical = OldFooterSize == CurrentFooterSize;
 			if (bIsFooterIdentical && CurrentFooterSize > 0)
@@ -634,17 +634,23 @@ void FTransaction::FObjectRecord::AddReferencedObjects( FReferenceCollector& Col
 	Collector.AddReferencedObject(Obj);
 	Object.Object = Obj;
 
-	for (FPersistentObjectRef& ReferencedObject : SerializedObject.ReferencedObjects)
+	auto AddSerializedObjectReferences = [](FSerializedObject& InSerializedObject, FReferenceCollector& InCollector)
 	{
-		UObject* RefObj = ReferencedObject.Object;
-		Collector.AddReferencedObject(RefObj);
-		ReferencedObject.Object = RefObj;
-	}
+		for (FPersistentObjectRef& ReferencedObject : InSerializedObject.ReferencedObjects)
+		{
+			UObject* RefObj = ReferencedObject.Object;
+			InCollector.AddReferencedObject(RefObj);
+			ReferencedObject.Object = RefObj;
+		}
 
-	if (SerializedObject.ObjectAnnotation.IsValid())
-	{
-		SerializedObject.ObjectAnnotation->AddReferencedObjects(Collector);
-	}
+		if (InSerializedObject.ObjectAnnotation.IsValid())
+		{
+			InSerializedObject.ObjectAnnotation->AddReferencedObjects(InCollector);
+		}
+	};
+	AddSerializedObjectReferences(SerializedObject, Collector);
+	AddSerializedObjectReferences(SerializedObjectFlip, Collector);
+	AddSerializedObjectReferences(SerializedObjectSnapshot, Collector);
 }
 
 bool FTransaction::FObjectRecord::ContainsPieObject() const
@@ -658,15 +664,31 @@ bool FTransaction::FObjectRecord::ContainsPieObject() const
 		}
 	}
 
-	for (const FPersistentObjectRef& ReferencedObject : SerializedObject.ReferencedObjects)
+	auto SerializedObjectContainPieObjects = [](const FSerializedObject& InSerializedObject) -> bool
 	{
-		const UObject* Obj = ReferencedObject.Object;
-		if( Obj && Obj->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
+		for (const FPersistentObjectRef& ReferencedObject : InSerializedObject.ReferencedObjects)
 		{
-			return true;
+			const UObject* Obj = ReferencedObject.Object;
+			if (Obj && Obj->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
+			{
+				return true;
+			}
 		}
-	}
+		return false;
+	};
 
+	if (SerializedObjectContainPieObjects(SerializedObject))
+	{
+		return true;
+	}
+	if (SerializedObjectContainPieObjects(SerializedObjectFlip))
+	{
+		return true;
+	}
+	if (SerializedObjectContainPieObjects(SerializedObjectSnapshot))
+	{
+		return true;
+	}
 	return false;
 }
 

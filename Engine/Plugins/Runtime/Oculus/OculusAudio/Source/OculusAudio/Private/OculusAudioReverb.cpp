@@ -10,6 +10,11 @@ void FSubmixEffectOculusReverbPlugin::SetContext(ovrAudioContext* SharedContext)
 	check(Context != nullptr);
 }
 
+void FSubmixEffectOculusReverbPlugin::ClearContext()
+{
+	Context = nullptr;
+}
+
 FSubmixEffectOculusReverbPlugin::FSubmixEffectOculusReverbPlugin()
 	: Context(nullptr)
 {
@@ -39,6 +44,15 @@ void OculusAudioReverb::SetContext(ovrAudioContext* SharedContext)
 	for (FSubmixEffectOculusReverbPlugin* Submix : Submixes)
 	{
 		Submix->SetContext(SharedContext);
+	}
+}
+
+void OculusAudioReverb::ClearContext()
+{
+	Context = nullptr;
+	for (FSubmixEffectOculusReverbPlugin* Submix : Submixes)
+	{
+		Submix->ClearContext();
 	}
 }
 

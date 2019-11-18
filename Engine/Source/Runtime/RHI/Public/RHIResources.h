@@ -714,8 +714,8 @@ class RHI_API FRHITexture2DArray : public FRHITexture2D
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture2DArray(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
-	: FRHITexture2D(InSizeX, InSizeY, InNumMips,1,InFormat,InFlags, InClearValue)
+	FRHITexture2DArray(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,uint32 NumSamples, EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
+	: FRHITexture2D(InSizeX, InSizeY, InNumMips,NumSamples,InFormat,InFlags, InClearValue)
 	, SizeZ(InSizeZ)
 	{}
 	
@@ -1463,10 +1463,16 @@ public:
 	int32 NumColorRenderTargets;
 	bool bClearColor;
 
+	// Color Render Targets Info
+	FRHIRenderTargetView ColorResolveRenderTarget[MaxSimultaneousRenderTargets];	
+	bool bHasResolveAttachments;
+
 	// Depth/Stencil Render Target Info
 	FRHIDepthRenderTargetView DepthStencilRenderTarget;	
 	bool bClearDepth;
 	bool bClearStencil;
+
+	FTextureRHIParamRef VariableResolutionTexture;
 
 	// UAVs info.
 	FUnorderedAccessViewRHIRef UnorderedAccessView[MaxSimultaneousUAVs];
@@ -1474,18 +1480,22 @@ public:
 
 	FRHISetRenderTargetsInfo() :
 		NumColorRenderTargets(0),
-		bClearColor(false),		
+		bClearColor(false),
+		bHasResolveAttachments(false),
 		bClearDepth(false),
 		bClearStencil(false),
+		VariableResolutionTexture(nullptr), 
 		NumUAVs(0)
 	{}
 
 	FRHISetRenderTargetsInfo(int32 InNumColorRenderTargets, const FRHIRenderTargetView* InColorRenderTargets, const FRHIDepthRenderTargetView& InDepthStencilRenderTarget) :
 		NumColorRenderTargets(InNumColorRenderTargets),
 		bClearColor(InNumColorRenderTargets > 0 && InColorRenderTargets[0].LoadAction == ERenderTargetLoadAction::EClear),
+		bHasResolveAttachments(false),
 		DepthStencilRenderTarget(InDepthStencilRenderTarget),		
 		bClearDepth(InDepthStencilRenderTarget.Texture && InDepthStencilRenderTarget.DepthLoadAction == ERenderTargetLoadAction::EClear),
 		bClearStencil(InDepthStencilRenderTarget.Texture && InDepthStencilRenderTarget.StencilLoadAction == ERenderTargetLoadAction::EClear),
+		VariableResolutionTexture(nullptr),
 		NumUAVs(0)
 	{
 		check(InNumColorRenderTargets <= 0 || InColorRenderTargets);
@@ -1514,8 +1524,8 @@ public:
 		// Need a separate struct so we can memzero/remove dependencies on reference counts
 		struct FHashableStruct
 		{
-			// Depth goes in the last slot
-			FRHITexture* Texture[MaxSimultaneousRenderTargets + 1];
+			// *2 for color and resolves, Depth goes in the second last slot, Variable resolution goes into the last slot
+			FRHITexture* Texture[MaxSimultaneousRenderTargets*2 + 2];
 			uint32 MipIndex[MaxSimultaneousRenderTargets];
 			uint32 ArraySliceIndex[MaxSimultaneousRenderTargets];
 			ERenderTargetLoadAction LoadAction[MaxSimultaneousRenderTargets];
@@ -1530,6 +1540,7 @@ public:
 			bool bClearDepth;
 			bool bClearStencil;
 			bool bClearColor;
+			bool bHasResolveAttachments;
 			FRHIUnorderedAccessView* UnorderedAccessView[MaxSimultaneousUAVs];
 
 			void Set(const FRHISetRenderTargetsInfo& RTInfo)
@@ -1538,6 +1549,7 @@ public:
 				for (int32 Index = 0; Index < RTInfo.NumColorRenderTargets; ++Index)
 				{
 					Texture[Index] = RTInfo.ColorRenderTarget[Index].Texture;
+					Texture[MaxSimultaneousRenderTargets+Index] = RTInfo.ColorResolveRenderTarget[Index].Texture;
 					MipIndex[Index] = RTInfo.ColorRenderTarget[Index].MipIndex;
 					ArraySliceIndex[Index] = RTInfo.ColorRenderTarget[Index].ArraySliceIndex;
 					LoadAction[Index] = RTInfo.ColorRenderTarget[Index].LoadAction;
@@ -1545,6 +1557,7 @@ public:
 				}
 
 				Texture[MaxSimultaneousRenderTargets] = RTInfo.DepthStencilRenderTarget.Texture;
+				Texture[MaxSimultaneousRenderTargets + 1] = RTInfo.VariableResolutionTexture;
 				DepthLoadAction = RTInfo.DepthStencilRenderTarget.DepthLoadAction;
 				DepthStoreAction = RTInfo.DepthStencilRenderTarget.DepthStoreAction;
 				StencilLoadAction = RTInfo.DepthStencilRenderTarget.StencilLoadAction;
@@ -1554,6 +1567,7 @@ public:
 				bClearDepth = RTInfo.bClearDepth;
 				bClearStencil = RTInfo.bClearStencil;
 				bClearColor = RTInfo.bClearColor;
+				bHasResolveAttachments = RTInfo.bHasResolveAttachments;
 
 				for (int32 Index = 0; Index < MaxSimultaneousUAVs; ++Index)
 				{
@@ -2284,6 +2298,9 @@ struct FRHIRenderPassInfo
 
 	FResolveParams ResolveParameters;
 
+	// Some RHIs can use a texture to control the sampling and/or shading resolution of different areas 
+	FTextureRHIRef VariableResolutionTexture = nullptr;
+
 	// Some RHIs require a hint that occlusion queries will be used in this render pass
 	uint32 NumOcclusionQueries = 0;
 	bool bOcclusionQueries = false;
@@ -2472,6 +2489,27 @@ struct FRHIRenderPassInfo
 		DepthStencilRenderTarget.ResolveTarget = ResolveDepthRT;
 		DepthStencilRenderTarget.Action = DepthActions;
 		DepthStencilRenderTarget.ExclusiveDepthStencil = InEDS;
+		FMemory::Memzero(&ColorRenderTargets[1], sizeof(FColorEntry) * (MaxSimultaneousRenderTargets - 1));
+	}
+
+	// Color and depth with resolve and optional sample density
+	explicit FRHIRenderPassInfo(FRHITexture* ColorRT, ERenderTargetActions ColorAction, FRHITexture* ResolveColorRT,
+		FRHITexture* DepthRT, EDepthStencilTargetActions DepthActions, FRHITexture* ResolveDepthRT, FRHITexture* VariableRes,
+		FExclusiveDepthStencil InEDS = FExclusiveDepthStencil::DepthWrite_StencilWrite)
+	{
+		check(ColorRT);
+		ColorRenderTargets[0].RenderTarget = ColorRT;
+		ColorRenderTargets[0].ResolveTarget = ResolveColorRT;
+		ColorRenderTargets[0].ArraySlice = -1;
+		ColorRenderTargets[0].MipIndex = 0;
+		ColorRenderTargets[0].Action = ColorAction;
+		bIsMSAA = ColorRT->GetNumSamples() > 1;
+		check(DepthRT);
+		DepthStencilRenderTarget.DepthStencilTarget = DepthRT;
+		DepthStencilRenderTarget.ResolveTarget = ResolveDepthRT;
+		DepthStencilRenderTarget.Action = DepthActions;
+		DepthStencilRenderTarget.ExclusiveDepthStencil = InEDS;
+		VariableResolutionTexture = VariableRes;
 		FMemory::Memzero(&ColorRenderTargets[1], sizeof(FColorEntry) * (MaxSimultaneousRenderTargets - 1));
 	}
 

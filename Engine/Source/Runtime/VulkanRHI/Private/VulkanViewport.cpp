@@ -321,8 +321,10 @@ FVulkanFramebuffer::FVulkanFramebuffer(FVulkanDevice& Device, const FRHISetRende
 	, NumColorRenderTargets(InRTInfo.NumColorRenderTargets)
 	, NumColorAttachments(0)
 	, DepthStencilRenderTargetImage(VK_NULL_HANDLE)
+	, FragmentDensityImage(VK_NULL_HANDLE)
 {
 	FMemory::Memzero(ColorRenderTargetImages);
+	FMemory::Memzero(ColorResolveTargetImages);
 		
 	AttachmentTextureViews.Empty(RTLayout.GetNumAttachmentDescriptions());
 	uint32 MipIndex = 0;
@@ -368,6 +370,24 @@ FVulkanFramebuffer::FVulkanFramebuffer(FVulkanDevice& Device, const FRHISetRende
 		AttachmentViewsToDelete.Add(RTView.View);
 
 		++NumColorAttachments;
+
+		if (InRTInfo.bHasResolveAttachments)
+		{
+			FRHITexture* ResolveRHITexture = InRTInfo.ColorResolveRenderTarget[Index].Texture;
+			FVulkanTextureBase* ResolveTexture = FVulkanTextureBase::Cast(ResolveRHITexture);
+			ColorResolveTargetImages[Index] = ResolveTexture->Surface.Image;
+
+			//resolve attachments only supported for 2d/2d array textures
+			FVulkanTextureView ResolveRTView;
+			if (ResolveTexture->Surface.GetViewType() == VK_IMAGE_VIEW_TYPE_2D || ResolveTexture->Surface.GetViewType() == VK_IMAGE_VIEW_TYPE_2D_ARRAY)
+			{
+				ResolveRTView.Create(*ResolveTexture->Surface.Device, ResolveTexture->Surface.Image, ResolveTexture->Surface.GetViewType(), ResolveTexture->Surface.GetFullAspectMask(), ResolveTexture->Surface.PixelFormat, ResolveTexture->Surface.ViewFormat, 
+					MipIndex, 1, FMath::Max(0, (int32)InRTInfo.ColorRenderTarget[Index].ArraySliceIndex), ResolveTexture->Surface.GetNumberOfArrayLevels(), true);
+			}
+
+			AttachmentTextureViews.Add(ResolveRTView);
+			AttachmentViewsToDelete.Add(ResolveRTView.View);
+		}
 	}
 
 	if (RTLayout.GetHasDepthStencil())
@@ -391,6 +411,20 @@ FVulkanFramebuffer::FVulkanFramebuffer(FVulkanDevice& Device, const FRHISetRende
 		{
 			AttachmentTextureViews.Add(Texture->DefaultView);
 		}
+	}
+
+	if (RTLayout.GetHasFragmentDensityAttachment() && Device.GetOptionalExtensions().HasEXTFragmentDensityMap)
+	{
+		FVulkanTextureBase* Texture = FVulkanTextureBase::Cast(InRTInfo.VariableResolutionTexture);
+		FragmentDensityImage = Texture->Surface.Image;
+
+		ensure(Texture->Surface.GetViewType() == VK_IMAGE_VIEW_TYPE_2D || Texture->Surface.GetViewType() == VK_IMAGE_VIEW_TYPE_2D_ARRAY);
+
+		FVulkanTextureView RTView;
+		RTView.Create(*Texture->Surface.Device, Texture->Surface.Image, Texture->Surface.GetViewType(), Texture->Surface.GetFullAspectMask(), Texture->Surface.PixelFormat, Texture->Surface.ViewFormat, MipIndex, 1, 0, Texture->Surface.GetNumberOfArrayLevels(), true);
+
+		AttachmentTextureViews.Add(RTView);
+		AttachmentViewsToDelete.Add(RTView.View);
 	}
 
 	TArray<VkImageView> AttachmentViews;
@@ -458,9 +492,36 @@ bool FVulkanFramebuffer::Matches(const FRHISetRenderTargetsInfo& InRTInfo) const
 		}
 	}
 
+	{
+		const FTextureRHIParamRef Texture = InRTInfo.VariableResolutionTexture;
+		if (Texture)
+		{
+			VkImage AImage = FragmentDensityImage;
+			VkImage BImage = ((FVulkanTextureBase*)Texture->GetTextureBaseRHI())->Surface.Image;
+			if (AImage != BImage)
+			{
+				return false;
+			}
+		}
+	}
+
 	int32 AttachementIndex = 0;
 	for (int32 Index = 0; Index < InRTInfo.NumColorRenderTargets; ++Index)
 	{
+		if (InRTInfo.bHasResolveAttachments)
+		{
+			const FRHIRenderTargetView& R = InRTInfo.ColorResolveRenderTarget[Index];
+			if (R.Texture)
+			{
+				VkImage AImage = ColorResolveTargetImages[AttachementIndex];
+				VkImage BImage = ((FVulkanTextureBase*)R.Texture->GetTextureBaseRHI())->Surface.Image;
+				if (AImage != BImage)
+				{
+					return false;
+				}
+			}
+		}
+
 		const FRHIRenderTargetView& B = InRTInfo.ColorRenderTarget[Index];
 		if (B.Texture)
 		{

@@ -1,10 +1,11 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{B07B7216-4DBF-AC47-8509-AE8F44F56B85}",
+	"EngineAssociation": "{63FD56AF-4DB8-4C05-2ADE-C2BA48B05BDF}",
 	"Category": "",
 	"Description": "",
 	"TargetPlatforms": [
 		"PS4",
-		"WindowsNoEditor"
+		"WindowsNoEditor",
+		"Android"
 	]
 }

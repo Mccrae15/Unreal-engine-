@@ -145,7 +145,20 @@ OVRP_EXPORT ovrpResult ovrp_GetEyeFovLayerId(int* layerId);
 OVRP_EXPORT ovrpResult ovrp_GetLayerTextureStageCount(int layerId, int* layerTextureStageCount);
 
 /// Gets the texture handle for a specific layer stage and eye.
-OVRP_EXPORT ovrpResult ovrp_GetLayerTexture2(int layerId, int stage, ovrpEye eyeId, ovrpTextureHandle* textureHandle, ovrpTextureHandle* depthTextureHandle);
+OVRP_EXPORT ovrpResult ovrp_GetLayerTexture2(
+    int layerId,
+    int stage,
+    ovrpEye eyeId,
+    ovrpTextureHandle* textureHandle,
+    ovrpTextureHandle* depthTextureHandle);
+
+/// Gets the texture handle for a specific layer stage and eye.
+OVRP_EXPORT ovrpResult ovrp_GetLayerTextureFoveation(
+    int layerId,
+    int stage,
+    ovrpEye eyeId,
+    ovrpTextureHandle* foveationTextureHandle,
+    ovrpSizei* foveationResultSize);
 
 /// Gets the texture handle for a specific layer stage and eye.
 OVRP_EXPORT ovrpResult ovrp_GetLayerAndroidSurfaceObject(int layerId, void** surfaceObject);
@@ -292,8 +305,14 @@ OVRP_EXPORT ovrpResult ovrp_GetNodePresent2(ovrpNode nodeId, ovrpBool* nodePrese
 /// If true, the node's orientation is tracked.
 OVRP_EXPORT ovrpResult ovrp_GetNodeOrientationTracked2(ovrpNode nodeId, ovrpBool* nodeOrientationTracked);
 
+/// If true, the node's orientation is valid.
+OVRP_EXPORT ovrpResult ovrp_GetNodeOrientationValid(ovrpNode nodeId, ovrpBool* nodeOrientationValid);
+
 /// If true, the node's position is tracked.
 OVRP_EXPORT ovrpResult ovrp_GetNodePositionTracked2(ovrpNode nodeId, ovrpBool* nodePositionTracked);
+
+/// If true, the node's position is valid.
+OVRP_EXPORT ovrpResult ovrp_GetNodePositionValid(ovrpNode nodeId, ovrpBool* nodePositionValid);
 
 /// Force a node position to be tracked or not. Return false if the node's position tracking cannot
 /// be changed.
@@ -556,6 +575,8 @@ OVRP_EXPORT ovrpResult ovrp_SendEvent2(const char* eventName, const char* param,
 
 OVRP_EXPORT ovrpResult ovrp_AddCustomMetadata(const char* metadataName, const char* metadataParam);
 
+OVRP_EXPORT ovrpResult ovrp_SetDeveloperMode(ovrpBool active);
+
 OVRP_EXPORT ovrpResult ovrp_SetVrApiPropertyInt(int propertyEnum, int value);
 
 OVRP_EXPORT ovrpResult ovrp_SetVrApiPropertyFloat(int propertyEnum, float value);
@@ -566,11 +587,19 @@ OVRP_EXPORT ovrpResult ovrp_GetCurrentTrackingTransformPose(ovrpPosef* trackingT
 
 OVRP_EXPORT ovrpResult ovrp_GetTrackingTransformRawPose(ovrpPosef* trackingTransformRawPose);
 
+OVRP_EXPORT ovrpResult ovrp_GetTrackingTransformRelativePose(ovrpPosef* trackingTransformRelativePose, ovrpTrackingOrigin trackingOrigin);
+
 OVRP_EXPORT ovrpResult ovrp_GetTimeInSeconds(double* timeInSeconds);
 
 /// Return a parameter for PTW to compress depth value
 /// Intuitively, it means the closest depth we can save in alpha.
 OVRP_EXPORT ovrpResult ovrp_GetPTWNear(float* ptwNear);
+
+OVRP_EXPORT ovrpResult ovrp_GetASWVelocityScale(float* aswVelocityScale);
+OVRP_EXPORT ovrpResult ovrp_GetASWDepthScale(float* aswDepthScale);
+OVRP_EXPORT ovrpResult ovrp_GetASWAdaptiveMode(ovrpBool* aswAdaptiveMode);
+OVRP_EXPORT ovrpResult ovrp_SetASWAdaptiveMode(ovrpBool aswAdaptiveMode);
+OVRP_EXPORT ovrpResult ovrp_IsRequestingASWData(ovrpBool* needASWData);
 
 OVRP_EXPORT ovrpResult ovrp_GetPredictedDisplayTime(int frameIndex, double *predictedDisplayTime);
 

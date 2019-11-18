@@ -302,11 +302,11 @@ void ALocalAvatar::LipSyncVismesReady()
 {
 	if (UseCannedLipSyncPlayback)
 	{
-		AvatarComponent->UpdateVisemeValues(PlayBackLipSyncComponent->GetVisemes());
+		AvatarComponent->UpdateVisemeValues(PlayBackLipSyncComponent->GetVisemes(), PlayBackLipSyncComponent->GetLaughterScore());
 	}
 	else
 	{
-		AvatarComponent->UpdateVisemeValues(LipSyncComponent->GetVisemes());
+		AvatarComponent->UpdateVisemeValues(LipSyncComponent->GetVisemes(), LipSyncComponent->GetLaughterScore());
 	}
 }
 

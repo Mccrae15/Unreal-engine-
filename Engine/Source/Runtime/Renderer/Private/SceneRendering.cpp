@@ -1443,8 +1443,11 @@ void FViewInfo::SetupUniformBufferParameters(
 	// Make sure there's no padding since we're going to cast to FVector4*
 	checkSlow(sizeof(ViewUniformShaderParameters.SkyIrradianceEnvironmentMap) == sizeof(FVector4)* 7);
 	SetupSkyIrradianceEnvironmentMapConstants((FVector4*)&ViewUniformShaderParameters.SkyIrradianceEnvironmentMap);
-
-	ViewUniformShaderParameters.MobilePreviewMode = Scene == nullptr ? 0.0f: (IsSimulatedPlatform(Scene->GetShaderPlatform()) ? 1.0f : 0.0f);
+	
+	ViewUniformShaderParameters.MobilePreviewMode =
+		(GIsEditor &&
+		(RHIFeatureLevel == ERHIFeatureLevel::ES2 || RHIFeatureLevel == ERHIFeatureLevel::ES3_1) &&
+		GMaxRHIFeatureLevel > ERHIFeatureLevel::ES3_1) ? 1.0f : 0.0f;
 
 	// Padding between the left and right eye may be introduced by an HMD, which instanced stereo needs to account for.
 	if ((StereoPass != eSSP_FULL) && (Family->Views.Num() > 1))
@@ -2868,8 +2871,6 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 
 			if (View.ShouldRenderView())
 			{
-				Scene->UniformBuffers.UpdateViewUniformBuffer(View);
-
 				FUniformBufferRHIParamRef PassUniformBuffer = nullptr;
 
 				if (FSceneInterface::GetShadingPath(View.FeatureLevel) == EShadingPath::Mobile)
@@ -2909,26 +2910,63 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 					}
 				}
 
-
-				FViewUniformShaderParameters CustomDepthViewUniformBufferParameters = *View.CachedViewUniformShaderParameters;
-
 				if (CVarCustomDepthTemporalAAJitter.GetValueOnRenderThread() == 0 && View.AntiAliasingMethod == AAM_TemporalAA)
 				{
+					// Handle the "current" view the same, always.
+					FViewUniformShaderParameters CustomDepthViewUniformBufferParameters = *View.CachedViewUniformShaderParameters;
+
 					FBox VolumeBounds[TVC_MAX];
 
-					FViewMatrices ModifiedViewMatricies = View.ViewMatrices;
-					ModifiedViewMatricies.HackRemoveTemporalAAProjectionJitter();
+					FViewMatrices ModifiedViewMatrices = View.ViewMatrices;
+					ModifiedViewMatrices.HackRemoveTemporalAAProjectionJitter();
 
 					View.SetupUniformBufferParameters(
 						SceneContext,
-						ModifiedViewMatricies,
-						ModifiedViewMatricies,
+						ModifiedViewMatrices,
+						ModifiedViewMatrices,
 						VolumeBounds,
 						TVC_MAX,
 						CustomDepthViewUniformBufferParameters);
-				}
 
-				Scene->UniformBuffers.CustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(CustomDepthViewUniformBufferParameters);
+					Scene->UniformBuffers.CustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(CustomDepthViewUniformBufferParameters);
+
+					if ((View.IsInstancedStereoPass() || View.bIsMobileMultiViewEnabled) && View.Family->Views.Num() > 0)
+					{
+						// When drawing the left eye in a stereo scene, set up the instanced custom depth uniform buffer with the right-eye data,
+						// with the TAA jitter removed.
+						const EStereoscopicPass StereoPassIndex = (View.StereoPass != eSSP_FULL) ? eSSP_RIGHT_EYE : eSSP_FULL;
+
+						const FViewInfo& InstancedView = static_cast<const FViewInfo&>(View.Family->GetStereoEyeView(StereoPassIndex));
+
+						CustomDepthViewUniformBufferParameters = *InstancedView.CachedViewUniformShaderParameters;
+						ModifiedViewMatrices = InstancedView.ViewMatrices;
+						ModifiedViewMatrices.HackRemoveTemporalAAProjectionJitter();
+
+						InstancedView.SetupUniformBufferParameters(
+							SceneContext,
+							ModifiedViewMatrices,
+							ModifiedViewMatrices,
+							VolumeBounds,
+							TVC_MAX,
+							CustomDepthViewUniformBufferParameters);
+
+						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(CustomDepthViewUniformBufferParameters));
+					}
+				}
+				else
+				{
+					Scene->UniformBuffers.CustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(*View.CachedViewUniformShaderParameters);
+					if ((View.IsInstancedStereoPass() || View.bIsMobileMultiViewEnabled) && View.Family->Views.Num() > 0)
+					{
+						const FViewInfo& InstancedView = Scene->UniformBuffers.GetInstancedView(View);
+						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*InstancedView.CachedViewUniformShaderParameters));
+					}
+					else
+					{
+						// If we don't render this pass in stereo we simply update the buffer with the same view uniform parameters.
+						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*View.CachedViewUniformShaderParameters));
+					}
+				}
 	
 				View.ParallelMeshDrawCommandPasses[EMeshPass::CustomDepth].DispatchDraw(nullptr, RHICmdList);
 			}
@@ -2977,7 +3015,8 @@ bool FSceneRenderer::ShouldCompositeEditorPrimitives(const FViewInfo& View)
 		    || View.TopViewMeshElements.Num() 
 		    || View.BatchedViewElements.HasPrimsToDraw() 
 		    || View.TopBatchedViewElements.HasPrimsToDraw() 
-		    || View.NumVisibleDynamicEditorPrimitives > 0)
+		    || View.NumVisibleDynamicEditorPrimitives > 0
+			|| IsMobileColorsRGB())
 	    {
 		    return true;
 	    }

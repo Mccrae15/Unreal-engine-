@@ -91,6 +91,7 @@ public:
 	void SetCurrentRenderingContext();
 	uint32_t GetCurrentContextType();
 	FPlatformOpenGLContext* GetRenderingContext();
+	bool GetSupportsNoErrorContext();
 	
 protected:
 	AndroidEGL();

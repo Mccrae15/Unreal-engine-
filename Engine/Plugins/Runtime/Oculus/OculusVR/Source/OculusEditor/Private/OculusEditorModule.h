@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "IOculusEditorModule.h"
+#include "OculusBuildAnalytics.h"
 #include "Modules/ModuleInterface.h"
 #include "IDetailCustomization.h"
 #include "Input/Reply.h"
@@ -30,6 +31,8 @@ public:
 	void PluginButtonClicked();
 	FReply PluginClickFn(bool text);
 
+	void OnEngineLoopInitComplete();
+
 public:
 	static const FName OculusPerfTabName;
 	static const FName OculusPlatToolTabName;
@@ -44,6 +47,7 @@ private:
 
 private:
 	TSharedPtr<class FUICommandList> PluginCommands;
+	FOculusBuildAnalytics* BuildAnalytics;
 };
 
 class IDetailLayoutBuilder;

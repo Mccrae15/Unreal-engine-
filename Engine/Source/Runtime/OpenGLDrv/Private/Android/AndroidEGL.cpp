@@ -1538,6 +1538,11 @@ FPlatformOpenGLContext* AndroidEGL::GetRenderingContext()
 	}
 }
 
+bool AndroidEGL::GetSupportsNoErrorContext()
+{
+	return bSupportsKHRNoErrorContext;
+}
+
 void AndroidEGL::UnBind()
 {
 	FPlatformMisc::LowLevelOutputDebugString(TEXT("AndroidEGL::UnBind()"));

@@ -196,7 +196,8 @@ protected:
 		DefaultColorClear(FClearValueBinding::Black),
 		DefaultDepthClear(FClearValueBinding::DepthFar),
 		QuadOverdrawIndex(INDEX_NONE),
-		bHMDAllocatedDepthTarget(false)
+		bHMDAllocatedDepthTarget(false),
+		bAllocatedVariableResolutionTexture(false)
 		{
 			FMemory::Memset(LargestDesiredSizes, 0);
 #if PREVENT_RENDERTARGET_SIZE_THRASHING
@@ -393,6 +394,7 @@ public:
 	const FTexture2DRHIRef& GetGBufferDTexture() const { return (const FTexture2DRHIRef&)GBufferD->GetRenderTargetItem().ShaderResourceTexture; }
 	const FTexture2DRHIRef& GetGBufferETexture() const { return (const FTexture2DRHIRef&)GBufferE->GetRenderTargetItem().ShaderResourceTexture; }
 	const FTexture2DRHIRef& GetGBufferVelocityTexture() const { return (const FTexture2DRHIRef&)SceneVelocity->GetRenderTargetItem().ShaderResourceTexture; }
+	const FTexture2DRHIRef& GetVariableResolutionTexture() const { return (const FTexture2DRHIRef&)VariableResolutionTexture->GetRenderTargetItem().ShaderResourceTexture; }
 
 	const FTextureRHIRef& GetLightAttenuationTexture() const
 	{
@@ -529,6 +531,8 @@ public:
 	
 	ERHIFeatureLevel::Type GetCurrentFeatureLevel() const { return CurrentFeatureLevel; }
 
+	bool IsVariableResolutionTextureAllocated() const { return bAllocatedVariableResolutionTexture; }
+
 #if WITH_OCULUS_PRIVATE_CODE
 	bool IsFoveatedMaskValidInStencil() const { return bIsFoveatedMaskValidInStencil; }
 	void SetFoveatedMaskValidInStencil(bool IsMaskValid);
@@ -616,6 +620,9 @@ public:
 	/** Downsampled depth used when rendering translucency in smaller resolution. */
 	TRefCountPtr<IPooledRenderTarget> DownsampledTranslucencyDepthRT;
 
+	/** Texture to control variable resolution rendering */
+	TRefCountPtr<IPooledRenderTarget> VariableResolutionTexture;
+
 	/** The reconstructed color RT in mask-based foveated rendering */
 	TRefCountPtr<IPooledRenderTarget> MaskReconstructedColorRT;			// [WIP]
 
@@ -676,6 +683,9 @@ private:
 	/** Allocates common depth render targets that are used by both mobile and deferred rendering paths */
 	void AllocateCommonDepthTargets(FRHICommandList& RHICmdList);
 
+	/** Allocates a texture for controlling variable resolution rendering. */
+	void AllocateVariableResolutionTexture(FRHICommandList& RHICmdList);
+
 	/** Determine the appropriate render target dimensions. */
 	FIntPoint ComputeDesiredSize(const FSceneViewFamily& ViewFamily);
 
@@ -700,6 +710,9 @@ private:
 
 	/** Determine if the default clear values for color and depth match the allocated scene render targets. Mobile only. */
 	bool AreRenderTargetClearsValid(ESceneColorFormatType InSceneColorFormatType) const;
+
+	/** Determine if an allocate is required for the render targets. */
+	bool IsAllocateRenderTargetsRequired() const;
 
 	/** Determine whether the render targets for any shading path have been allocated */
 	bool AreAnyShadingPathRenderTargetsAllocated() const 
@@ -802,6 +815,9 @@ private:
 
 	/** True if the depth target is allocated by an HMD plugin. This is a temporary fix to deal with HMD depth target swap chains not tracking the stencil SRV. */
 	bool bHMDAllocatedDepthTarget;
+
+	/** True if the a variable resolution texture is allocated to control sampling or shading rate */
+	bool bAllocatedVariableResolutionTexture;
 
 	/** CAUTION: When adding new data, make sure you copy it in the snapshot constructor! **/
 

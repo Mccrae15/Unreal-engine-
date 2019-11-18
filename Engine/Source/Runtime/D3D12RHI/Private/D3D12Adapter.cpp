@@ -23,25 +23,6 @@ static TAutoConsoleVariable<int32> CVarResidencyManagement(
 );
 #endif // ENABLE_RESIDENCY_MANAGEMENT
 
-struct FRHICommandSignalFrameFence final : public FRHICommand<FRHICommandSignalFrameFence>
-{
-	ED3D12CommandQueueType QueueType;
-	FD3D12ManualFence* const Fence;
-	const uint64 Value;
-	FORCEINLINE_DEBUGGABLE FRHICommandSignalFrameFence(ED3D12CommandQueueType InQueueType, FD3D12ManualFence* InFence, uint64 InValue)
-		: QueueType(InQueueType)
-		, Fence(InFence)
-		, Value(InValue)
-	{ 
-	}
-
-	void Execute(FRHICommandListBase& CmdList)
-	{
-		Fence->Signal(QueueType, Value);
-		check(Fence->GetLastSignaledFence() == Value);
-	}
-};
-
 FD3D12Adapter::FD3D12Adapter(FD3D12AdapterDesc& DescIn)
 	: OwningRHI(nullptr)
 	, bDepthBoundsTestSupported(false)
@@ -96,25 +77,12 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	if (bWithDebug)
 	{
 		TRefCountPtr<ID3D12Debug> DebugController;
-		VERIFYD3D12RESULT(D3D12GetDebugInterface(IID_PPV_ARGS(DebugController.GetInitReference())));
-		DebugController->EnableDebugLayer();
-
-		// TODO: MSFT: BEGIN TEMPORARY WORKAROUND for a debug layer issue with the Editor creating lots of viewports (swapchains).
-		// Without this you could see this error: D3D12 ERROR: ID3D12CommandQueue::ExecuteCommandLists: Up to 8 swapchains can be written to by a single command queue. Present must be called on one of the swapchains to enable a command queue to execute command lists that write to more.  [ STATE_SETTING ERROR #906: COMMAND_QUEUE_TOO_MANY_SWAPCHAIN_REFERENCES]
-		if (GIsEditor)
+		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(DebugController.GetInitReference()))))
 		{
-			TRefCountPtr<ID3D12Debug1> DebugController1;
-			const HRESULT HrDebugController1 = D3D12GetDebugInterface(IID_PPV_ARGS(DebugController1.GetInitReference()));
-			if (DebugController1.GetReference())
-			{
-				DebugController1->SetEnableSynchronizedCommandQueueValidation(false);
-				UE_LOG(LogD3D12RHI, Warning, TEXT("Disabling the debug layer's Synchronized Command Queue Validation. This means many debug layer features won't do anything. This code should be removed as soon as possible with an update debug layer."));
-			}
-		}
-		// END TEMPORARY WORKAROUND
+			DebugController->EnableDebugLayer();
 
 		bool bD3d12gpuvalidation = false;
-		if (FParse::Param(FCommandLine::Get(), TEXT("d3d12gpuvalidation")))
+			if (FParse::Param(FCommandLine::Get(), TEXT("d3d12gpuvalidation")) || FParse::Param(FCommandLine::Get(), TEXT("gpuvalidation")))
 		{
 			TRefCountPtr<ID3D12Debug1> DebugController1;
 			VERIFYD3D12RESULT(DebugController->QueryInterface(IID_PPV_ARGS(DebugController1.GetInitReference())));
@@ -122,7 +90,13 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 			bD3d12gpuvalidation = true;
 		}
 
-		UE_LOG(LogD3D12RHI, Log, TEXT("InitD3DDevice: -D3DDebug = %s -D3D12GPUValidation = %s"), bWithDebug ? TEXT("on") : TEXT("off"), bD3d12gpuvalidation ? TEXT("on") : TEXT("off") );
+			UE_LOG(LogD3D12RHI, Log, TEXT("InitD3DDevice: -D3DDebug = %s -D3D12GPUValidation = %s"), bWithDebug ? TEXT("on") : TEXT("off"), bD3d12gpuvalidation ? TEXT("on") : TEXT("off"));
+		}
+		else
+		{
+			bWithDebug = false;
+			UE_LOG(LogD3D12RHI, Fatal, TEXT("The debug interface requires the D3D12 SDK Layers. Please install the Graphics Tools for Windows. See: https://docs.microsoft.com/en-us/windows/uwp/gaming/use-the-directx-runtime-and-visual-studio-graphics-diagnostic-features"));
+		}
 	}
 #endif // PLATFORM_WINDOWS
 
@@ -184,6 +158,12 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 		if (RootRayTracingDevice)
 		{
 			UE_LOG(LogD3D12RHI, Log, TEXT("D3D12 ray tracing enabled."));
+
+			static auto CVarSkinCache = IConsoleManager::Get().FindConsoleVariable(TEXT("r.SkinCache.CompileShaders"));
+			if (CVarSkinCache->GetInt() <= 0)
+			{
+				UE_LOG(LogD3D12RHI, Fatal, TEXT("D3D12 ray tracing requires skin cache to be enabled. Set r.SkinCache.CompileShaders=1."));
+			}
 		}
 		else
 		{
@@ -661,26 +641,6 @@ void FD3D12Adapter::EndFrame()
 		GetUploadHeapAllocator(GPUIndex).CleanUpAllocations();
 	}
 	GetDeferredDeletionQueue().ReleaseResources();
-}
-
-void FD3D12Adapter::SignalFrameFence_RenderThread(FRHICommandListImmediate& RHICmdList)
-{
-	check(IsInRenderingThread());
-	check(RHICmdList.IsImmediate());
-
-	// Increment the current fence (on render thread timeline).
-	const uint64 PreviousFence = FrameFence->IncrementCurrentFence();
-
-	// Queue a command to signal the frame fence is complete on the GPU (on the RHI thread timeline if using an RHI thread).
-	if (RHICmdList.Bypass() || !IsRunningRHIInSeparateThread())
-	{
-		FRHICommandSignalFrameFence Cmd(ED3D12CommandQueueType::Default, FrameFence, PreviousFence);
-		Cmd.Execute(RHICmdList);
-	}
-	else
-	{
-		ALLOC_COMMAND_CL(RHICmdList, FRHICommandSignalFrameFence)(ED3D12CommandQueueType::Default, FrameFence, PreviousFence);
-	}
 }
 
 FD3D12TemporalEffect* FD3D12Adapter::GetTemporalEffect(const FName& EffectName)

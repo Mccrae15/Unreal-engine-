@@ -244,6 +244,7 @@ FSceneRenderTargets::FSceneRenderTargets(const FViewInfo& View, const FSceneRend
 	, EditorPrimitivesDepth(GRenderTargetPool.MakeSnapshot(SnapshotSource.EditorPrimitivesDepth))
 	, SeparateTranslucencyRT(SnapshotSource.SeparateTranslucencyRT)
 	, DownsampledTranslucencyDepthRT(SnapshotSource.DownsampledTranslucencyDepthRT)
+	, VariableResolutionTexture(GRenderTargetPool.MakeSnapshot(SnapshotSource.VariableResolutionTexture))
 	, bScreenSpaceAOIsValid(SnapshotSource.bScreenSpaceAOIsValid)
 	, bCustomDepthIsValid(SnapshotSource.bCustomDepthIsValid)
 #if WITH_OCULUS_PRIVATE_CODE
@@ -281,6 +282,7 @@ FSceneRenderTargets::FSceneRenderTargets(const FViewInfo& View, const FSceneRend
 	, DefaultDepthClear(SnapshotSource.DefaultDepthClear)
 	, QuadOverdrawIndex(SnapshotSource.QuadOverdrawIndex)
 	, bHMDAllocatedDepthTarget(SnapshotSource.bHMDAllocatedDepthTarget)
+	, bAllocatedVariableResolutionTexture(SnapshotSource.bAllocatedVariableResolutionTexture)
 {
 	FMemory::Memcpy(LargestDesiredSizes, SnapshotSource.LargestDesiredSizes);
 #if PREVENT_RENDERTARGET_SIZE_THRASHING
@@ -553,10 +555,6 @@ void FSceneRenderTargets::Allocate(FRHICommandListImmediate& RHICmdList, const F
 
 	int GBufferFormat = CVarGBufferFormat.GetValueOnRenderThread();
 
-	// Set default clear values
-	SetDefaultColorClear(FClearValueBinding::Black);
-	SetDefaultDepthClear(FClearValueBinding::DepthFar);
-
 	int SceneColorFormat;
 	{
 		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SceneColorFormat"));
@@ -639,6 +637,10 @@ void FSceneRenderTargets::Allocate(FRHICommandListImmediate& RHICmdList, const F
 		UE_LOG(LogRenderer, Log, TEXT("Reallocating scene render targets to support %ux%u Format %u NumSamples %u (Frame:%u)."), BufferSize.X, BufferSize.Y, (uint32)GetSceneColorFormat(NewFeatureLevel), CurrentMSAACount, ViewFamily.FrameNumber);
 
 		UpdateRHI();
+
+#if WITH_OCULUS_PRIVATE_CODE
+		SetFoveatedMaskValidInStencil(false);
+#endif
 	}
 
 	// Do allocation of render targets if they aren't available for the current shading path
@@ -1012,6 +1014,8 @@ void FSceneRenderTargets::AllocMobileMultiViewSceneColor(FRHICommandList& RHICmd
 		MobileMultiViewSceneColor.SafeRelease();
 	}
 
+	bool MobileHWsRGB = IsMobileColorsRGB();
+
 	if (!MobileMultiViewSceneColor)
 	{
 		const EPixelFormat SceneColorBufferFormat = GetSceneColorFormat();
@@ -1021,6 +1025,7 @@ void FSceneRenderTargets::AllocMobileMultiViewSceneColor(FRHICommandList& RHICmd
 		Desc.NumSamples = GetNumSceneColorMSAASamples(CurrentFeatureLevel);
 		Desc.ArraySize = 2;
 		Desc.bIsArray = true;
+		Desc.Flags |= MobileHWsRGB ? TexCreate_SRGB : 0;
 		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, MobileMultiViewSceneColor, TEXT("MobileMultiViewSceneColor"));
 	}
 	check(MobileMultiViewSceneColor);
@@ -1993,6 +1998,7 @@ void FSceneRenderTargets::AllocateMobileRenderTargets(FRHICommandList& RHICmdLis
 	// on ES2 we don't do on demand allocation of SceneColor yet (in non ES2 it's released in the Tonemapper Process())
 	AllocSceneColor(RHICmdList);
 	AllocateCommonDepthTargets(RHICmdList);
+	AllocateVariableResolutionTexture(RHICmdList);
 
 #if PLATFORM_ANDROID
 	static const auto MobileMultiViewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
@@ -2006,11 +2012,8 @@ void FSceneRenderTargets::AllocateMobileRenderTargets(FRHICommandList& RHICmdLis
 	if (bIsUsingMobileMultiView)
 	{
 		const int32 ScaleFactor = (bIsMobileMultiViewDirectEnabled) ? 1 : 2;
-		if (!bIsMobileMultiViewDirectEnabled)
-		{
-			AllocMobileMultiViewSceneColor(RHICmdList, ScaleFactor);
-		}
 
+		AllocMobileMultiViewSceneColor(RHICmdList, ScaleFactor);
 		AllocMobileMultiViewDepth(RHICmdList, ScaleFactor);
 	}
 #endif
@@ -2215,6 +2218,30 @@ void FSceneRenderTargets::AllocateCommonDepthTargets(FRHICommandList& RHICmdList
 		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(BufferSize, PF_DepthStencil, DefaultDepthClear, TexCreate_None, TexCreate_DepthStencilTargetable, false));
 		Desc.AutoWritable = false;
 		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, AuxiliarySceneDepthZ, TEXT("AuxiliarySceneDepthZ"), true, ERenderTargetTransience::NonTransient);
+	}
+}
+
+void FSceneRenderTargets::AllocateVariableResolutionTexture(FRHICommandList& RHICmdList)
+{
+	const bool bStereo = GEngine->StereoRenderingDevice.IsValid() && GEngine->StereoRenderingDevice->IsStereoEnabled();
+	IStereoRenderTargetManager* const StereoRenderTargetManager = bStereo ? GEngine->StereoRenderingDevice->GetRenderTargetManager() : nullptr;
+	
+	FTexture2DRHIRef Texture;
+	FIntPoint TextureSize;
+
+	// Allocate variable resolution texture for VR foveation if supported
+	if (StereoRenderTargetManager && StereoRenderTargetManager->NeedReAllocateFoveationTexture(VariableResolutionTexture))
+	{
+		VariableResolutionTexture.SafeRelease();
+	}
+	bAllocatedVariableResolutionTexture = StereoRenderTargetManager && StereoRenderTargetManager->AllocateFoveationTexture(0, BufferSize.X, BufferSize.Y, PF_R8G8, 0, TexCreate_None, TexCreate_None, Texture, TextureSize);
+	if (bAllocatedVariableResolutionTexture)
+	{
+		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(TextureSize, PF_R8G8, FClearValueBinding::White, TexCreate_None, TexCreate_None, false));
+		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, VariableResolutionTexture, TEXT("VariableResolution"));
+		const uint32 OldElementSize = VariableResolutionTexture->ComputeMemorySize();
+		VariableResolutionTexture->GetRenderTargetItem().ShaderResourceTexture = VariableResolutionTexture->GetRenderTargetItem().TargetableTexture = Texture;
+		GRenderTargetPool.UpdateElementSize(VariableResolutionTexture, OldElementSize);
 	}
 }
 
@@ -2593,7 +2620,7 @@ EPixelFormat FSceneRenderTargets::GetSceneColorFormat(ERHIFeatureLevel::Type InF
 
 void FSceneRenderTargets::AllocateRenderTargets(FRHICommandListImmediate& RHICmdList, const int32 NumViews)
 {
-	if (BufferSize.X > 0 && BufferSize.Y > 0 && (!AreShadingPathRenderTargetsAllocated(GetSceneColorFormatType()) || !AreRenderTargetClearsValid(GetSceneColorFormatType())))
+	if (BufferSize.X > 0 && BufferSize.Y > 0 && IsAllocateRenderTargetsRequired())
 	{
 		if ((EShadingPath)CurrentShadingPath == EShadingPath::Mobile)
 		{
@@ -2672,6 +2699,8 @@ void FSceneRenderTargets::ReleaseAllTargets()
 
 	EditorPrimitivesColor.SafeRelease();
 	EditorPrimitivesDepth.SafeRelease();
+
+	VariableResolutionTexture.SafeRelease();
 }
 
 void FSceneRenderTargets::ReleaseDynamicRHI()
@@ -2970,6 +2999,22 @@ bool FSceneRenderTargets::AreShadingPathRenderTargetsAllocated(ESceneColorFormat
 			return false;
 		}
 	}
+}
+
+bool FSceneRenderTargets::IsAllocateRenderTargetsRequired() const
+{
+	bool bAllocateRequired = false;
+
+	const bool bStereo = GEngine->StereoRenderingDevice.IsValid() && GEngine->StereoRenderingDevice->IsStereoEnabled();
+	IStereoRenderTargetManager* const StereoRenderTargetManager = bStereo ? GEngine->StereoRenderingDevice->GetRenderTargetManager() : nullptr;
+
+	// HMD controlled foveation textures may be destroyed externally and need a new allocation
+	if (StereoRenderTargetManager && StereoRenderTargetManager->NeedReAllocateFoveationTexture(VariableResolutionTexture))
+	{
+		bAllocateRequired = true;
+	}
+	
+	return bAllocateRequired || !AreShadingPathRenderTargetsAllocated(GetSceneColorFormatType()) || !AreRenderTargetClearsValid(GetSceneColorFormatType());
 }
 
 /*-----------------------------------------------------------------------------
