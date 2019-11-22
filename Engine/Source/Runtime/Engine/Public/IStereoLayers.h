@@ -157,6 +157,8 @@ public:
 		UpdateSplashScreen();
 	}
 
+	bool IsSplashscreenVisible() { return bSplashIsShown; }
+
 	/**
 	* Hide the splash screen and return to normal display.
 	*/

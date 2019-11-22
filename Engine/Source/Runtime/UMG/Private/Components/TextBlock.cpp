@@ -130,6 +130,15 @@ void UTextBlock::SetAutoWrapText(bool InAutoWrapText)
 	}
 }
 
+void UTextBlock::SetWrapTextAt(float InWrapTextAt)
+{
+	WrapTextAt = InWrapTextAt;
+	if (MyTextBlock.IsValid())
+	{
+		MyTextBlock->SetWrapTextAt(InWrapTextAt);
+	}
+}
+
 UMaterialInstanceDynamic* UTextBlock::GetDynamicFontMaterial()
 {
 	if (ensure(Font.FontMaterial))
