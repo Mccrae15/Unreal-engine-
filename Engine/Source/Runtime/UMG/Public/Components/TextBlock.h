@@ -89,6 +89,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Appearance")
 	void SetAutoWrapText(bool InAutoTextWrap);
 
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetWrapTextAt(float InWrapTextAt);
+
 	/**  */
 	UFUNCTION(BlueprintCallable, Category="Appearance")
 	UMaterialInstanceDynamic* GetDynamicFontMaterial();
