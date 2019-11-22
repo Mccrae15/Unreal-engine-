@@ -106,6 +106,16 @@ void UStereoLayerFunctionLibrary::ShowSplashScreen()
 	}
 }
 
+bool UStereoLayerFunctionLibrary::IsSplashScreenVisible()
+{
+	IStereoLayers* StereoLayers = GetStereoLayers();
+	if (StereoLayers)
+	{
+		return StereoLayers->IsSplashscreenVisible();
+	}
+	return false;
+}
+
 void UStereoLayerFunctionLibrary::HideSplashScreen()
 {
 	IXRLoadingScreen* LoadingScreen = GetLoadingScreen();
