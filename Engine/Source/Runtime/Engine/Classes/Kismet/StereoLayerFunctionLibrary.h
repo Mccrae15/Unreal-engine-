@@ -33,6 +33,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "VR", meta = (DeprecatedFunction, DeprecationMessage = "Please use Show Loading Screen instead."))
 	static void ShowSplashScreen();
 
+	UFUNCTION(BlueprintCallable, Category = "VR")
+	bool IsSplashScreenVisible();
+
 	/**
 	* Hide the splash screen and return to normal display.
 	*/
