@@ -1,6 +1,10 @@
 <?xml version='1.0' ?>
 <BuildGraph xmlns="http://www.epicgames.com/BuildGraph" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.epicgames.com/BuildGraph ../../Engine/Build/Graph/Schema.xsd" >
 
+
+	<!-- Ouput directory for the build -->
+	<Option Name="BuiltDirectory" DefaultValue="$(RootDir)/LocalBuilds/Engine/" Description="Directory for outputting the built engine"/>
+
 	<!-- Helper option to make installed build for host platform only -->
 	<Option Name="HostPlatformOnly" Restrict="true|false" DefaultValue="false" Description="A helper option to make an installed build for your host platform only, so that you don't have to disable each platform individually"/>
 
@@ -79,9 +83,9 @@
 	<Option Name="VS2019" Restrict="true|false" DefaultValue="false" Description="Use Visual Studio 2019 to build Windows targets. By default, Visual Studio 2017 is used for maximum compatibility"/>
 	
 	<!-- The local output directory -->
-	<Property Name="LocalInstalledDir" Value="$(RootDir)/LocalBuilds/Engine/Windows"/>
-	<Property Name="LocalInstalledDirMac" Value="$(RootDir)/LocalBuilds/Engine/Mac"/>
-	<Property Name="LocalInstalledDirLinux" Value="$(RootDir)/LocalBuilds/Engine/Linux"/>
+	<Property Name="LocalInstalledDir" Value="$(BuiltDirectory)/Windows"/>
+	<Property Name="LocalInstalledDirMac" Value="$(BuiltDirectory)/Mac"/>
+	<Property Name="LocalInstalledDirLinux" Value="$(BuiltDirectory)/Linux"/>
 
 	<!-- Directory for storing build products like the Compressed DDC, Stripped and Signed files -->
 	<Property Name="SavedOutput" Value="$(RootDir)/Engine/Saved"/>
