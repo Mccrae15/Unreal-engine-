@@ -2126,6 +2126,7 @@ USaveGame* UGameplayStatics::LoadGameFromMemory(const TArray<uint8>& InSaveData)
 
 		FObjectAndNameAsStringProxyArchive Ar(MemoryReader, true);
 		OutSaveGameObject->Serialize(Ar);
+		OutSaveGameObject->GameLoaded();
 	}
 
 	return OutSaveGameObject;
