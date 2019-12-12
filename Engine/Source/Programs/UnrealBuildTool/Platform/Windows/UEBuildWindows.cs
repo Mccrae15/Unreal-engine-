@@ -1420,7 +1420,7 @@ namespace UnrealBuildTool
 			VersionNumber WindowsSdkVersion = null;
 			if(DesiredVersion != null)
 			{
-				if(String.Compare(DesiredVersion, "Latest", StringComparison.InvariantCultureIgnoreCase) == 0 && CachedWindowsSdkDirs.Count > 0)
+				if(String.Compare(DesiredVersion, "10.0.16299.0", StringComparison.InvariantCultureIgnoreCase) == 0 && CachedWindowsSdkDirs.Count > 0)
 				{
 					WindowsSdkVersion = CachedWindowsSdkDirs.OrderBy(x => x.Key).Last().Key;
 				}
