@@ -23,6 +23,9 @@ FSettings::FSettings() :
 	, GPULevel(3)
 	, ColorScale(ovrpVector4f{1,1,1,1})
 	, ColorOffset(ovrpVector4f{0,0,0,0})
+#if WITH_LATE_LATCHING_CODE
+	, bLateLatching(false)
+#endif
 {
 	Flags.Raw = 0;
 	Flags.bHMDEnabled = true;

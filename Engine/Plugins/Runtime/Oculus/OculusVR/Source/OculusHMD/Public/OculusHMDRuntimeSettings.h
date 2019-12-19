@@ -66,6 +66,12 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool bRecenterHMDWithController;
 
+//#if WITH_LATE_LATCHING_CODE
+	/** [Experimental]Enable Late latching for reducing HMD and controller latency, improve tracking prediction quality, multiview and vulkan has to be enabled for this featuretha */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	bool bLateLatching;
+//#endif
+
 private:
 	void LoadFromIni();
 

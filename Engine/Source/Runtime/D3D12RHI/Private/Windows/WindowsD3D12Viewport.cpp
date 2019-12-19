@@ -16,6 +16,14 @@ static const uint32 WindowsDefaultNumBackBuffers = 3;
 
 extern FD3D12Texture2D* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelFormat, uint32 SizeX, uint32 SizeY, IDXGISwapChain* SwapChain, uint32 BackBufferIndex);
 
+static int32 GD3D12UseAllowTearing = 1;
+static FAutoConsoleVariableRef CVarD3DUseAllowTearing(
+	TEXT("r.D3D12.UseAllowTearing"),
+	GD3D12UseAllowTearing,
+	TEXT("Enable new dxgi flip mode with d3d12"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly
+);
+
 FD3D12Viewport::FD3D12Viewport(class FD3D12Adapter* InParent, HWND InWindowHandle, uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen, EPixelFormat InPreferredPixelFormat) :
 	FD3D12AdapterChild(InParent),
 	LastFlipTime(0),
@@ -59,16 +67,19 @@ void FD3D12Viewport::Init()
 
 	bAllowTearing = false;
 	IDXGIFactory* Factory = Adapter->GetDXGIFactory2();
-	if(Factory)
+	if (GD3D12UseAllowTearing)
 	{
-		TRefCountPtr<IDXGIFactory5> Factory5;
-		Factory->QueryInterface(IID_PPV_ARGS(Factory5.GetInitReference()));
-		if (Factory5.IsValid())
+		if (Factory)
 		{
-			BOOL AllowTearing;
-			if(SUCCEEDED(Factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &AllowTearing, sizeof(AllowTearing))) && AllowTearing)
+			TRefCountPtr<IDXGIFactory5> Factory5;
+			Factory->QueryInterface(IID_PPV_ARGS(Factory5.GetInitReference()));
+			if (Factory5.IsValid())
 			{
-				bAllowTearing = true;
+				BOOL AllowTearing;
+				if (SUCCEEDED(Factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &AllowTearing, sizeof(AllowTearing))) && AllowTearing)
+				{
+					bAllowTearing = true;
+				}
 			}
 		}
 	}

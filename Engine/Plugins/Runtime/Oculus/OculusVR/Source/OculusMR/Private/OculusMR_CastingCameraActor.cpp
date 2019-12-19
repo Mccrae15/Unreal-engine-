@@ -462,15 +462,27 @@ void AOculusMR_CastingCameraActor::Tick(float DeltaTime)
 
 			if (IsVulkanPlatform(GMaxRHIShaderPlatform))
 			{
-				// The Vulkan RHI's implementation of GetNativeResource is different and returns the VkImage cast
-				// as a void* instead of a pointer to the VkImage, so we need this workaround
-				BackgroundTexture = (void*)BackgroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource();
-				ForegroundTexture = (void*)ForegroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource();
+				ExecuteOnRenderThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
+				{
+					ExecuteOnRHIThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
+					{
+						// The Vulkan RHI's implementation of GetNativeResource is different and returns the VkImage cast
+						// as a void* instead of a pointer to the VkImage, so we need this workaround
+						BackgroundTexture = (void*)BackgroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource();
+						ForegroundTexture = (void*)ForegroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource();
+					});
+				});
 			}
 			else
 			{
-				BackgroundTexture = *((void**)BackgroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource());
-				ForegroundTexture = *((void**)ForegroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource());
+				ExecuteOnRenderThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
+				{
+					ExecuteOnRHIThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
+					{
+						BackgroundTexture = *((void**)BackgroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource());
+						ForegroundTexture = *((void**)ForegroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource());
+					});
+				});
 			}
 			ovrp_Media_EncodeMrcFrameWithDualTextures(BackgroundTexture, ForegroundTexture, AudioBuffers[EncodeIndex].GetData(), AudioBuffers[EncodeIndex].Num() * sizeof(float), NumChannels, AudioTime, &SyncId);
 		}
@@ -854,6 +866,7 @@ void AOculusMR_CastingCameraActor::UpdateTrackedCameraPosition()
 #endif
 	FPose CameraPose = CameraTrackedObjectPose * CameraTrackingSpacePose;
 	CameraPose = CameraPose * FPose(MRState->TrackedCamera.UserRotation.Quaternion(), MRState->TrackedCamera.UserOffset);
+	CameraPose.Position = CameraPose.Position * MRState->ScalingFactor;
 
 	float Distance = 0.0f;
 	if (MRSettings->ClippingReference == EOculusMR_ClippingReference::CR_TrackingReference)
@@ -1122,6 +1135,7 @@ void AOculusMR_CastingCameraActor::SetupMRCScreen()
 #endif
 		UpdateRenderTargetSize();
 
+		GetCaptureComponent2D()->bDisableFlipCopyGLES = true;
 		// LDR for gamma correction and post process
 		GetCaptureComponent2D()->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
 
@@ -1134,6 +1148,7 @@ void AOculusMR_CastingCameraActor::SetupMRCScreen()
 		{
 			ForegroundCaptureActor = GetWorld()->SpawnActor<ASceneCapture2D>();
 
+			ForegroundCaptureActor->GetCaptureComponent2D()->bDisableFlipCopyGLES = true;
 			// LDR for gamma correction and post process
 			ForegroundCaptureActor->GetCaptureComponent2D()->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
 #if PLATFORM_ANDROID

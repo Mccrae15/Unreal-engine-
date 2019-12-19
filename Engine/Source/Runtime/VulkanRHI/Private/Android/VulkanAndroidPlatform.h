@@ -88,6 +88,10 @@ public:
 		return false;
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	static bool SupportsUniformBufferPatching();
+#endif
+
 	// Assume most devices can't use the extra cores for running parallel tasks
 	static bool SupportParallelRenderingTasks() { return false; }
 

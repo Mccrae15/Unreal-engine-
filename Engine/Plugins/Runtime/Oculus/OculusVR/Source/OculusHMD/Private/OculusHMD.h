@@ -212,7 +212,10 @@ public:
 	virtual void PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
 	virtual int32 GetPriority() const override;
 	virtual bool IsActiveThisFrame(class FViewport* InViewport) const override;
-
+#if WITH_LATE_LATCHING_CODE
+	virtual bool LateLatchingEnabled() const override; 
+	virtual void PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
+#endif
 
 public:
 	FOculusHMD(const FAutoRegister&);

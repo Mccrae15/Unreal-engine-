@@ -1583,8 +1583,9 @@ FVulkanPipelineStateCacheManager::FGfxPipelineEntry* FVulkanPipelineStateCacheMa
 	// check that any depth fetch is actually using depth read sub-pass
 	if (OutGfxEntry->Layout->UsesInputAttachment(FVulkanShaderHeader::EAttachmentType::Depth))
 	{
-		check(PSOInitializer.SubpassHint == ESubpassHint::DepthReadSubpass);
-		check(PSOInitializer.SubpassIndex == 1);
+		// OCULUS-FIX : remove VK subpasses from being used until we have a driver fix.
+		//check(PSOInitializer.SubpassHint == ESubpassHint::DepthReadSubpass);
+		//check(PSOInitializer.SubpassIndex == 1);
 	}
 	OutGfxEntry->SubpassIndex = PSOInitializer.SubpassIndex;
 

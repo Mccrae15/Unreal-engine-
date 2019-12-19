@@ -1,5 +1,3 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
 #include "OculusBuildAnalytics.h"
 #include "GameProjectGenerationModule.h"
 #include "OculusHMDModule.h"
@@ -36,6 +34,9 @@ FOculusBuildAnalytics::FOculusBuildAnalytics()
 	bool TelemetryEnabled = false;
 	if (!GConfig->GetBool(TEXT("/Script/OculusEditor.OculusEditorSettings"), TEXT("bEnableOculusBuildTelemetry"), TelemetryEnabled, GEditorIni))
 	{
+#if WITH_OCULUS_PRIVATE_CODE
+		TelemetryEnabled = true;
+#endif
 		GConfig->SetBool(TEXT("/Script/OculusEditor.OculusEditorSettings"), TEXT("bEnableOculusBuildTelemetry"), TelemetryEnabled, GEditorIni);
 		GConfig->Flush(0);
 	}
@@ -169,14 +170,14 @@ void FOculusBuildAnalytics::OnStageCompleted(const FString& StageName, double Ti
 		FString TaskName;
 		switch (CurrentBuildStage)
 		{
-		case COOK_IN_EDITOR_STAGE:	TaskName = "build_step_editor_cook";	break;
-		case LAUNCH_UAT_STAGE:		TaskName = "build_step_launch_uat";		break;
-		case COMPILE_STAGE:			TaskName = "build_step_compile";		break;
-		case COOK_STAGE:			TaskName = "build_step_cook";			break;
-		case DEPLOY_STAGE:			TaskName = "build_step_deploy";			break;
-		case PACKAGE_STAGE:			TaskName = "build_step_package";		break;
-		case RUN_STAGE:				return;
-		default:					TaskName = "build_step_undefined";		break;
+			case COOK_IN_EDITOR_STAGE:	TaskName = "build_step_editor_cook";	break;
+			case LAUNCH_UAT_STAGE:		TaskName = "build_step_launch_uat";		break;
+			case COMPILE_STAGE:			TaskName = "build_step_compile";		break;
+			case COOK_STAGE:			TaskName = "build_step_cook";			break;
+			case DEPLOY_STAGE:			TaskName = "build_step_deploy";			break;
+			case PACKAGE_STAGE:			TaskName = "build_step_package";		break;
+			case RUN_STAGE:				return;
+			default:					TaskName = "build_step_undefined";		break;
 		}
 
 		if (AndroidPackageTime > 0)

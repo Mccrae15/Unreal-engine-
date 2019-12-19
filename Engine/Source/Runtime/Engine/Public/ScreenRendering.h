@@ -72,17 +72,20 @@ public:
 	{
 		InTexture.Bind(Initializer.ParameterMap,TEXT("InTexture"), SPF_Mandatory);
 		InTextureSampler.Bind(Initializer.ParameterMap,TEXT("InTextureSampler"));
+		InMipLevelParameter.Bind(Initializer.ParameterMap, TEXT("MipLevel"));
 	}
 	FScreenPS() {}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FTexture* Texture)
+	void SetParameters(FRHICommandList& RHICmdList, const FTexture* Texture, int MipLevel = 0)
 	{
 		SetTextureParameter(RHICmdList, GetPixelShader(),InTexture,InTextureSampler,Texture);
+		SetShaderValue(RHICmdList, GetPixelShader(), InMipLevelParameter, MipLevel);
 	}
 
-	void SetParameters(FRHICommandList& RHICmdList, FRHISamplerState* SamplerStateRHI, FRHITexture* TextureRHI)
+	void SetParameters(FRHICommandList& RHICmdList, FRHISamplerState* SamplerStateRHI, FRHITexture* TextureRHI, int MipLevel = 0)
 	{
 		SetTextureParameter(RHICmdList, GetPixelShader(),InTexture,InTextureSampler,SamplerStateRHI,TextureRHI);
+		SetShaderValue(RHICmdList, GetPixelShader(), InMipLevelParameter, MipLevel);
 	}
 
 	virtual bool Serialize(FArchive& Ar) override
@@ -90,12 +93,14 @@ public:
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
 		Ar << InTexture;
 		Ar << InTextureSampler;
+		Ar << InMipLevelParameter;
 		return bShaderHasOutdatedParameters;
 	}
 
 private:
 	FShaderResourceParameter InTexture;
 	FShaderResourceParameter InTextureSampler;
+	FShaderParameter InMipLevelParameter;
 };
 
 /**
@@ -113,17 +118,20 @@ public:
 	{
 		InTexture.Bind(Initializer.ParameterMap, TEXT("InTexture"), SPF_Mandatory);
 		InTextureSampler.Bind(Initializer.ParameterMap, TEXT("InTextureSampler"));
+		InMipLevelParameter.Bind(Initializer.ParameterMap, TEXT("MipLevel"));
 	}
 	FScreenPSsRGBSource() {}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FTexture* Texture)
+	void SetParameters(FRHICommandList& RHICmdList, const FTexture* Texture, int MipLevel = 0)
 	{
 		SetTextureParameter(RHICmdList, GetPixelShader(), InTexture, InTextureSampler, Texture);
+		SetShaderValue(RHICmdList, GetPixelShader(), InMipLevelParameter, MipLevel);
 	}
 
-	void SetParameters(FRHICommandList& RHICmdList, FRHISamplerState* SamplerStateRHI, FRHITexture* TextureRHI)
+	void SetParameters(FRHICommandList& RHICmdList, FRHISamplerState* SamplerStateRHI, FRHITexture* TextureRHI, int MipLevel = 0)
 	{
 		SetTextureParameter(RHICmdList, GetPixelShader(), InTexture, InTextureSampler, SamplerStateRHI, TextureRHI);
+		SetShaderValue(RHICmdList, GetPixelShader(), InMipLevelParameter, MipLevel);
 	}
 
 	virtual bool Serialize(FArchive& Ar) override
@@ -131,12 +139,14 @@ public:
 		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
 		Ar << InTexture;
 		Ar << InTextureSampler;
+		Ar << InMipLevelParameter;
 		return bShaderHasOutdatedParameters;
 	}
 
 private:
 	FShaderResourceParameter InTexture;
 	FShaderResourceParameter InTextureSampler;
+	FShaderParameter InMipLevelParameter;
 };
 
 class FScreenPS_OSE : public FGlobalShader

@@ -88,7 +88,6 @@ public:
 	FIntRect EyeUnscaledRenderViewport[2];
 
 	ovrpMatrix4f EyeProjectionMatrices[2]; // 0 - left, 1 - right, same as Views
-	ovrpMatrix4f PerspectiveProjection[2]; // used for calc ortho projection matrices
 
 	FIntPoint RenderTargetSize;
 	float PixelDensity;
@@ -102,6 +101,10 @@ public:
 	EFixedFoveatedRenderingLevel FFRLevel;
 	int CPULevel;
 	int GPULevel;
+
+#if WITH_LATE_LATCHING_CODE
+	bool bLateLatching;
+#endif
 
 	ovrpVector4f ColorScale, ColorOffset;
 	bool bApplyColorScaleAndOffsetToAllLayers;

@@ -76,7 +76,11 @@ TAutoConsoleVariable<int32> CVarRenderTargetSwitchWorkaround(
 
 TAutoConsoleVariable<int32> CVarPostProcessingPropagateAlpha(
 	TEXT("r.PostProcessing.PropagateAlpha"),
+#if WITH_OCULUS_PRIVATE_CODE
+	1,   // Although Alpha is not required, but we temporally need it to workaround Oculus depth compositing issues, will revert once PC run time's proper fix landed.
+#else
 	0,
+#endif
 	TEXT("0 to disable scene alpha channel support in the post processing.\n")
 	TEXT(" 0: disabled (default);\n")
 	TEXT(" 1: enabled in linear color space;\n")

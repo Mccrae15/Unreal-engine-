@@ -1938,6 +1938,27 @@ namespace OculusHMD
 		return GEngine && GEngine->IsStereoscopic3D(InViewport);
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	bool FOculusHMD::LateLatchingEnabled() const
+	{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS_VULKAN && PLATFORM_ANDROID
+		// No LateLatching supported for non Multi view ATM due to viewUniformBuffer reusing.
+		return Settings->bLateLatching && Settings->Flags.bIsUsingDirectMultiview;
+#else
+		return false;
+#endif
+	}
+
+	void FOculusHMD::PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+	{
+		CheckInRenderThread();
+		FGameFrame* CurrentFrame = GetFrame_RenderThread();
+		if (CurrentFrame)
+		{
+			CurrentFrame->Flags.bRTLateUpdateDone = false; // Allow LateLatching to update poses again
+		}
+	}
+#endif
 
 	FOculusHMD::FOculusHMD(const FAutoRegister& AutoRegister)
 		: FHeadMountedDisplayBase(nullptr)
@@ -2534,8 +2555,11 @@ namespace OculusHMD
 			Settings->EyeProjectionMatrices[0] = ovrpMatrix4f_Projection(frustumLeft, true);
 			Settings->EyeProjectionMatrices[1] = ovrpMatrix4f_Projection(frustumRight, true);
 
-			Settings->PerspectiveProjection[0] = ovrpMatrix4f_Projection(frustumLeft, false);
-			Settings->PerspectiveProjection[1] = ovrpMatrix4f_Projection(frustumRight, false);
+			if (Frame.IsValid())
+			{
+				Frame->Fov[0] = EyeLayerDesc.Fov[0];
+				Frame->Fov[1] = EyeLayerDesc.Fov[1];
+			}
 
 			// Flag if need to recreate render targets
 			if (!EyeLayer->CanReuseResources(EyeLayer_RenderThread.Get()))
@@ -3523,6 +3547,9 @@ namespace OculusHMD
 		Settings->GPULevel = HMDSettings->GPULevel;
 		Settings->PixelDensityMin = HMDSettings->PixelDensityMin;
 		Settings->PixelDensityMax = HMDSettings->PixelDensityMax;
+#if WITH_LATE_LATCHING_CODE
+		Settings->bLateLatching = HMDSettings->bLateLatching;
+#endif
 	}
 
 	/// @endcond

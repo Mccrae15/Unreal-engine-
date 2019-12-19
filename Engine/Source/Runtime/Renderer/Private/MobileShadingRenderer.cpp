@@ -326,6 +326,47 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 	OnStartRender(RHICmdList);
 }
 
+#if WITH_LATE_LATCHING_CODE
+void FMobileSceneRenderer::BeginLateLatching(FRHICommandListImmediate& RHICmdList)
+{
+	SCOPED_NAMED_EVENT(BeginLateLatching, FColor::Orange);
+	uint32 FrameNumber = ViewFamily.FrameNumber;
+	Scene->UniformBuffers.ViewUniformBuffer->FlagPatchingFrameNumber(FrameNumber);
+	Scene->UniformBuffers.InstancedViewUniformBuffer->FlagPatchingFrameNumber(FrameNumber);
+	RHICmdList.BeginLateLatching(FrameNumber);
+}
+
+void FMobileSceneRenderer::EndLateLatching(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+{
+	SCOPED_NAMED_EVENT(ApplyLateLatching, FColor::Orange);
+
+	// Flush to reduce post latelatching overhead
+	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+
+	for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
+	{
+		ViewFamily.ViewExtensions[ViewExt]->PreLateLatchingViewFamily_RenderThread(RHICmdList, ViewFamily);
+	}
+
+	for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
+	{
+		ViewFamily.ViewExtensions[ViewExt]->LateLatchingViewFamily_RenderThread(RHICmdList, ViewFamily);
+		for (int ViewIndex = 0; ViewIndex < ViewFamily.Views.Num(); ViewIndex++)
+		{
+			ViewFamily.ViewExtensions[ViewExt]->LateLatchingView_RenderThread(RHICmdList, ViewFamily, Views[ViewIndex]);
+		}
+	}
+
+	for (int ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+	{
+		Views[ViewIndex].UpdateLateLatchData();
+	}
+
+	Scene->UniformBuffers.CachedView = NULL;
+	Scene->UniformBuffers.UpdateViewUniformBuffer(View);
+	RHICmdList.EndLateLatching();
+}
+#endif
 /** 
 * Renders the view family. 
 */
@@ -411,6 +452,13 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	// Find the visible primitives.
 	InitViews(RHICmdList);
+
+#if WITH_LATE_LATCHING_CODE
+	if (ViewFamily.bLateLatchingEnabled)
+	{
+		BeginLateLatching(RHICmdList);
+	}
+#endif
 
 	if (GRHINeedsExtraDeletionLatency || !GRHICommandList.Bypass())
 	{
@@ -544,7 +592,10 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		FoveationTexture,
 		FExclusiveDepthStencil::DepthWrite_StencilWrite
 	);
-	SceneColorRenderPassInfo.SubpassHint = ESubpassHint::DepthReadSubpass;
+
+	// OCULUS-FIX : remove VK subpasses from being used until we have a driver fix.
+	//SceneColorRenderPassInfo.SubpassHint = ESubpassHint::DepthReadSubpass;
+	SceneColorRenderPassInfo.SubpassHint = ESubpassHint::None;
 	SceneColorRenderPassInfo.NumOcclusionQueries = ComputeNumOcclusionQueriesToBatch();
 	SceneColorRenderPassInfo.bOcclusionQueries = SceneColorRenderPassInfo.NumOcclusionQueries != 0;
 	SceneColorRenderPassInfo.bMultiviewPass = View.bIsMobileMultiViewEnabled;
@@ -593,7 +644,8 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	}
 
 	// scene depth is read only and can be fetched
-	RHICmdList.NextSubpass();
+	// OCULUS-FIX : remove VK subpasses from being used until we have a driver fix.
+	//RHICmdList.NextSubpass();
 		
 	// Split if we need to render translucency in a separate render pass
 	if (bRequiresTranslucencyPass)
@@ -730,6 +782,13 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	}
 
 	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_SceneEnd));
+
+#if WITH_LATE_LATCHING_CODE
+	if (ViewFamily.bLateLatchingEnabled)
+	{
+		EndLateLatching(RHICmdList, View);
+	}
+#endif
 
 	RenderFinish(RHICmdList);
 
