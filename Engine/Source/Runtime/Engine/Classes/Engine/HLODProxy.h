@@ -15,7 +15,7 @@ class UStaticMeshComponent;
 class UTexture;
 
 /** This asset acts as a proxy to a static mesh for ALODActors to display */
-UCLASS()
+UCLASS(BlueprintType)
 class ENGINE_API UHLODProxy : public UObject
 {
 	GENERATED_BODY()
@@ -80,7 +80,7 @@ public:
 	bool ContainsDataForActor(const ALODActor* InLODActor) const;
 #endif
 
-private:
+public:
 #if WITH_EDITOR
 	// Remove all assets associated with the given proxy mesh
 	void RemoveAssets(const FHLODProxyMesh& ProxyMesh);
@@ -96,7 +96,7 @@ private:
 #endif
 
 	/** All the mesh proxies we contain */
-	UPROPERTY(VisibleAnywhere, Category = "Proxy Mesh")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy Mesh")
 	TArray<FHLODProxyMesh> ProxyMeshes;
 
 	UPROPERTY(VisibleAnywhere, Category = "Proxy Mesh")

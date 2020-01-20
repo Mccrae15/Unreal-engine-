@@ -373,9 +373,11 @@ TArray<FHierarchicalSimplification>& AWorldSettings::GetHierarchicalLODSetup()
 	{
 		return HLODSetupAsset->GetDefaultObject<UHierarchicalLODSetup>()->HierarchicalLODSetup;
 	}
-	else if (HLODSettings->bForceSettingsInAllMaps && HLODSettings->DefaultSetup.LoadSynchronous())
+	else if (HLODSettings->bForceSettingsInAllMaps)
 	{
-		return HLODSettings->DefaultSetup->GetDefaultObject<UHierarchicalLODSetup>()->HierarchicalLODSetup;
+		UClass* SettingsClass = HLODSettings->DefaultSetup.LoadSynchronous();
+		return SettingsClass != nullptr ? HLODSettings->DefaultSetup->GetDefaultObject<UHierarchicalLODSetup>()->HierarchicalLODSetup : HierarchicalLODSetup;
+		
 	}
 
 	return HierarchicalLODSetup;

@@ -39,6 +39,7 @@ public:
 	UE_DEPRECATED(4.20, "Use different signature using UHLODProxy")
 	virtual bool BuildStaticMeshForLODActor(ALODActor* LODActor, UPackage* AssetsOuter, const FHierarchicalSimplification& LODSetup, UMaterialInterface* InBaseMaterial) override;
 	virtual bool BuildStaticMeshForLODActor(ALODActor* LODActor, UHLODProxy* Proxy, const FHierarchicalSimplification& LODSetup, UMaterialInterface* InBaseMaterial) override;
+	int32 SetLods(UStaticMesh * StaticMesh, ALODActor* LODActor, bool bApplyChanges);
 	virtual EClusterGenerationError ShouldGenerateCluster(AActor* Actor, const int32 HLODLevelIndex) override;
 	virtual ALODActor* GetParentLODActor(const AActor* InActor) override;
 	virtual void DestroyCluster(ALODActor* InActor) override;
