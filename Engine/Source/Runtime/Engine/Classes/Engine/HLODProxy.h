@@ -9,7 +9,7 @@
 class UStaticMesh;
 
 /** A mesh proxy entry */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FHLODProxyMesh
 {
 	GENERATED_BODY()
@@ -45,13 +45,13 @@ struct FHLODProxyMesh
 	/** Get the key for this proxy mesh */
 	const FName& GetKey() const { return Key; }
 
-private:
+public:
 	/** The ALODActor that we were generated from */
 	UPROPERTY(VisibleAnywhere, Category = "Proxy Mesh")
 	TLazyObjectPtr<ALODActor> LODActor;
 
 	/** The mesh used to display this proxy */
-	UPROPERTY(VisibleAnywhere, Category = "Proxy Mesh")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy Mesh")
 	UStaticMesh* StaticMesh;
 
 	/** The key generated from an ALODActor. If this differs from that generated from the ALODActor, then the mesh needs regenerating. */
@@ -99,7 +99,6 @@ public:
 	bool ContainsDataForActor(const ALODActor* InLODActor) const;
 #endif
 
-private:
 #if WITH_EDITORONLY_DATA
 	/** Keep hold of the level in the editor to allow for package cleaning etc. */
 	UPROPERTY(VisibleAnywhere, Category = "Proxy Mesh")
@@ -107,6 +106,6 @@ private:
 #endif
 
 	/** All the mesh proxies we contain */
-	UPROPERTY(VisibleAnywhere, Category = "Proxy Mesh")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy Mesh")
 	TArray<FHLODProxyMesh> ProxyMeshes;
 };
