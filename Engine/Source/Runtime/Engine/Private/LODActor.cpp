@@ -186,6 +186,9 @@ ALODActor::ALODActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, LODDrawDistance(5000)
 	, bHasActorTriedToRegisterComponents(false)
+	, ForceIsBuilt(false)
+	, OverrideGlobalReductionSettings(false)
+	, ReductionOptions()
 {
 	SetCanBeDamaged(false);
 
@@ -225,7 +228,7 @@ void ALODActor::SetupComponent(UStaticMeshComponent* Component)
 	bool bCastsStaticShadow = false;
 	bool bCastsDynamicShadow = false;
 
-	Component->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+	Component->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 	Component->Mobility = EComponentMobility::Static;
 	Component->SetGenerateOverlapEvents(false);
 	Component->CastShadow = bCastsShadow;
@@ -342,6 +345,7 @@ const TArray<float>& ALODActor::GetHLODDistanceOverride()
 
 void ALODActor::UpdateOverrideTransitionDistance()
 {
+	/*
 	const int32 NumDistances = ALODActor::HLODDistances.Num();
 	// Determine correct distance index to apply to ensure combinations of different levels will work			
 	const int32 DistanceIndex = [&]()
@@ -365,6 +369,19 @@ void ALODActor::UpdateOverrideTransitionDistance()
 	{
 		float MinDrawDistance = (!HLODDistances.IsValidIndex(DistanceIndex) || FMath::IsNearlyZero(HLODDistances[DistanceIndex])) ? LODDrawDistance : ALODActor::HLODDistances[DistanceIndex];
 		SetComponentsMinDrawDistance(MinDrawDistance, true);
+	}
+	*/
+
+	int32 wantedIndex = LODLevel - 1;
+	float newValue = LODDrawDistance;
+	if (HLODDistances.IsValidIndex(wantedIndex))
+	{
+		if (!FMath::IsNearlyZero(HLODDistances[wantedIndex]))
+		{
+			newValue = ALODActor::HLODDistances[wantedIndex];
+			LODDrawDistance = newValue;
+			SetComponentsMinDrawDistance(newValue, true);
+		}
 	}
 }
 
@@ -478,6 +495,11 @@ void ALODActor::StartDitherTransition()
 	PrimaryActorTick.SetTickFunctionEnable(bNeedsDrawDistanceReset);
 }
 
+UStaticMesh * ALODActor::getStaticMesh()
+{
+	return StaticMeshComponent->GetStaticMesh();
+}
+
 void ALODActor::UpdateRegistrationToMatchMaximumLODLevel()
 {
 	// Determine if we can show this HLOD level and allow or prevent the SMC from being registered
@@ -580,6 +602,10 @@ void ALODActor::SetDrawDistance(float InDistance)
 
 const bool ALODActor::IsBuilt(bool bInForce/*=false*/) const
 {
+	if (ForceIsBuilt)
+	{
+		return true;
+	}
 	auto IsBuiltHelper = [this]()
 	{
 		// Ensure all subactors are linked to a LOD static mesh component.

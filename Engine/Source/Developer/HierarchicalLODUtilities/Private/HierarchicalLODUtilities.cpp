@@ -521,6 +521,11 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 			
 			LODActor->DetermineShadowingFlags();
 
+			
+			if (LODActor->OverrideGlobalReductionSettings)
+			{
+				SetLods(MainMesh, LODActor, true);
+			}
 			// Link proxy to actor
 			const UHLODProxy* PreviousProxy = LODActor->GetProxy();
 			Proxy->AddMesh(LODActor, MainMesh, UHLODProxy::GenerateKeyForActor(LODActor));
@@ -572,8 +577,77 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 			LODActor->SetupImposters(ImposterBatch.Key, ImposterBatch.Value.StaticMesh, ImposterBatch.Value.Transforms);
 		}
 	}
-
 	return true;
+	
+}
+
+int32 FHierarchicalLODUtilities::SetLods(UStaticMesh* StaticMesh, ALODActor* LODActor, bool bApplyChanges)
+{
+
+	FHLODMeshReductionOptions ReductionOptions = LODActor->ReductionOptions;
+	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+
+	if (StaticMesh == nullptr)
+	{
+		//UE_LOG(LogEditorScripting, Error, TEXT("SetLODs: The StaticMesh is null."));
+		return -1;
+	}
+
+	// If LOD 0 does not exist, warn and return
+	if (StaticMesh->GetNumSourceModels() == 0)
+	{
+		//UE_LOG(LogEditorScripting, Error, TEXT("SetLODs: This StaticMesh does not have LOD 0."));
+		return -1;
+	}
+
+	if (ReductionOptions.ReductionSettings.Num() == 0)
+	{
+		//UE_LOG(LogEditorScripting, Error, TEXT("SetLODs: Nothing done as no LOD settings were provided."));
+		return -1;
+	}
+
+	if (bApplyChanges)
+	{
+		StaticMesh->Modify();
+	}
+
+	// Resize array of LODs to only keep LOD 0
+	StaticMesh->SetNumSourceModels(1);
+
+	// Set up LOD 0
+	StaticMesh->GetSourceModel(0).ReductionSettings.PercentTriangles = ReductionOptions.ReductionSettings[0].PercentTriangles;
+	StaticMesh->GetSourceModel(0).ScreenSize = ReductionOptions.ReductionSettings[0].ScreenSize;
+
+	int32 LODIndex = 1;
+	for (; LODIndex < ReductionOptions.ReductionSettings.Num(); ++LODIndex)
+	{
+		// Create new SourceModel for new LOD
+		FStaticMeshSourceModel& SrcModel = StaticMesh->AddSourceModel();
+
+		// Copy settings from previous LOD
+		SrcModel.BuildSettings = StaticMesh->GetSourceModel(LODIndex - 1).BuildSettings;
+		SrcModel.ReductionSettings = StaticMesh->GetSourceModel(LODIndex - 1).ReductionSettings;
+
+		// Modify reduction settings based on user's requirements
+		SrcModel.ReductionSettings.PercentTriangles = ReductionOptions.ReductionSettings[LODIndex].PercentTriangles;
+		SrcModel.ScreenSize = ReductionOptions.ReductionSettings[LODIndex].ScreenSize;
+
+		// Stop when reaching maximum of supported LODs
+		if (StaticMesh->GetNumSourceModels() == MAX_STATIC_MESH_LODS)
+		{
+			break;
+		}
+	}
+
+	StaticMesh->bAutoComputeLODScreenSize = ReductionOptions.bAutoComputeLODScreenSize ? 1 : 0;
+
+	if (bApplyChanges)
+	{
+		// Request re-building of mesh with new LODs
+		StaticMesh->PostEditChange();
+
+	}
+	return 0;
 }
 
 bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, UPackage* AssetsOuter, const FHierarchicalSimplification& LODSetup)
@@ -605,7 +679,7 @@ EClusterGenerationError FHierarchicalLODUtilities::ShouldGenerateCluster(AActor*
 	ALODActor* LODActor = Cast<ALODActor>(Actor);
 	if (LODActor)
 	{
-		return EClusterGenerationError::LODActor;
+		return EClusterGenerationError::/*LODActor*/ValidActor;
 	}
 
 	FVector Origin, Extent;

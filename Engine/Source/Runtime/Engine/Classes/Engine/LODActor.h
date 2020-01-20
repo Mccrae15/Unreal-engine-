@@ -25,7 +25,49 @@ extern ENGINE_API TAutoConsoleVariable<FString> CVarHLODDistanceOverride;
  * @see UStaticMesh
  */
 
-UCLASS(notplaceable, hidecategories = (Object, Collision, Display, Input, Blueprint, Transform, Physics))
+USTRUCT(BlueprintType)
+struct FHLODMeshReductionSettings
+{
+	GENERATED_BODY()
+
+		FHLODMeshReductionSettings()
+		: PercentTriangles(0.5f)
+		, ScreenSize(0.5f)
+	{ }
+
+	// Percentage of triangles to keep. Ranges from 0.0 to 1.0: 1.0 = no reduction, 0.0 = no triangles.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+		float PercentTriangles;
+
+	// ScreenSize to display this LOD. Ranges from 0.0 to 1.0.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+		float ScreenSize;
+};
+
+USTRUCT(BlueprintType)
+struct FHLODMeshReductionOptions
+{
+	GENERATED_BODY()
+
+		FHLODMeshReductionOptions()
+		: bAutoComputeLODScreenSize(true)
+	{ }
+
+	// If true, the screen sizes at which LODs swap are computed automatically
+	// @note that this is displayed as 'Auto Compute LOD Distances' in the UI
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+		bool bAutoComputeLODScreenSize;
+
+	// Array of reduction settings to apply to each new LOD mesh.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+		TArray<FHLODMeshReductionSettings> ReductionSettings;
+};
+
+
+
+
+
+UCLASS(notplaceable, hidecategories = (Object, Display, Input, Blueprint, Transform, Physics))
 class ENGINE_API ALODActor : public AActor
 {
 	GENERATED_UCLASS_BODY()
@@ -51,10 +93,18 @@ private:
 	FName Key;
 
 	/** what distance do you want this to show up instead of SubActors */
-	UPROPERTY(Category = LODActor, VisibleAnywhere)
+	UPROPERTY(Category = LODActor, EditAnywhere)
 	float LODDrawDistance;
 
 public:
+
+	/**
+	 *	Specifies which mesh LOD to use as occluder geometry for software occlusion
+	 *  Set to -1 to not use this mesh as occluder
+	 */
+	UPROPERTY(EditAnywhere, Category = StaticMesh, AdvancedDisplay, meta = (DisplayName = "LOD For Occluder Mesh"))
+		int32 LODForOccluderMesh = -1;
+
 	/** The hierarchy level of this actor; the first tier of HLOD is level 1, the second tier is level 2 and so on. */
 	UPROPERTY(Category=LODActor, VisibleAnywhere)
 	int32 LODLevel;
@@ -62,6 +112,15 @@ public:
 	UPROPERTY(Category=LODActor, VisibleAnywhere)
 	TArray<AActor*> SubActors;
 	
+	UPROPERTY(Category = LODActor, EditAnywhere, BlueprintReadWrite)
+	bool ForceIsBuilt;
+
+	UPROPERTY(Category = LODActor, EditAnywhere, BlueprintReadWrite)
+	FHLODMeshReductionOptions ReductionOptions;
+
+	UPROPERTY(Category = LODActor, EditAnywhere, BlueprintReadWrite)
+	bool OverrideGlobalReductionSettings;
+
 	UPROPERTY()
 	uint8 CachedNumHLODLevels;
 
@@ -84,6 +143,15 @@ public:
 	void PauseDitherTransition();
 	/** Makes the actor tickable and according to r.HLOD.DitherPauseTime sets the MinDrawDistance back to non-zero */
 	void StartDitherTransition();
+
+	UFUNCTION(BlueprintCallable, Category = LODActor)
+		void setLodDrawDistance(float NewValue) { LODDrawDistance = NewValue; }
+	
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = LODActor)
+		UStaticMesh* getStaticMesh();
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = LODActor)
+		int32  getLODForOccluderMesh() { return LODForOccluderMesh; }
 
 	/** Sets StaticMesh and IsPreviewActor to true if InStaticMesh equals nullptr */
 	void SetStaticMesh(UStaticMesh* InStaticMesh);
