@@ -6390,6 +6390,14 @@ UMaterialInterface* UStaticMesh::GetMaterial(int32 MaterialIndex) const
 	return NULL;
 }
 
+int32 UStaticMesh::GetLODForOccluderMesh() const
+{
+#if WITH_EDITORONLY_DATA
+	return LODForOccluderMesh;
+#endif
+	return -1;
+}
+
 
 FName UStaticMesh::AddMaterial(UMaterialInterface* Material)
 {
