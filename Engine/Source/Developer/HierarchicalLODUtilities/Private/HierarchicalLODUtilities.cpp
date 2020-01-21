@@ -422,7 +422,7 @@ EClusterGenerationError FHierarchicalLODUtilities::ShouldGenerateCluster(AActor*
 	ALODActor* LODActor = Cast<ALODActor>(Actor);
 	if (LODActor)
 	{
-		return EClusterGenerationError::LODActor;
+		return EClusterGenerationError::/*LODActor*/ValidActor;
 	}
 
 	FVector Origin, Extent;
