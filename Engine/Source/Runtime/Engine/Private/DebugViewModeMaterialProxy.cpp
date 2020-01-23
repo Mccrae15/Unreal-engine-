@@ -128,6 +128,11 @@ bool FDebugViewModeMaterialProxy::IsTwoSided() const
 	return MaterialInterface && MaterialInterface->IsTwoSided();
 }
 
+bool FDebugViewModeMaterialProxy::IsFullyRough() const
+{
+	return MaterialInterface && MaterialInterface->IsFullyRough();
+}
+
 bool FDebugViewModeMaterialProxy::IsDitheredLODTransition() const
 { 
 	return MaterialInterface && MaterialInterface->IsDitheredLODTransition();

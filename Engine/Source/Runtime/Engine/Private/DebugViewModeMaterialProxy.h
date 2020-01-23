@@ -133,6 +133,7 @@ public:
 
 	virtual EMaterialDomain GetMaterialDomain() const override;
 	virtual bool IsTwoSided() const  override;
+	virtual bool IsFullyRough() const  override;
 	virtual bool IsDitheredLODTransition() const  override;
 	virtual bool IsLightFunction() const override;
 	virtual bool IsDeferredDecal() const override;

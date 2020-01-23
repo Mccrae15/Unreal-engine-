@@ -132,6 +132,7 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	virtual EBlendMode GetBlendMode() const override;
 	virtual EMaterialShadingModel GetShadingModel() const override;
 	virtual bool IsTwoSided() const override;
+	virtual bool IsFullyRough() const override;
 	virtual bool IsDitheredLODTransition() const override;
 	virtual bool IsMasked() const override;
 

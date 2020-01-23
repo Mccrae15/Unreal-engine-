@@ -862,6 +862,7 @@ void FMaterialInstanceParameterDetails::CreateBasePropertyOverrideWidgets(IDetai
 	TAttribute<bool> IsOverrideBlendModeEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FMaterialInstanceParameterDetails::OverrideBlendModeEnabled));
 	TAttribute<bool> IsOverrideShadingModelEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FMaterialInstanceParameterDetails::OverrideShadingModelEnabled));
 	TAttribute<bool> IsOverrideTwoSidedEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FMaterialInstanceParameterDetails::OverrideTwoSidedEnabled));
+	TAttribute<bool> IsOverrideFullyRoughEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FMaterialInstanceParameterDetails::OverrideFullyRoughEnabled));
 	TAttribute<bool> IsOverrideDitheredLODTransitionEnabled = TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FMaterialInstanceParameterDetails::OverrideDitheredLODTransitionEnabled));
 
 	TSharedRef<IPropertyHandle> BasePropertyOverridePropery = DetailLayout.GetProperty("BasePropertyOverrides");
@@ -869,6 +870,7 @@ void FMaterialInstanceParameterDetails::CreateBasePropertyOverrideWidgets(IDetai
 	TSharedPtr<IPropertyHandle> BlendModeProperty = BasePropertyOverridePropery->GetChildHandle("BlendMode");
 	TSharedPtr<IPropertyHandle> ShadingModelProperty = BasePropertyOverridePropery->GetChildHandle("ShadingModel");
 	TSharedPtr<IPropertyHandle> TwoSidedProperty = BasePropertyOverridePropery->GetChildHandle("TwoSided");
+	TSharedPtr<IPropertyHandle> FullyRoughProperty = BasePropertyOverridePropery->GetChildHandle("FullyRough");
 	TSharedPtr<IPropertyHandle> DitheredLODTransitionProperty = BasePropertyOverridePropery->GetChildHandle("DitheredLODTransition");
 
 	FIsResetToDefaultVisible IsOpacityClipMaskValuePropertyResetVisible = FIsResetToDefaultVisible::CreateLambda([this](TSharedPtr<IPropertyHandle> InHandle) {
@@ -943,6 +945,24 @@ void FMaterialInstanceParameterDetails::CreateBasePropertyOverrideWidgets(IDetai
 		.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FMaterialInstanceParameterDetails::IsOverriddenAndVisible, IsOverrideTwoSidedEnabled)))
 		.OverrideResetToDefault(ResetTwoSidedPropertyOverride);
 
+	FIsResetToDefaultVisible IsFullyRoughPropertyResetVisible = FIsResetToDefaultVisible::CreateLambda([this](TSharedPtr<IPropertyHandle> InHandle) {
+		return MaterialEditorInstance->Parent != nullptr ? MaterialEditorInstance->BasePropertyOverrides.FullyRough != MaterialEditorInstance->Parent->IsFullyRough() : false;
+	});
+	FResetToDefaultHandler ResetFullyRoughValuePropertyHandler = FResetToDefaultHandler::CreateLambda([this](TSharedPtr<IPropertyHandle> InHandle) {
+		if (MaterialEditorInstance->Parent != nullptr)
+		{
+			MaterialEditorInstance->BasePropertyOverrides.FullyRough = MaterialEditorInstance->Parent->IsFullyRough();
+		}
+	});
+	FResetToDefaultOverride ResetFullyRoughPropertyOverride = FResetToDefaultOverride::Create(IsFullyRoughPropertyResetVisible, ResetFullyRoughValuePropertyHandler);
+	IDetailPropertyRow& FullyRoughPropertyRow = BasePropertyOverrideGroup.AddPropertyRow(FullyRoughProperty.ToSharedRef());
+	FullyRoughPropertyRow
+		.DisplayName(FullyRoughProperty->GetPropertyDisplayName())
+		.ToolTip(FullyRoughProperty->GetToolTipText())
+		.EditCondition(IsOverrideFullyRoughEnabled, FOnBooleanValueChanged::CreateSP(this, &FMaterialInstanceParameterDetails::OnOverrideFullyRoughChanged))
+		.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FMaterialInstanceParameterDetails::IsOverriddenAndVisible, IsOverrideFullyRoughEnabled)))
+		.OverrideResetToDefault(ResetFullyRoughPropertyOverride);
+
 	FIsResetToDefaultVisible IsDitheredLODTransitionPropertyResetVisible = FIsResetToDefaultVisible::CreateLambda([this](TSharedPtr<IPropertyHandle> InHandle) {
 		return MaterialEditorInstance->Parent != nullptr ? MaterialEditorInstance->BasePropertyOverrides.DitheredLODTransition != MaterialEditorInstance->Parent->IsDitheredLODTransition() : false;
 	});
@@ -992,6 +1012,11 @@ bool FMaterialInstanceParameterDetails::OverrideTwoSidedEnabled() const
 	return MaterialEditorInstance->BasePropertyOverrides.bOverride_TwoSided;
 }
 
+bool FMaterialInstanceParameterDetails::OverrideFullyRoughEnabled() const
+{
+	return MaterialEditorInstance->BasePropertyOverrides.bOverride_FullyRough;
+}
+
 bool FMaterialInstanceParameterDetails::OverrideDitheredLODTransitionEnabled() const
 {
 	return MaterialEditorInstance->BasePropertyOverrides.bOverride_DitheredLODTransition;
@@ -1021,6 +1046,13 @@ void FMaterialInstanceParameterDetails::OnOverrideShadingModelChanged(bool NewVa
 void FMaterialInstanceParameterDetails::OnOverrideTwoSidedChanged(bool NewValue)
 {
 	MaterialEditorInstance->BasePropertyOverrides.bOverride_TwoSided = NewValue;
+	MaterialEditorInstance->PostEditChange();
+	FEditorSupportDelegates::RedrawAllViewports.Broadcast();
+}
+
+void FMaterialInstanceParameterDetails::OnOverrideFullyRoughChanged(bool NewValue)
+{
+	MaterialEditorInstance->BasePropertyOverrides.bOverride_FullyRough = NewValue;
 	MaterialEditorInstance->PostEditChange();
 	FEditorSupportDelegates::RedrawAllViewports.Broadcast();
 }

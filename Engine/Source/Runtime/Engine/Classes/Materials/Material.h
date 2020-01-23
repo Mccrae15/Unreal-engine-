@@ -970,6 +970,7 @@ public:
 	ENGINE_API virtual EBlendMode GetBlendMode() const override;
 	ENGINE_API virtual EMaterialShadingModel GetShadingModel() const override;
 	ENGINE_API virtual bool IsTwoSided() const override;
+	ENGINE_API virtual bool IsFullyRough() const override;
 	ENGINE_API virtual bool IsDitheredLODTransition() const override;
 	ENGINE_API virtual bool IsTranslucencyWritingCustomDepth() const override;
 	ENGINE_API virtual bool IsMasked() const override;

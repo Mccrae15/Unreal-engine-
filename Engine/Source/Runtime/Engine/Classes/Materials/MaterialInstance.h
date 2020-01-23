@@ -310,6 +310,7 @@ class UMaterialInstance : public UMaterialInterface
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = MaterialInstance)
 	uint8 bOverrideSubsurfaceProfile:1;
 
+	uint8 FullyRough : 1;
 	uint8 TwoSided : 1;
 	uint8 DitheredLODTransition : 1;
 	uint8 bCastDynamicShadowAsMasked : 1;
@@ -461,6 +462,7 @@ public:
 	ENGINE_API virtual EBlendMode GetBlendMode() const override;
 	ENGINE_API virtual EMaterialShadingModel GetShadingModel() const override;
 	ENGINE_API virtual bool IsTwoSided() const override;
+	ENGINE_API virtual bool IsFullyRough() const override;
 	ENGINE_API virtual bool IsDitheredLODTransition() const override;
 	ENGINE_API virtual bool IsMasked() const override;;
 	

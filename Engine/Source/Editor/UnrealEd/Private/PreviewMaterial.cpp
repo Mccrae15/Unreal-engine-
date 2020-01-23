@@ -1530,6 +1530,10 @@ void UMaterialEditorInstanceConstant::CopyBasePropertiesFromParent()
 	{
 		BasePropertyOverrides.TwoSided = SourceInstance->IsTwoSided();
 	}
+	if (!BasePropertyOverrides.bOverride_FullyRough)
+	{
+		BasePropertyOverrides.FullyRough = SourceInstance->IsFullyRough();
+	}
 	if (!BasePropertyOverrides.DitheredLODTransition)
 	{
 		BasePropertyOverrides.DitheredLODTransition = SourceInstance->IsDitheredLODTransition();
