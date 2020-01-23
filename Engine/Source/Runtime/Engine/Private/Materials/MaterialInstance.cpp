@@ -1526,6 +1526,11 @@ bool UMaterialInstanceDynamic::IsTwoSided() const
 	return Parent ? Parent->IsTwoSided() : false;
 }
 
+bool UMaterialInstanceDynamic::IsFullyRough() const
+{
+	return Parent ? Parent->IsFullyRough() : false;
+}
+
 bool UMaterialInstanceDynamic::IsDitheredLODTransition() const
 {
 	return Parent ? Parent->IsDitheredLODTransition() : false;
@@ -2390,6 +2395,7 @@ void UMaterialInstance::UpdateOverridableBaseProperties()
 		BlendMode = BLEND_Opaque;
 		ShadingModel = MSM_DefaultLit;
 		TwoSided = 0;
+		FullyRough = 0;
 		DitheredLODTransition = 0;
 		return;
 	}
@@ -2442,6 +2448,16 @@ void UMaterialInstance::UpdateOverridableBaseProperties()
 	{
 		TwoSided = Parent->IsTwoSided();
 		BasePropertyOverrides.TwoSided = TwoSided;
+	}
+
+	if (BasePropertyOverrides.bOverride_FullyRough)
+	{
+		FullyRough = BasePropertyOverrides.FullyRough != 0;
+	}
+	else
+	{
+		FullyRough = Parent->IsFullyRough();
+		BasePropertyOverrides.FullyRough = FullyRough;
 	}
 
 	if (BasePropertyOverrides.bOverride_DitheredLODTransition)
@@ -3058,6 +3074,8 @@ void UMaterialInstance::Serialize(FArchive& Ar)
 					Ar << BasePropertyOverrides.ShadingModel;
 					FArchive_Serialize_BitfieldBool(Ar, BasePropertyOverrides.bOverride_TwoSided);
 					FArchive_Serialize_BitfieldBool(Ar, BasePropertyOverrides.TwoSided);
+					FArchive_Serialize_BitfieldBool(Ar, BasePropertyOverrides.bOverride_FullyRough);
+					FArchive_Serialize_BitfieldBool(Ar, BasePropertyOverrides.FullyRough);
 
 					if( Ar.UE4Ver() >= VER_UE4_MATERIAL_INSTANCE_BASE_PROPERTY_OVERRIDES_DITHERED_LOD_TRANSITION )
 					{
@@ -3959,6 +3977,14 @@ void UMaterialInstance::GetBasePropertyOverridesHash(FSHAHash& OutHash)const
 		Hash.Update((uint8*)&bUsedIsTwoSided, sizeof(bUsedIsTwoSided));
 		bHasOverrides = true;
 	}
+	bool bUsedIsFullyRough = IsFullyRough();
+	if (bUsedIsFullyRough != Mat->IsFullyRough())
+	{
+		const FString HashString = TEXT("bOverride_FullyRough");
+		Hash.UpdateWithString(*HashString, HashString.Len());
+		Hash.Update((uint8*)&bUsedIsFullyRough, sizeof(bUsedIsFullyRough));
+		bHasOverrides = true;
+	}
 	bool bUsedIsDitheredLODTransition = IsDitheredLODTransition();
 	if (bUsedIsDitheredLODTransition != Mat->IsDitheredLODTransition())
 	{
@@ -3985,6 +4011,7 @@ bool UMaterialInstance::HasOverridenBaseProperties()const
 		(GetBlendMode() != Parent->GetBlendMode()) ||
 		(GetShadingModel() != Parent->GetShadingModel()) ||
 		(IsTwoSided() != Parent->IsTwoSided()) ||
+		(IsFullyRough() != Parent->IsFullyRough()) ||
 		(IsDitheredLODTransition() != Parent->IsDitheredLODTransition()) ||
 		(GetCastDynamicShadowAsMasked() != Parent->GetCastDynamicShadowAsMasked())
 		))
@@ -4013,6 +4040,11 @@ EMaterialShadingModel UMaterialInstance::GetShadingModel() const
 bool UMaterialInstance::IsTwoSided() const
 {
 	return TwoSided;
+}
+
+bool UMaterialInstance::IsFullyRough() const
+{
+	return FullyRough;
 }
 
 bool UMaterialInstance::IsDitheredLODTransition() const

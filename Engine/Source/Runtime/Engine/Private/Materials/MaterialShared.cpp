@@ -1108,11 +1108,6 @@ bool FMaterialResource::IsAdaptiveTessellationEnabled() const
 	return Material->bEnableAdaptiveTessellation;
 }
 
-bool FMaterialResource::IsFullyRough() const
-{
-	return Material->bFullyRough;
-}
-
 bool FMaterialResource::UseNormalCurvatureToRoughness() const
 {
 	return Material->bNormalCurvatureToRoughness;
@@ -1191,6 +1186,11 @@ bool FMaterialResource::IsTwoSided() const
 {
 	return MaterialInstance ? MaterialInstance->IsTwoSided() : Material->IsTwoSided();
 }
+bool FMaterialResource::IsFullyRough() const
+{
+	return MaterialInstance ? MaterialInstance->IsFullyRough() : Material->IsFullyRough();
+}
+
 
 bool FMaterialResource::IsDitheredLODTransition() const 
 {

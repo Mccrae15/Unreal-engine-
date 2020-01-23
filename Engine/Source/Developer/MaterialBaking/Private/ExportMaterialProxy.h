@@ -421,6 +421,14 @@ public:
 		}
 		return false;
 	}
+	virtual bool IsFullyRough() const  override
+	{
+		if (MaterialInterface)
+		{
+			return MaterialInterface->IsFullyRough();
+		}
+		return false;
+	}
 	virtual bool IsDitheredLODTransition() const  override
 	{
 		if (MaterialInterface)

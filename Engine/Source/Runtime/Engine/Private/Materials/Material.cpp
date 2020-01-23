@@ -5804,6 +5804,10 @@ bool UMaterial::IsTwoSided() const
 {
 	return TwoSided != 0;
 }
+bool UMaterial::IsFullyRough() const
+{
+	return bFullyRough != 0;
+}
 
 bool UMaterial::IsDitheredLODTransition() const
 {

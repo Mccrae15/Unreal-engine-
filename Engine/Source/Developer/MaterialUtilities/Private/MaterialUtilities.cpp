@@ -92,6 +92,8 @@ UMaterialInterface* FMaterialUtilities::CreateProxyMaterialAndTextures(UPackage*
 	UMaterialInstanceConstant* Material = FMaterialUtilities::CreateInstancedMaterial(BaseMaterial, OuterPackage, AssetName, RF_Public | RF_Standalone);
 	Material->BasePropertyOverrides.TwoSided = MaterialData.Material->IsTwoSided();
 	Material->BasePropertyOverrides.bOverride_TwoSided = MaterialData.Material->IsTwoSided();
+	Material->BasePropertyOverrides.FullyRough = MaterialData.Material->IsFullyRough();
+	Material->BasePropertyOverrides.bOverride_FullyRough = MaterialData.Material->IsFullyRough();
 	Material->BasePropertyOverrides.DitheredLODTransition = MaterialData.Material->IsDitheredLODTransition();
 	Material->BasePropertyOverrides.bOverride_DitheredLODTransition = MaterialData.Material->IsDitheredLODTransition();
 
@@ -599,6 +601,14 @@ public:
 		if (MaterialInterface)
 		{
 			return MaterialInterface->IsTwoSided();
+		}
+		return false;
+	}
+	virtual bool IsFullyRough() const  override
+	{
+		if (MaterialInterface)
+		{
+			return MaterialInterface->IsFullyRough();
 		}
 		return false;
 	}

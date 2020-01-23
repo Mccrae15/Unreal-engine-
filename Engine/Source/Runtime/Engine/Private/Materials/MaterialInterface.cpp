@@ -399,6 +399,11 @@ bool UMaterialInterface::IsTwoSided() const
 	return false;
 }
 
+bool UMaterialInterface::IsFullyRough() const
+{
+	return false;
+}
+
 bool UMaterialInterface::IsDitheredLODTransition() const
 {
 	return false;
