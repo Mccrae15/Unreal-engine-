@@ -289,32 +289,44 @@ void ALODActor::PostLoad()
 }
 
 void ALODActor::UpdateOverrideTransitionDistance()
-{
-	const int32 NumDistances = ALODActor::HLODDistances.Num();
-	// Determine correct distance index to apply to ensure combinations of different levels will work			
-	const int32 DistanceIndex = [&]()
+{	
+	for (const float& Hlodinstance : HLODDistances)
 	{
-		if (CachedNumHLODLevels == NumDistances)
-		{
-			return LODLevel - 1;
-		}
-		else if (CachedNumHLODLevels < NumDistances)
-		{
-			return (LODLevel + (NumDistances - CachedNumHLODLevels)) - 1;
-		}
-		else
-		{
-			// We've reached the end of the array, change nothing
-			return (int32)INDEX_NONE;
-		}
-	}();
-
-	if (DistanceIndex != INDEX_NONE)
-	{
-		StaticMeshComponent->MinDrawDistance = (!HLODDistances.IsValidIndex(DistanceIndex) || FMath::IsNearlyZero(HLODDistances[DistanceIndex])) ? LODDrawDistance : ALODActor::HLODDistances[DistanceIndex];
-		StaticMeshComponent->MinDrawDistance = FMath::Max(0.0f, StaticMeshComponent->MinDrawDistance);
-		StaticMeshComponent->MarkRenderStateDirty();
+		UE_LOG(LogTemp, Log, TEXT(" %f "), Hlodinstance )
 	}
+		int32 wantedIndex = LODLevel - 1;
+		float newValue = LODDrawDistance;
+		if (HLODDistances.IsValidIndex(wantedIndex))
+		{
+			if (!FMath::IsNearlyZero(HLODDistances[wantedIndex]))
+			{
+				newValue = ALODActor::HLODDistances[wantedIndex];
+			}
+		}
+	/*
+		float newMax = -1;
+		if (HLODDistances.IsValidIndex(wantedIndex+1))
+		{
+			if (!FMath::IsNearlyZero(HLODDistances[wantedIndex + 1]))
+			{
+				newMax = ALODActor::HLODDistances[wantedIndex + 1];
+			}
+		}
+		LODDrawDistance = newValue;
+		StaticMeshComponent->MinDrawDistance = newValue;
+		StaticMeshComponent->MinDrawDistance = FMath::Max(0.0f, StaticMeshComponent->MinDrawDistance);
+		if (newMax != -1)
+		{
+			StaticMeshComponent->LDMaxDrawDistance = newMax;
+			StaticMeshComponent->CachedMaxDrawDistance = newMax;
+			StaticMeshComponent->bNeverDistanceCull = 0;
+			StaticMeshComponent->SetCullDistance(newMax);
+		}*/
+#if WITH_EDITOR
+		UpdateSubActorLODParents();
+#endif
+		UpdateRegistrationToMatchMaximumLODLevel();
+		StaticMeshComponent->MarkRenderStateDirty();
 }
 
 void ALODActor::ParseOverrideDistancesCVar()
