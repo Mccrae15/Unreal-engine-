@@ -289,32 +289,43 @@ void ALODActor::PostLoad()
 }
 
 void ALODActor::UpdateOverrideTransitionDistance()
-{
-	const int32 NumDistances = ALODActor::HLODDistances.Num();
-	// Determine correct distance index to apply to ensure combinations of different levels will work			
-	const int32 DistanceIndex = [&]()
-	{
-		if (CachedNumHLODLevels == NumDistances)
+{	
+		int32 wantedIndex = LODLevel - 1;
+		float newValue = LODDrawDistance;
+		if (HLODDistances.IsValidIndex(wantedIndex))
 		{
-			return LODLevel - 1;
+			if (!FMath::IsNearlyZero(HLODDistances[wantedIndex]))
+			{
+				newValue = ALODActor::HLODDistances[wantedIndex];
+				LODDrawDistance = newValue;
+				StaticMeshComponent->MinDrawDistance = newValue;
+				StaticMeshComponent->MinDrawDistance = FMath::Max(0.0f, StaticMeshComponent->MinDrawDistance);
+			}
 		}
-		else if (CachedNumHLODLevels < NumDistances)
+	/*
+		float newMax = -1;
+		if (HLODDistances.IsValidIndex(wantedIndex+1))
 		{
-			return (LODLevel + (NumDistances - CachedNumHLODLevels)) - 1;
+			if (!FMath::IsNearlyZero(HLODDistances[wantedIndex + 1]))
+			{
+				newMax = ALODActor::HLODDistances[wantedIndex + 1];
+			}
 		}
-		else
-		{
-			// We've reached the end of the array, change nothing
-			return (int32)INDEX_NONE;
-		}
-	}();
-
-	if (DistanceIndex != INDEX_NONE)
-	{
-		StaticMeshComponent->MinDrawDistance = (!HLODDistances.IsValidIndex(DistanceIndex) || FMath::IsNearlyZero(HLODDistances[DistanceIndex])) ? LODDrawDistance : ALODActor::HLODDistances[DistanceIndex];
+		LODDrawDistance = newValue;
+		StaticMeshComponent->MinDrawDistance = newValue;
 		StaticMeshComponent->MinDrawDistance = FMath::Max(0.0f, StaticMeshComponent->MinDrawDistance);
+		if (newMax != -1)
+		{
+			StaticMeshComponent->LDMaxDrawDistance = newMax;
+			StaticMeshComponent->CachedMaxDrawDistance = newMax;
+			StaticMeshComponent->bNeverDistanceCull = 0;
+			StaticMeshComponent->SetCullDistance(newMax);
+		}*/
+#if WITH_EDITOR
+		UpdateSubActorLODParents();
+#endif
+		UpdateRegistrationToMatchMaximumLODLevel();
 		StaticMeshComponent->MarkRenderStateDirty();
-	}
 }
 
 void ALODActor::ParseOverrideDistancesCVar()
@@ -388,6 +399,11 @@ void ALODActor::PauseDitherTransition()
 void ALODActor::StartDitherTransition()
 {
 	PrimaryActorTick.SetTickFunctionEnable(bNeedsDrawDistanceReset);
+}
+
+UStaticMesh * ALODActor::getStaticMesh()
+{
+	return StaticMeshComponent->GetStaticMesh();
 }
 
 void ALODActor::UpdateRegistrationToMatchMaximumLODLevel()
