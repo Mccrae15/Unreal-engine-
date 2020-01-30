@@ -290,10 +290,6 @@ void ALODActor::PostLoad()
 
 void ALODActor::UpdateOverrideTransitionDistance()
 {	
-	for (const float& Hlodinstance : HLODDistances)
-	{
-		UE_LOG(LogTemp, Log, TEXT(" %f "), Hlodinstance )
-	}
 		int32 wantedIndex = LODLevel - 1;
 		float newValue = LODDrawDistance;
 		if (HLODDistances.IsValidIndex(wantedIndex))
@@ -301,6 +297,9 @@ void ALODActor::UpdateOverrideTransitionDistance()
 			if (!FMath::IsNearlyZero(HLODDistances[wantedIndex]))
 			{
 				newValue = ALODActor::HLODDistances[wantedIndex];
+				LODDrawDistance = newValue;
+				StaticMeshComponent->MinDrawDistance = newValue;
+				StaticMeshComponent->MinDrawDistance = FMath::Max(0.0f, StaticMeshComponent->MinDrawDistance);
 			}
 		}
 	/*
@@ -400,6 +399,11 @@ void ALODActor::PauseDitherTransition()
 void ALODActor::StartDitherTransition()
 {
 	PrimaryActorTick.SetTickFunctionEnable(bNeedsDrawDistanceReset);
+}
+
+UStaticMesh * ALODActor::getStaticMesh()
+{
+	return StaticMeshComponent->GetStaticMesh();
 }
 
 void ALODActor::UpdateRegistrationToMatchMaximumLODLevel()
