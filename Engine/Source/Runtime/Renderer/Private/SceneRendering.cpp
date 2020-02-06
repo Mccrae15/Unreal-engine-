@@ -282,6 +282,14 @@ static TAutoConsoleVariable<int32> CVarEnableMultiGPUForkAndJoin(
 	ECVF_Default
 	);
 
+#if WITH_LATE_LATCHING_CODE
+static TAutoConsoleVariable<int32> CVarDisableLateLatching(
+	TEXT("r.ForceDisableLateLatching"),
+	0,
+	TEXT("Force Disable LateLatching dynamiclly."),
+	ECVF_RenderThreadSafe | ECVF_Scalability);
+#endif
+
 /*-----------------------------------------------------------------------------
 	FParallelCommandListSet
 -----------------------------------------------------------------------------*/
@@ -1688,6 +1696,30 @@ void FViewInfo::SetupUniformBufferParameters(
 		SetUpViewHairRenderInfo(*this, bEnableMSAA, ViewUniformShaderParameters.HairRenderInfo);
 	}
 }
+
+#if WITH_LATE_LATCHING_CODE
+void FViewInfo::UpdateLateLatchData()
+{
+	FBox VolumeBounds[TVC_MAX];
+	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(FRHICommandListExecutor::GetImmediateCommandList());
+	SetupUniformBufferParameters(
+		SceneContext,
+		VolumeBounds,
+		TVC_MAX,
+		*CachedViewUniformShaderParameters);
+
+	ViewUniformBuffer.UpdateUniformBufferImmediate(*CachedViewUniformShaderParameters);
+
+	FVector PreViewOrigin = CachedViewUniformShaderParameters->PrevPreViewTranslation;
+	FVector CurrentOrigin = CachedViewUniformShaderParameters->PreViewTranslation;
+
+	// Refresh for next frame
+	if (this->ViewState)
+	{
+		this->ViewState->PrevFrameViewInfo.ViewMatrices = ViewMatrices;
+	}
+}
+#endif
 
 void FViewInfo::InitRHIResources()
 {

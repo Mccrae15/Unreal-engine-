@@ -24,6 +24,10 @@ UOculusHMDRuntimeSettings::UOculusHMDRuntimeSettings(const FObjectInitializer& O
 	PixelDensityMin = DefaultSettings.PixelDensityMin;
 	PixelDensityMax = DefaultSettings.PixelDensityMax;
 	bRecenterHMDWithController = DefaultSettings.Flags.bRecenterHMDWithController;
+	bFocusAware = DefaultSettings.Flags.bFocusAware;
+#if WITH_LATE_LATCHING_CODE
+	bLateLatching = DefaultSettings.bLateLatching;
+#endif
 
 #else
 	// Some set of reasonable defaults, since blueprints are still available on non-Oculus platforms.
@@ -37,6 +41,10 @@ UOculusHMDRuntimeSettings::UOculusHMDRuntimeSettings(const FObjectInitializer& O
 	PixelDensityMin = 0.5f;
 	PixelDensityMax = 1.0f;
 	bRecenterHMDWithController = true;
+	bFocusAware = false;
+#if WITH_LATE_LATCHING_CODE
+	bLateLatching = false;
+#endif
 #endif
 
 	LoadFromIni();
@@ -66,9 +74,5 @@ void UOculusHMDRuntimeSettings::LoadFromIni()
 	if (GConfig->GetBool(OculusSettings, TEXT("bCompositeDepth"), v, GEngineIni))
 	{
 		bCompositesDepth = v;
-	}
-	if (GConfig->GetBool(OculusSettings, TEXT("bSupportsDash"), v, GEngineIni))
-	{
-		bSupportsDash = v;
 	}
 }

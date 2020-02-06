@@ -23,6 +23,9 @@ FSettings::FSettings() :
 	, GPULevel(3)
 	, ColorScale(ovrpVector4f{1,1,1,1})
 	, ColorOffset(ovrpVector4f{0,0,0,0})
+#if WITH_LATE_LATCHING_CODE
+	, bLateLatching(false)
+#endif
 {
 	Flags.Raw = 0;
 	Flags.bHMDEnabled = true;
@@ -38,6 +41,7 @@ FSettings::FSettings() :
 #endif
 	Flags.bSupportsDash = true;
 	Flags.bRecenterHMDWithController = true;
+	Flags.bFocusAware = false;
 	EyeRenderViewport[0] = EyeRenderViewport[1] = FIntRect(0, 0, 0, 0);
 
 	RenderTargetSize = FIntPoint(0, 0);

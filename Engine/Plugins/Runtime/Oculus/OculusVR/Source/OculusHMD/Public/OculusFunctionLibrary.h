@@ -424,6 +424,12 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	static void SetColorScaleAndOffset(FLinearColor ColorScale, FLinearColor ColorOffset, bool bApplyToAllLayers = false);
 
 	/**
+	* Returns true if system headset is in 3dof mode 
+	*/
+	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
+	static bool GetSystemHmd3DofModeEnabled();
+
+	/**
 	 * Returns IStereoLayers interface to work with overlays.
 	 */
 	static class IStereoLayers* GetStereoLayers();

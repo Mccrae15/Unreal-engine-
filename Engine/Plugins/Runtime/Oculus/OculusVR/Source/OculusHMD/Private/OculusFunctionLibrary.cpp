@@ -721,4 +721,17 @@ void UOculusFunctionLibrary::SetGuardianVisibility(bool GuardianVisible)
 #endif
 }
 
+bool UOculusFunctionLibrary::GetSystemHmd3DofModeEnabled()
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
+	if (OculusHMD != nullptr)
+	{
+		ovrpBool enabled;
+		return OVRP_SUCCESS(ovrp_GetSystemHmd3DofModeEnabled(&enabled)) && enabled;
+	}
+#endif
+	return false;
+}
+
 #undef LOCTEXT_NAMESPACE

@@ -104,6 +104,8 @@ FOculusInput::FOculusInput( const TSharedRef< FGenericApplicationMessageHandler 
 
 	IModularFeatures::Get().RegisterModularFeature( GetModularFeatureName(), this );
 
+	LocalTrackingSpaceRecenterCount = 0;
+
 	UE_LOG(LogOcInput, Log, TEXT("OculusInput is initialized"));
 }
 
@@ -366,6 +368,20 @@ void FOculusInput::SendControllerEvents()
 				UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: ButtonState = 0x%X"), OvrpControllerState.Buttons);
 				UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: Touches = 0x%X"), OvrpControllerState.Touches);
 
+				// If using touch controllers (Quest) use the local tracking space recentering as a signal for recenter
+				if ((OvrpControllerState.ConnectedControllerTypes & ovrpController_LTouch) != 0 || (OvrpControllerState.ConnectedControllerTypes & ovrpController_RTouch) != 0)
+				{
+					int recenterCount = 0;
+					if (OVRP_SUCCESS(ovrp_GetLocalTrackingSpaceRecenterCount(&recenterCount)))
+					{
+						if (LocalTrackingSpaceRecenterCount != recenterCount)
+						{
+							FCoreDelegates::VRControllerRecentered.Broadcast();
+							LocalTrackingSpaceRecenterCount = recenterCount;
+						}
+					}
+				}
+
 				for (FOculusTouchControllerPair& ControllerPair : ControllerPairs)
 				{
 					for( int32 HandIndex = 0; HandIndex < UE_ARRAY_COUNT( ControllerPair.ControllerStates ); ++HandIndex )
@@ -396,10 +412,13 @@ void FOculusInput::SendControllerEvents()
 							UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: HandTrigger[%d] = %f"), int(HandIndex), OvrGripAxis);
 							UE_CLOG(OVR_DEBUG_LOGGING, LogOcInput, Log, TEXT("SendControllerEvents: ThumbStick[%d] = { %f, %f }"), int(HandIndex), OvrpControllerState.Thumbstick[HandIndex].x, OvrpControllerState.Thumbstick[HandIndex].y );
 
-							if (OvrpControllerState.RecenterCount[HandIndex] != State.RecenterCount)
+							if (bIsMobileController)
 							{
-								State.RecenterCount = OvrpControllerState.RecenterCount[HandIndex];
-								FCoreDelegates::VRControllerRecentered.Broadcast();
+								if (OvrpControllerState.RecenterCount[HandIndex] != State.RecenterCount)
+								{
+									State.RecenterCount = OvrpControllerState.RecenterCount[HandIndex];
+									FCoreDelegates::VRControllerRecentered.Broadcast();
+								}
 							}
 							
 							if (OvrTriggerAxis != State.TriggerAxis)
